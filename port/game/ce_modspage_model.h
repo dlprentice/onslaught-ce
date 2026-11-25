@@ -41,6 +41,7 @@ static const char *const kCeModWhy[PORT_MOD_WHY_COUNT] = {
 	"This mod cannot be used. Ask its author for a fixed copy.",
 };
 static const char kCeModRenamedTo[] = "This mod's folder has the wrong name. Rename the folder to %s.";
+static const char kCeModModsFolderCase[] = "Your mods folder has the wrong letter case. Rename it to mods in small letters.";
 
 // The page's other sentences.
 static const char kCeModsEmpty[] = "You have no mods yet. To add one, put its folder in the mods folder in your user folder.";
@@ -59,6 +60,11 @@ static const char kCeModsNoFileManager[] = "Your file manager could not be opene
 static const char kCeModsNoLevel[] = "This level could not be started. Turn the mod on and start the game again.";
 static const char kCeModsFolderBlocked[] = "Your mods folder could not be made.\nRename or remove the file named mods.";
 static const char kCeModsFolderIs[] = "Your mods folder is:";
+static const char kCeModsPs2ImportRow[] = "Import PS2 Level 888...";
+static const char kCeModsPs2ImportHint[] = "Import cut Level 888 from your own PS2 disc image (.iso, .zip or .aya).";
+static const char kCeModsPs2Picking[] = "Choose your PS2 disc image in the file window.";
+static const char kCeModsPs2Imported[] = "Level 888 (PS2) imported and turned on. Restart Onslaught CE, then select it here to Play.";
+static const char kCeModsPs2ImportedFull[] = "Level 888 (PS2) imported. Turn off one of your 16 mods, then turn it on here.";
 // The notice on the main menu, once a start, when a mod that is on did not load (%d of them).
 static const char kCeModsNoticeOne[] = "1 mod did not load. See Onslaught CE > Mods.";
 static const char kCeModsNoticeMany[] = "%d mods did not load. See Onslaught CE > Mods.";
@@ -679,6 +685,11 @@ struct CeModsModel
 		const int why = mod.why > PORT_MOD_WHY_NONE && mod.why < PORT_MOD_WHY_COUNT ? mod.why : mod.why ? PORT_MOD_WHY_OTHER : PORT_MOD_WHY_NONE;
 		if (why == PORT_MOD_WHY_RENAMED && mod.wanted[0])
 		{
+			if (!strcmp(mod.wanted, "/mods"))
+			{
+				snprintf(out, n, "%s", kCeModModsFolderCase);
+				return;
+			}
 			bool whole = true;		// only a name the face can show exactly is named
 			for (const char *c = mod.wanted; *c; c++)
 				if (!shown((unsigned char)*c))

@@ -8,7 +8,7 @@
 +extern "C" bool PortCeMuseumCinemaFilmName(unsigned index,char *stem,unsigned cap)
 +{
 +    if (!stem || cap<128) return false;
-+    for (SINT n=0;n<MAX_NUM_GOODIES;++n) {
++    for (SINT n=0;n<=232;++n) {
 +        if (get_goodie_type_hack(n)!=GT_FMV) continue;
 +        if (index) { --index;continue; }
 +        char filename[256]={};get_goodie_fmv(filename,n);

@@ -73,6 +73,7 @@ struct CeCmdPlacard
 	bool isBuilding;
 	int buildPercent;				// 0..100 when isBuilding
 	float worldX, worldY;
+	bool hasValidId;
 };
 
 struct CeCmdCardButton
@@ -528,7 +529,7 @@ inline CeCmdHudLayout CeCmdHudComputeLayout(float viewportW, float viewportH, fl
 	const float rowH = out.trayRect.h - hdrH - std::floor(3.f * u);
 	const float cardGap = std::floor(5.f * u);
 	const float minPlacardW = std::floor(86.f * u);
-	int slots = int((trayW + cardGap) / (minPlacardW + cardGap));
+	int slots = int(std::floor((trayW + cardGap) / (minPlacardW + cardGap)));
 	if (slots < 1) slots = 1;
 	if (slots > kCeHudMaxVisiblePlacards) slots = kCeHudMaxVisiblePlacards;
 	out.slotsPerPage = slots;

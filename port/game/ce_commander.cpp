@@ -78,6 +78,8 @@
 #include "ce_commander.h"
 #include "ce_cmdorders.h"
 #include "ce_cmdproduction.h"
+
+extern "C" bool PortCeSandboxSquadCommandable(const void *squad) __attribute__((weak));
 #include "ce_cmdmatch.h"
 #include "ce_cmdoutcome.h"
 #include "ce_cmdrules.h"
@@ -415,21 +417,29 @@ bool Home(float sx, float sy, FVector *home, FVector *rally)
 	const int pick = CeCmdFallbackPick(places, n, sx, sy);
 	if (pick < 0) return false;
 	const float tx = others ? ox / float(others) : sx, ty = others ? oy / float(others) : sy;
+	SExtents *e = MAP.GetExtents();
+	const bool clampExtents = e && e->mMaxX > e->mMinX + 24 && e->mMaxY > e->mMinY + 24;
 	float rx = places[pick].x, ry = places[pick].y;
+	if (clampExtents)
+	{
+		if (rx < float(e->mMinX + 12)) rx = float(e->mMinX + 12);
+		if (rx > float(e->mMaxX - 12)) rx = float(e->mMaxX - 12);
+		if (ry < float(e->mMinY + 12)) ry = float(e->mMinY + 12);
+		if (ry > float(e->mMaxY - 12)) ry = float(e->mMaxY - 12);
+	}
 	for (float standoff = 24.f; standoff > 0.f; standoff -= 8.f)
 	{
 		float cx, cy;
 		CeCmdFallbackRally(places[pick].x, places[pick].y, tx, ty, standoff, &cx, &cy);
+		if (clampExtents)
+		{
+			if (cx < float(e->mMinX + 12)) cx = float(e->mMinX + 12);
+			if (cx > float(e->mMaxX - 12)) cx = float(e->mMaxX - 12);
+			if (cy < float(e->mMinY + 12)) cy = float(e->mMinY + 12);
+			if (cy > float(e->mMaxY - 12)) cy = float(e->mMaxY - 12);
+		}
 		if (Land(cx, cy)) { rx = cx; ry = cy; break; }
 	}
-	if (SExtents *e = MAP.GetExtents())
-		if (e->mMaxX > e->mMinX + 24 && e->mMaxY > e->mMinY + 24)
-		{
-			if (rx < float(e->mMinX + 12)) rx = float(e->mMinX + 12);
-			if (rx > float(e->mMaxX - 12)) rx = float(e->mMaxX - 12);
-			if (ry < float(e->mMinY + 12)) ry = float(e->mMinY + 12);
-			if (ry > float(e->mMaxY - 12)) ry = float(e->mMaxY - 12);
-		}
 	*home = Ground(places[pick].x, places[pick].y);
 	*rally = Ground(rx, ry);
 	return true;
@@ -986,6 +996,13 @@ bool CeCommanderNoMerge(const void *squad)
 	return r && r->ordered && r->guard;
 }
 
+extern "C" int PortCeCmdSquadHasPlayerOrder(const void *squad)
+{
+	if (!gEnabled || !gNRecs || !squad) return 0;
+	Rec *r = ByPointer(squad);
+	return (r && r->ordered) ? 1 : 0;
+}
+
 int CeCommanderRelaxed(void *squad, FVector *pos)
 {
 	if (!gEnabled || !gNRecs) return 0;
@@ -1108,7 +1125,9 @@ void Describe(int index, Rec &r, int allegiance, CeCmdSquad &s)
 	s.x = n ? cx / (float)n : r.squad->GetPos().X;
 	s.y = n ? cy / (float)n : r.squad->GetPos().Y;
 	s.friendly = (int)r.squad->mUnknown7C == allegiance;
-	s.why = !s.friendly ? CE_WHY_ENEMY : scripted ? CE_WHY_SCRIPTED : r.squad->mUnknown84 ? CE_WHY_SPAWNED : unmarchable ? CE_WHY_AIRCRAFT :
+	const bool sandboxCommandable = PortCeSandboxSquadCommandable && PortCeSandboxSquadCommandable(r.squad);
+	s.why = !s.friendly ? CE_WHY_ENEMY : scripted ? CE_WHY_SCRIPTED :
+			(r.squad->mUnknown84 && !sandboxCommandable) ? CE_WHY_SPAWNED : unmarchable ? CE_WHY_AIRCRAFT :
 			objective ? CE_WHY_OBJECTIVE : CE_WHY_NONE;
 	s.commandable = s.friendly && n > 0 && s.why == CE_WHY_NONE;
 	s.deploys = deploys;

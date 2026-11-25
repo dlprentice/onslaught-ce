@@ -15,8 +15,9 @@ int		CeTestKitMenuRows(CMenuOptionsList *list, CeTestRow *out, int max);
 namespace
 {
 const char *const kCePages[] = {"hub", "bonus", "settings", "cheats", "help", "plans", "editor", "museum", "catalogue",
-								"catalogue-items", "catalogue-find"};
+								"catalogue-items", "catalogue-find", "labs"};
 const int kCePageNames = int(sizeof kCePages / sizeof kCePages[0]);
+static_assert(sizeof kCePages / sizeof kCePages[0] == 12, "one page name per ECePage (CEP_COUNT in ce_frontend.cpp)");
 
 bool	CeActive()
 {

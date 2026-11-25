@@ -38,21 +38,30 @@ class AuthorityBuildTests(unittest.TestCase):
 
     def test_existing_game_hooks_keep_game_compilation_and_allocator(self):
         # The explicit reviewed set of host-allocator units (matches build.HOST_BUFFER_GAME_MODULES):
-        # network authority/invitation, project loader, museum visit generator, and asset catalogue host-STL modules.
+        # network authority/invitation, project loader, museum visit generator, asset catalogue host-STL modules,
+        # and the online multiplayer service / match / UI bridge modules.
         reviewed_host_modules = frozenset((
             'ce_network_boot_authority.cpp', 'ce_network_invitation.cpp', 'ce_project.cpp',
             'ce_museum_visit.cpp', 'ce_museum_visit_generate.cpp',
             'ce_asset_catalog.cpp', 'ce_catalogue_menu.cpp', 'ce_catalogue_sounds.cpp',
+            'ce_online_match.cpp', 'ce_online_service.cpp', 'ce_online_ui_bridge.cpp',
         ))
         self.assertEqual(reviewed_host_modules, build.HOST_BUFFER_GAME_MODULES)
-        game_rows = [(source, rule) for source, rule, _ in build.port_sources("linux")
-                     if source.parent == build.PORT / "game"]
-        host_rows = [(source, rule) for source, rule in game_rows if source.name in reviewed_host_modules]
-        rows = [(source, rule) for source, rule in game_rows if source.name not in reviewed_host_modules]
-        self.assertTrue(rows)
-        self.assertEqual(reviewed_host_modules, {source.name for source, _ in host_rows})
-        self.assertTrue(all(rule == "pcxx" for _, rule in host_rows))
-        self.assertTrue(all(rule == "qcxx" for _, rule in rows))
+        for signaling in (False, True):
+            with self.subTest(signaling=signaling):
+                build.WITH_NATIVE_SIGNALING = signaling
+                expected_host = reviewed_host_modules if signaling else (
+                    reviewed_host_modules - build.ONLINE_SIGNALING_GAME_MODULES
+                )
+                game_rows = [(source, rule) for source, rule, _ in build.port_sources("linux")
+                             if source.parent == build.PORT / "game"]
+                host_rows = [(source, rule) for source, rule in game_rows if source.name in reviewed_host_modules]
+                rows = [(source, rule) for source, rule in game_rows if source.name not in reviewed_host_modules]
+                self.assertTrue(rows)
+                self.assertEqual(expected_host, {source.name for source, _ in host_rows})
+                self.assertTrue(all(rule == "pcxx" for _, rule in host_rows))
+                self.assertTrue(all(rule == "qcxx" for _, rule in rows))
+        build.WITH_NATIVE_SIGNALING = False
         self.assertEqual("bea_game_new", build.GAME_ALLOCATOR["_Znwj"])
         self.assertEqual("bea_game_delete", build.GAME_ALLOCATOR["_ZdlPv"])
 

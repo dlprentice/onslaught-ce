@@ -85,7 +85,7 @@ static bool MountedFlushOnRealWall(const CanvasSpec &sp) {
 int main() {
     const Grand::RoomGraph graph = Grand::MakeRoomGraph();
     Need(kManifestCount == 149, "ALL 149/149 (100%) retail GT_IMAGE Goodies plates across both art wings");
-    Need(kMaxTexEdge == 256u, "256px max texture edge cap for all 149 simultaneously resident canvases");
+    Need(kMaxTexEdge == 512u, "512px max texture edge cap for all 149 simultaneously resident canvases");
     Need(CountWantedResident(CeMuseumTour::kWingConceptArt) == 75, "75 paintings in Concept Art Gallery");
     Need(CountWantedResident(CeMuseumTour::kWingEarlyDesigns) == 74, "74 plates in Early Designs Vault");
     Need(CountWantedResident(CeMuseumTour::kWingCourtyard) == 0, "no canvases resident in Courtyard");
@@ -232,13 +232,13 @@ int main() {
              "goodies\\ca_cutscene_locations\\ca_cl_f_command_room_interior.tga"),
          "rejects unrelated texture path");
 
-    // 5. BoundedUpload: <= 256 px longest edge with aspect ratio preserved.
-    const UploadSize uSmall = BoundedUpload(192, 128);
-    Need(uSmall.width == 192 && uSmall.height == 128, "small texture kept unchanged");
+    // 5. BoundedUpload: <= 512 px longest edge with aspect ratio preserved.
+    const UploadSize uSmall = BoundedUpload(384, 256);
+    Need(uSmall.width == 384 && uSmall.height == 256, "small texture kept unchanged");
     const UploadSize uLand = BoundedUpload(1024, 512);
-    Need(uLand.width == 256 && uLand.height == 128, "landscape capped to 256 preserving 2:1");
+    Need(uLand.width == 512 && uLand.height == 256, "landscape capped to 512 preserving 2:1");
     const UploadSize uPort = BoundedUpload(600, 1200);
-    Need(uPort.width == 128 && uPort.height == 256, "portrait capped to 256 preserving 1:2");
+    Need(uPort.width == 256 && uPort.height == 512, "portrait capped to 512 preserving 1:2");
     const UploadSize uZero = BoundedUpload(0, 512);
     Need(uZero.width == 1 && uZero.height == 1, "zero input safely clamped to 1x1");
 
@@ -287,7 +287,7 @@ def main():
         check("art driver builds with ASan/UBSan", ok, detail)
         if ok:
             ok, detail = run([str(d / "driver")])
-            check("149/149 concept art manifest, 256px bounds, wall flushness, zero 3D overlap and focus hold", ok, detail)
+            check("149/149 concept art manifest, 512px bounds, wall flushness, zero 3D overlap and focus hold", ok, detail)
 
         src = HEADER.read_text()
         for label, old, new in MUTANTS:
@@ -309,8 +309,8 @@ def main():
     check("runtime opens asset catalog textures lazily and handles truncated filenames",
           "PortCeAssetCatalogOpenKinds" in cpp and "CE_ASSET_TEXTURE" in cpp
           and "ResolveTextureIndex(" in cpp and "MatchesTruncatedCatalogPath(" in cpp)
-    check("runtime uploads bounded <=256px textures into D3DPOOL_MANAGED and deduplicates shared paths",
-          "BoundedUpload" in cpp and "D3DPOOL_MANAGED" in cpp
+    check("runtime uploads bounded <=512px DXT1 textures into D3DPOOL_MANAGED and deduplicates shared paths",
+          "BoundedUpload" in cpp and "D3DPOOL_MANAGED" in cpp and "D3DFMT_DXT1" in cpp
           and "D3DXCreateTextureFromFileInMemoryEx" in cpp and "ownsTexture = false;" in cpp)
     check("runtime batches all 149 brass frames, mats, nameplates and art quads into static D3DPOOL_MANAGED GPU buffers",
           "frameVb" in cpp and "frameIb" in cpp and "artVb" in cpp

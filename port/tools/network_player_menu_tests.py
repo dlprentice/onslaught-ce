@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: GPL-3.0-only
 """Compile the actual network menu with in-process providers; no game or sockets.
 
-The menu (port/game/ce_netpages.cpp) is compiled twice with the real lobby, code, ICE, boot and invitation headers: once as
+The menu (port/game/ce_netpages.cpp) is compiled with the real lobby, code, ICE, boot and invitation headers: once as
 the --with-network build has it (Host Game, Join Game and Connection Help over a direct connection, the relay refused) and
 once with CE_NETWORK_ICE as the --with-ice build has it (adding the Online invitation import, its preview, the network
-disclosure and the signaling status page). Every case
+disclosure and the signaling status page). A third fixture links Online UI callbacks to exercise the Direct LAN handoff. Every case
 must pass with its exact number of checks in its build, and every control (a mutant of the menu source) must fail its case
 at the check named for it, so a check that cannot fail is caught.
 
@@ -24,7 +24,7 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
-VARIANTS = {"direct": [], "ice": ["-DCE_NETWORK_ICE=1"]}
+VARIANTS = {"direct": [], "ice": ["-DCE_NETWORK_ICE=1"], "online": []}
 # Cases of both builds; then each build's own. Values: the number of checks the case makes when it passes.
 COMMON = {'multi-address': 6,
  'single-address': 3,
@@ -80,7 +80,40 @@ CASES = {"direct": {**COMMON, **{'relay-unavailable': 4}},
  'ice-guest-awaiting-code': 30,
  'ice-practice-fields': 19,
  'ice-terminal': 16,
- 'ice-disclosure-cancel': 18}}}
+ 'ice-disclosure-cancel': 18}},
+         "online": {"direct-to-online": 5}}
+
+ONLINE_HANDOFF = r'''
+static bool onlineOffered = false, onlineActive = false;
+static unsigned onlineOpens = 0;
+extern "C" int PortCeOnlineUiOffered(void) { return onlineOffered; }
+extern "C" int PortCeOnlineUiActive(void) { return onlineActive; }
+extern "C" void PortCeOnlineUiOpen(void) { onlineActive = true; ++onlineOpens; }
+
+static int RunOnlineHandoff() {
+    PortCeNetOpenDirectFromOnline();
+    CHECK(sMenu && sMenu->mActive && sActive && sDirectFromOnline);
+    CHECK(SelectAction(NA_ONLINE_LOBBIES) && sActive && !onlineOpens && !leaveCalls);
+    onlineOffered = true;
+    sMenu->Trap(true);
+    CHECK(SelectAction(NA_ONLINE_LOBBIES) && onlineOpens == 1 && leaveCalls == 1 && PortCeNetActive());
+    CHECK(!LT.trap && !sMenu->mActive && !sActive && !sDirectFromOnline);
+    onlineActive = false;
+    CHECK(!PortCeNetActive());
+    return 0;
+}
+'''
+
+
+def menu_driver(driver: bytes, variant: str) -> bytes:
+    if variant != "online":
+        return driver
+    entry = b"static int Run(const std::string& name) {\n"
+    assert driver.count(entry) == 1
+    return driver.replace(entry, ONLINE_HANDOFF.encode() + entry +
+                          b'  if (name == "direct-to-online") return RunOnlineHandoff();\n')
+
+
 # A control: (build, case, the check at which that case must fail).
 CONTROLS = {'automatic-host': ('direct', 'multi-address', 2),
  'no-refresh-before-host': ('direct', 'multi-address', 1),
@@ -294,7 +327,8 @@ def main() -> int:
             # are supplied by the fixture, which includes the same headers itself.
             text = re.sub(r'^\s*#include\s+"[^"\n]+"\s*$', "", text, flags=re.MULTILINE)
             (work / "menu.inc").write_text(text)
-            (work / "driver.cpp").write_bytes(driver)
+            variant_driver = menu_driver(driver, variant)
+            (work / "driver.cpp").write_bytes(variant_driver)
             binary = work / "driver"
             command = [compiler, "-std=c++17", "-O0", "-DCE_VERSION=\"fixture\"", *VARIANTS[variant],
                        "-ffunction-sections", "-fdata-sections", "-Wl,--gc-sections",
@@ -303,7 +337,7 @@ def main() -> int:
             with (work / "compile.stdout.private").open("w") as stdout, (work / "compile.stderr.private").open("w") as stderr:
                 result = subprocess.run(command, env=env, stdout=stdout, stderr=stderr, timeout=120, check=False)
             receipt["compile"].append({"variant": variant, "control": name, "exit": result.returncode,
-                                       "menu_sha256": sha(text.encode())})
+                                       "menu_sha256": sha(text.encode()), "driver_sha256": sha(variant_driver)})
             if result.returncode:
                 continue
             selected = CASES[variant] if name is None else [CONTROLS[name][1]]

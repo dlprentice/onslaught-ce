@@ -11,6 +11,7 @@ CePreviewDisplay suppliedPreview{};
 CeRestoreDisplay suppliedRestore{};
 unsigned chooseCalls, againCalls, setCalls, lastSet, beginCalls, confirmCalls,
          cancelCalls, acknowledgeCalls;
+int lastFocusRow = -1;
 unsigned checks;
 void check(bool ok) {
     ++checks;
@@ -85,7 +86,7 @@ extern "C" int CE_SettingGetText(const char *, char *out, int n) {
     return 0;
 }
 void PortCeBackupPreviewBack() {}
-void PortCeExtrasShow(int, int) {}
+void PortCeExtrasShow(int, int row) { lastFocusRow = row; }
 void PortCeExtrasInFont(WCHAR *text) {
     if (!text) return;
     for (; *text; ++text) if (*text == L'_') *text = L'-';
@@ -174,8 +175,31 @@ int main() {
     process(); resetCalls();
     check(PortCeBackupPreviewStepBack() == 1 && cancelCalls == 1);
     suppliedRestore.phase = CE_RESTORE_DONE;
+    std::strcpy(suppliedRestore.backup, "/tmp/backups/onslaught-backup-20261117-131153/");
+    lastFocusRow = -1;
     process(); resetCalls();
+    check(lastFocusRow == page.mCount() - 1 && findRow("Back to Backup Preview") == lastFocusRow);
+    // Trailing slash on backup path must still resolve leaf set name cleanly.
+    const int otherCareers = findRow("Your other careers");
+    check(otherCareers >= 0 && hintOf(otherCareers).find("2026-") != std::string::npos);
     check(PortCeBackupPreviewStepBack() == 1 && acknowledgeCalls == 1);
+    // UTF-8 names in S_CONFIRM hintName lines must decode UTF-8 (U+00E9), never Latin-1 mojibake (0xC3 0xA9).
+    suppliedRestore.phase = CE_RESTORE_CONFIRM;
+    std::strcpy(suppliedRestore.source, "Caf\xc3\xa9.bes");
+    std::strcpy(suppliedRestore.target, "Caf\xc3\xa9 restored.bes");
+    process();
+    {
+        const int rowIdx = findRow("Career in this backup");
+        check(rowIdx >= 0);
+        WCHAR help[200]{}, extra[200]{};
+        page.mHint(rowIdx, help, extra, 200);
+        bool foundEacute = false, foundMojibake = false;
+        for (int k = 0; extra[k]; ++k) {
+            if (extra[k] == WCHAR(0x00e9)) foundEacute = true;
+            if (extra[k] == WCHAR(0x00c3)) foundMojibake = true;
+        }
+        check(foundEacute && !foundMojibake);
+    }
     suppliedRestore.phase = CE_RESTORE_IDLE;
     suppliedPreview.careers = 2;
     std::strcpy(suppliedPreview.name, "Pilot_One.bes");

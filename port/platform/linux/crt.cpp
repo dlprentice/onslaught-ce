@@ -86,6 +86,29 @@ wc16 *port_wcsstr(const wc16 *h, const wc16 *n)
 	return NULL;
 }
 
+wc16 *port_wcschr(const wc16 *s, wc16 c)
+{
+	for (;; s++)
+	{
+		if (*s == c)
+			return (wc16 *)s;
+		if (!*s)
+			return NULL;
+	}
+}
+
+wc16 *port_wcsrchr(const wc16 *s, wc16 c)
+{
+	wc16 *found = NULL;
+	for (;; s++)
+	{
+		if (*s == c)
+			found = (wc16 *)s;
+		if (!*s)
+			return found;
+	}
+}
+
 // MSVC's legacy swprintf (no count): the format is wide; the game's two uses take %d and %ld. A %s argument is a wide
 // string in MSVC's swprintf, %S a narrow one.
 int port_swprintf(wc16 *d, const wc16 *fmt, ...)

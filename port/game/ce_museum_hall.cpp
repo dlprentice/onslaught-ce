@@ -21,6 +21,7 @@
 #include "ce_museum_diorama.h"
 #include "ce_museum_audio_kiosk.h"
 #include "ce_museum_cinema.h"
+#include "ce_museum_render_state.h"
 #include "ce_museum_cinema_catalogue.h"
 #include "ce_museum_cinema_view.h"
 #include "ce_museum_music_duck.h"
@@ -65,7 +66,7 @@ enum Material {
     kMatScreenFrame, kMatCinemaWall, kMatCinemaCeiling, kMatCinemaPost,
     kMatPierCap, kMatPierBase, kMatPierLine, kMatCinemaCap, kMatCinemaBase, kMatScreenIdle,
     kMatWater, kMatForsetiTrim, kMatMuspellTrim,
-    kMatMuspellIron, kMatMuspellWall, kMatForsetiGlow, kMatMuspellGlow, kMatWarmGlow, kMatAquaGlow,
+    kMatMuspellIron, kMatMuspellWall, kMatForsetiGlow, kMatMuspellGlow, kMatWarmGlow, kMatAquaGlow, kMatCinemaGlow,
     kMatCount
 };
 
@@ -123,7 +124,23 @@ const MaterialSpec kMaterials[kMatCount] = {
     {CE_MUSEUM_TEX_COUNT,           1.0f, 0xffffa644, 1.00f, 0.50f, 0.12f, 0.90f, 0.55f, 0.20f, 20.0f, 0.00f, true},  // Muspell molten-amber forge strip
     {CE_MUSEUM_TEX_COUNT,           1.0f, 0xfffff2cf, 0.92f, 0.82f, 0.58f, 0.60f, 0.55f, 0.40f, 20.0f, 0.00f, true},  // warm architectural cove glow
     {CE_MUSEUM_TEX_COUNT,           1.0f, 0xff62e8f6, 0.22f, 0.80f, 0.92f, 0.70f, 0.95f, 1.00f, 32.0f, 0.00f, true},  // reflecting-pool aqua rim glow
+    {CE_MUSEUM_TEX_COUNT,           1.0f, 0xffffb844, 1.00f, 0.67f, 0.16f, 0.00f, 0.00f, 0.00f,  1.0f, 0.00f, true},  // cinema warm amber-gold strip
 };
+
+// The warm charcoal a screening-room surface keeps under full house lights (added to its emissive, scaled by
+// the house light level): seats richest, carpet and lining a little under them, the ceiling least.
+struct CinemaIdleGlow { float r, g, b; };
+static CinemaIdleGlow CinemaIdleGlowFor(unsigned m) {
+    switch (m) {
+    case kMatSeat:          return {0.150f, 0.084f, 0.076f};
+    case kMatCarpet:        return {0.098f, 0.082f, 0.074f};
+    case kMatCinemaWall:    return {0.084f, 0.078f, 0.074f};
+    case kMatStone:         return {0.070f, 0.070f, 0.076f};
+    case kMatCinemaCeiling: return {0.054f, 0.052f, 0.052f};
+    case kMatScreenFrame:   return {0.050f, 0.050f, 0.056f};
+    default:                return {0.060f, 0.056f, 0.052f};   // projector post, cap and base
+    }
+}
 
 bool CinemaMaterial(unsigned m) {
     switch (m) {
@@ -510,7 +527,29 @@ static DWORD BakeGrandVertexColour(float wx, float wy, float wz,
         lightG *= 0.73f + 0.30f * artWall;
         lightB *= 0.75f + 0.22f * artWall;
     } else if (rid == kRoomCinema) {
-        lightR *= 0.95f; lightG *= 0.95f; lightB *= 0.96f;
+        // The idle house is warm and dim, never black: keep the dark acoustic walls well below 1.0 so the
+        // radial amber sconce wash adds rich warm red/gold without hitting Clamp01 and flattening to cool grey.
+        lightR *= 0.46f; lightG *= 0.44f; lightB *= 0.46f;
+        // The screening room's own coordinates (the Grand Museum shifts the room east of the Concept Art Gallery).
+        const float cx = lx - CeMuseumWorld::kGrandCinemaOffsetX, cy = ly - CeMuseumWorld::kGrandCinemaOffsetY;
+        for (unsigned s = 0; s < CeCinemaRoom::kSconceCount; ++s) {
+            const float dx = cx - (CeCinemaRoom::kRight - 0.36f);
+            const float dy = cy - CeCinemaRoom::SconceY(s);
+            const float dz = lz - CeCinemaRoom::kSconceHeight;
+            const float d = std::sqrt(dx * dx + dy * dy + dz * dz);
+            const float wash = 1.0f - SmoothStep(0.18f, CeCinemaRoom::kSconceReach, d);
+            lightR += 0.54f * wash;
+            lightG += 0.32f * wash;
+            lightB += 0.06f * wash;
+        }
+        if (lz < 0.35f && cy >= CeCinemaRoom::kAisleFront - 1.0f && cy <= CeCinemaRoom::kAisleBack + 1.0f) {
+            const float dEdge = std::fmin(std::fabs(cx - (CeCinemaRoom::kAisleX - CeCinemaRoom::kAisleHalf)),
+                                          std::fabs(cx - (CeCinemaRoom::kAisleX + CeCinemaRoom::kAisleHalf)));
+            const float spill = 1.0f - SmoothStep(0.0f, 1.3f, dEdge);
+            lightR += 0.24f * spill;
+            lightG += 0.16f * spill;
+            lightB += 0.06f * spill;
+        }
     }
 
     const float r = Clamp01(ao * lightR * 1.04f);
@@ -2637,9 +2676,9 @@ static void DrawFactionBanners(IDirect3DDevice9 *dev, float floorZ) {
         // 9. Courtyard West Outer Colonnade Shadowbox Key Battle Art (ca_bea_battle_pic.tga, crop built-in black bars)
         {kFactionTexCoverWest,    -11.05f, 19.59f,  4.10f, 0.0f, -1.0f, 3.10f, 2.25f,
          0.00f, 0.15f, 1.00f, 0.85f, 0xffeae6deu, 0xffd8d3c8u, 0xff343e48u, 0xff232a32u, false, true,  true},
-        // 10. Courtyard East Outer Colonnade Shadowbox Cover Art (ca_be_final01.tga, wall 19.70 -> art 19.59)
+        // 10. Courtyard East Outer Colonnade Shadowbox Cover Art (ca_be_final01.tga, crop to landscape Aquila Walker hero frame, zero black bars/margins)
         {kFactionTexCoverEast,     11.05f, 19.59f,  4.10f, 0.0f, -1.0f, 3.10f, 2.25f,
-         0.00f, 0.00f, 1.00f, 1.00f, 0xffeae6deu, 0xffd8d3c8u, 0xff343e48u, 0xff232a32u, false, true,  true},
+         0.170f, 0.085f, 0.830f, 0.415f, 0xffeae6deu, 0xffd8d3c8u, 0xff343e48u, 0xff232a32u, false, true,  true},
     };
 
     dev->SetRenderState(D3DRS_LIGHTING, FALSE);
@@ -3158,6 +3197,14 @@ extern "C" bool PortCeMuseumCinemaFire(bool release,float value) {
     return CinemaAction(release,value);
 }
 
+// The sound device is about to be torn down and rebuilt (PortCeSoundBeforeReinit).
+// A film still open would keep its Bink sound buffer on the old device and touch
+// it after it is gone, so the projector closes first; the console returns to
+// idle and the music duck ramps back as for any stopped film.
+extern "C" void PortCeMuseumCinemaBeforeSoundReinit(void) {
+    CinemaClose(Cinema::Idle);
+}
+
 extern "C" bool PortCeMuseumCinemaPanel(CeMuseumCinemaConsole::Presentation *out,
     CeMuseumCinemaConsole::MeasureText measure, void *user, float lineHeight) {
     return CinemaPresentation(out, measure, user, lineHeight);
@@ -3223,18 +3270,10 @@ extern "C" bool PortCeMuseumTakeQuickJump(float *worldX, float *worldY, float *y
     return true;
 }
 
-// Subtle minimal neutral aim dot rendered ONLY when facing an interactive fixture.
-extern "C" void PortCeMuseumDrawAimDot(float cx, float cy) {
-    IDirect3DDevice9 *dev = LT.GetDevice();
-    if (!dev) return;
-    struct DotVertex { float x, y, z, rhw; DWORD colour; };
-    auto drawDiamond = [&](float r, DWORD col) {
-        const DotVertex q[6] = {
-            {cx, cy - r, 0.0f, 1.0f, col}, {cx + r, cy, 0.0f, 1.0f, col}, {cx, cy + r, 0.0f, 1.0f, col},
-            {cx, cy - r, 0.0f, 1.0f, col}, {cx, cy + r, 0.0f, 1.0f, col}, {cx - r, cy, 0.0f, 1.0f, col},
-        };
-        dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 2, q, sizeof(DotVertex));
-    };
+// Flat, untextured, vertex-coloured screen-space drawing for the two small HUD marks below, and the stage 0 state the
+// HUD pass expects back afterwards (texture * diffuse).
+struct HudMarkVertex { float x, y, z, rhw; DWORD colour; };
+static void HudMarkBegin(IDirect3DDevice9 *dev) {
     RENDERINFO.SetFogEnabled(false);
     RENDERINFO.SetLightingEnabled(false);
     RENDERINFO.SetShader(NULL);
@@ -3256,14 +3295,50 @@ extern "C" void PortCeMuseumDrawAimDot(float cx, float cy) {
     LT.STS(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
     LT.STS(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
     LT.STS(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
-    drawDiamond(5.0f, 0xb014181e);
-    drawDiamond(3.0f, 0xfff5ebd4);
-    LT.STS(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+}
+static void HudMarkEnd() {
     LT.STS(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
     LT.STS(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+    LT.SetModulate(0);
     LT.STS(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
     LT.STS(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
     LT.STS(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
+    LT.SRS(D3DRS_CULLMODE, D3DCULL_CCW);
+    LT.SRS(D3DRS_ALPHATESTENABLE, TRUE);
+    LT.SRS(D3DRS_ZENABLE, TRUE);
+    LT.SRS(D3DRS_ZWRITEENABLE, TRUE);
+}
+// A diamond as two triangles: top, right, bottom, left, each corner with its own colour.
+static void HudMarkDiamond(IDirect3DDevice9 *dev, float cx, float cy, float rx, float ry,
+                           DWORD top, DWORD right, DWORD bottom, DWORD left) {
+    const HudMarkVertex q[6] = {
+        {cx, cy - ry, 0.0f, 1.0f, top}, {cx + rx, cy, 0.0f, 1.0f, right}, {cx, cy + ry, 0.0f, 1.0f, bottom},
+        {cx, cy - ry, 0.0f, 1.0f, top}, {cx, cy + ry, 0.0f, 1.0f, bottom}, {cx - rx, cy, 0.0f, 1.0f, left},
+    };
+    dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 2, q, sizeof(HudMarkVertex));
+}
+
+// Subtle minimal neutral aim dot rendered ONLY when facing an interactive fixture.
+extern "C" void PortCeMuseumDrawAimDot(float cx, float cy) {
+    IDirect3DDevice9 *dev = LT.GetDevice();
+    if (!dev) return;
+    HudMarkBegin(dev);
+    HudMarkDiamond(dev, cx, cy, 5.0f, 5.0f, 0xb014181e, 0xb014181e, 0xb014181e, 0xb014181e);
+    HudMarkDiamond(dev, cx, cy, 3.0f, 3.0f, 0xfff5ebd4, 0xfff5ebd4, 0xfff5ebd4, 0xfff5ebd4);
+    HudMarkEnd();
+}
+
+// The marker over the exhibit a plaque names: a small brass diamond, a little taller than wide, in two vertex-coloured
+// triangles (bright at its top-left, deep bronze at its bottom-right, as lit brass is) on a dark keyline so it reads
+// against pale stone and dark steel alike. (cx, cy) is its centre in device pixels, size its half-height.
+extern "C" void PortCeMuseumDrawExhibitMarker(float cx, float cy, float size) {
+    IDirect3DDevice9 *dev = LT.GetDevice();
+    if (!dev || !(size > 0.5f) || !std::isfinite(cx) || !std::isfinite(cy)) return;
+    HudMarkBegin(dev);
+    const float half = size * 0.72f;
+    HudMarkDiamond(dev, cx, cy, half + 1.5f, size + 1.5f, 0xc0100c08, 0xc0100c08, 0xc0100c08, 0xc0100c08);
+    HudMarkDiamond(dev, cx, cy, half, size, 0xffffe9b0, 0xffd9a84e, 0xff8a5a1c, 0xfff3cf82);
+    HudMarkEnd();
 }
 
 // Textured, horizon-faded shimmering coastal ocean plane rendered over the real painted retail
@@ -3431,6 +3506,12 @@ static void EnsureOceanGpuBuffers(IDirect3DDevice9 *dev) {
     }
 }
 
+// Exterior coastal haze: linear, from just past the terrace to well beyond the farthest ridge, so no island is
+// ever more than about a third veiled and the near water is untouched.
+constexpr float kCoastHazeStart = 70.0f;
+constexpr float kCoastHazeEnd = 410.0f;
+constexpr DWORD kCoastHazeColour = 0xffc4d4dcu;
+
 extern "C" void PortCeMuseumAuthoredBackdrop() {
     IDirect3DDevice9 *dev = LT.GetDevice();
     if (!dev || gMirrorPass || !PortCeMuseumAuthoredMap()) return;
@@ -3521,6 +3602,21 @@ extern "C" void PortCeMuseumAuthoredBackdrop() {
         }
     }
 
+    // Coastal depth haze, on the sea and the islands only: a light linear fog in the horizon's own pale tone, so
+    // the far water and the far ridges sit back in the air instead of reading as flat cut-outs. It starts beyond
+    // the terrace and reaches about a third at the farthest ridge (172 m). The sky above is drawn before it and
+    // the hall itself after it with fog off (its own state block), so the interior stays crisp.
+    {
+        const float fogStart = kCoastHazeStart, fogEnd = kCoastHazeEnd;
+        dev->SetRenderState(D3DRS_FOGCOLOR, kCoastHazeColour);
+        dev->SetRenderState(D3DRS_FOGTABLEMODE, D3DFOG_NONE);
+        dev->SetRenderState(D3DRS_FOGVERTEXMODE, D3DFOG_LINEAR);
+        dev->SetRenderState(D3DRS_RANGEFOGENABLE, TRUE);
+        dev->SetRenderState(D3DRS_FOGSTART, *reinterpret_cast<const DWORD *>(&fogStart));
+        dev->SetRenderState(D3DRS_FOGEND, *reinterpret_cast<const DWORD *>(&fogEnd));
+        dev->SetRenderState(D3DRS_FOGENABLE, TRUE);
+    }
+
     // 2. Render GPU-buffered coastal ocean plane below the museum terrace, fading seamlessly into the horizon.
     if (gHallGpu.oceanVb && gHallGpu.oceanIb && gHallGpu.oceanIdxCount >= 3u) {
         const float kTileMetres = 18.0f;
@@ -3570,10 +3666,12 @@ extern "C" void PortCeMuseumAuthoredBackdrop() {
         dev->SetIndices(gHallGpu.headlandIb);
         dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, gHallGpu.headlandVertCount, 0, gHallGpu.headlandIdxCount / 3u);
     }
+    dev->SetRenderState(D3DRS_FOGENABLE, FALSE);
+    dev->SetRenderState(D3DRS_RANGEFOGENABLE, FALSE);
 
     saved->Apply();
     saved->Release();
-    LT.InvalidateAllStates();
+    CeMuseumRestoreEngineRenderState();
 }
 
 static const float kHouseStep = 1.0f / 45.0f;
@@ -3728,6 +3826,15 @@ extern "C" void PortCeMuseumHallDraw() {
         material.Emissive.r = kMaterials[m].emissiveR;
         material.Emissive.g = kMaterials[m].emissiveG;
         material.Emissive.b = kMaterials[m].emissiveB;
+        // Idle house lights: the screening room's seats, carpet and lining keep a warm charcoal floor of
+        // their own instead of sinking to black where the hall's sun rig cannot reach. It goes with the
+        // house lights as a film starts (house 1 -> 0), so the dark of a showing stays dark.
+        if (CinemaMaterial(m)) {
+            const CinemaIdleGlow glow = CinemaIdleGlowFor(m);
+            material.Emissive.r += glow.r * house;
+            material.Emissive.g += glow.g * house;
+            material.Emissive.b += glow.b * house;
+        }
         material.Specular.r = kMaterials[m].specR;
         material.Specular.g = kMaterials[m].specG;
         material.Specular.b = kMaterials[m].specB;
@@ -3738,7 +3845,8 @@ extern "C" void PortCeMuseumHallDraw() {
         dev->SetMaterial(&material);
         // Depth-bias flat floor inlays and emissive strips only — never 3D brass trim frames!
         const bool isInlay = (m == kMatInlay || m == kMatNumeral ||
-                              m == kMatForsetiGlow || m == kMatMuspellGlow || m == kMatWarmGlow || m == kMatAquaGlow);
+                              m == kMatForsetiGlow || m == kMatMuspellGlow || m == kMatWarmGlow || m == kMatAquaGlow ||
+                              m == kMatCinemaGlow);
         const float bias = isInlay ? -0.00002f : 0.0f, slope = isInlay ? -1.0f : 0.0f;
         dev->SetRenderState(D3DRS_DEPTHBIAS,*reinterpret_cast<const DWORD *>(&bias));
         dev->SetRenderState(D3DRS_SLOPESCALEDEPTHBIAS,*reinterpret_cast<const DWORD *>(&slope));
@@ -3828,7 +3936,7 @@ extern "C" void PortCeMuseumHallDraw() {
 #endif
     }
     saved->Apply(); saved->Release();
-    LT.InvalidateAllStates();
+    CeMuseumRestoreEngineRenderState();
 
     // Render all 45 resident rotating 3D Goodie exhibits via CMESHRENDERER inside its own state guard.
     if (gGrandMode) {

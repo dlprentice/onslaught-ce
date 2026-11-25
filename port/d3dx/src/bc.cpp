@@ -23,6 +23,7 @@
 // 3,805 of 4,000 random blocks; the rest differ by one endpoint step where retail's own arithmetic order lands an
 // unquantised endpoint a few ulps the other side of a half.
 #include "bc.h"
+#include <stdint.h>
 #include <string.h>
 
 namespace bc {
@@ -32,6 +33,47 @@ namespace {
 const Color kLuminance = {0.2125f / 0.7154f, 1.0f, 0.0721f / 0.7154f, 1.0f};
 const Color kLuminanceInv = {0.7154f / 0.2125f, 1.0f, 0.7154f / 0.0721f, 1.0f};
 const float kFltMin = 1.175494351e-38f;
+
+bool IsFiniteFloat(const float &v)
+{
+    uint32_t bits;
+    memcpy(&bits, &v, sizeof(bits));
+    return (bits & 0x7f800000u) != 0x7f800000u;
+}
+
+float CleanChannel(const float &v)
+{
+    uint32_t bits;
+    memcpy(&bits, &v, sizeof(bits));
+    if ((bits & 0x7f800000u) == 0x7f800000u)
+        return (bits & 0x80000000u) == 0 && (bits & 0x007fffffu) == 0 ? 1.0f : 0.0f;
+    return v < -256.0f ? 0.0f : v > 256.0f ? 1.0f : v;
+}
+
+const Color *SanitizePixels(const Color *pixels, Color (&clean)[16])
+{
+    bool ok = true;
+    for (int i = 0; i < 16 && ok; i++)
+    {
+        const Color &p = pixels[i];
+        ok = IsFiniteFloat(p.r) && IsFiniteFloat(p.g) && IsFiniteFloat(p.b) && IsFiniteFloat(p.a) &&
+             p.r >= -256.0f && p.r <= 256.0f && p.g >= -256.0f && p.g <= 256.0f &&
+             p.b >= -256.0f && p.b <= 256.0f && p.a >= -256.0f && p.a <= 256.0f;
+    }
+    if (ok)
+        return pixels;
+    for (int i = 0; i < 16; i++)
+        clean[i] = {CleanChannel(pixels[i].r), CleanChannel(pixels[i].g),
+                    CleanChannel(pixels[i].b), CleanChannel(pixels[i].a)};
+    return clean;
+}
+
+int SafeIntRound(float q)
+{
+    if (!IsFiniteFloat(q))
+        return 0;
+    return q <= -32768.0f ? -32768 : q >= 32767.0f ? 32767 : (int)q;
+}
 
 void Decode565(Color *c, unsigned short w)
 {
@@ -43,9 +85,9 @@ void Decode565(Color *c, unsigned short w)
 
 unsigned short Encode565(const Color *c)
 {
-    float r = c->r < 0.0f ? 0.0f : c->r > 1.0f ? 1.0f : c->r;
-    float g = c->g < 0.0f ? 0.0f : c->g > 1.0f ? 1.0f : c->g;
-    float b = c->b < 0.0f ? 0.0f : c->b > 1.0f ? 1.0f : c->b;
+    float r = !(c->r > 0.0f) ? 0.0f : c->r > 1.0f ? 1.0f : c->r;
+    float g = !(c->g > 0.0f) ? 0.0f : c->g > 1.0f ? 1.0f : c->g;
+    float b = !(c->b > 0.0f) ? 0.0f : c->b > 1.0f ? 1.0f : c->b;
     return (unsigned short)(((int)(r * 31.0f + 0.5f) << 11) | ((int)(g * 63.0f + 0.5f) << 5) | (int)(b * 31.0f + 0.5f));
 }
 
@@ -175,7 +217,7 @@ void OptimizeRGB(Color *pX, Color *pY, const Color *pts, unsigned steps, unsigne
         for (int i = 0; i < 16; i++)
         {
             float fDot = (pts[i].r - X.r) * Dir.r + (pts[i].g - X.g) * Dir.g + (pts[i].b - X.b) * Dir.b;
-            unsigned s = fDot <= 0.0f ? 0 : fDot >= fSteps ? steps - 1 : (unsigned)(fDot + 0.5f);
+            unsigned s = !(fDot > 0.0f) ? 0 : fDot >= fSteps ? steps - 1 : (unsigned)(fDot + 0.5f);
             Color diff = {S[s].r - pts[i].r, S[s].g - pts[i].g, S[s].b - pts[i].b, 0.0f};
             float fC = pC[s] * (1.0f / 8.0f), fD = pD[s] * (1.0f / 8.0f);
             d2X += fC * pC[s];
@@ -237,9 +279,9 @@ void EncodeRGB(unsigned char *out, const Color *pColor, bool colorKey, float thr
         Rgb clr = {pColor[i].r, pColor[i].g, pColor[i].b};
         if (flags & DITHER_RGB)
             clr += err[i];
-        C[i].r = (float)(int)(clr.r * 31.0f + 0.5f) * (1.0f / 31.0f);
-        C[i].g = (float)(int)(clr.g * 63.0f + 0.5f) * (1.0f / 63.0f);
-        C[i].b = (float)(int)(clr.b * 31.0f + 0.5f) * (1.0f / 31.0f);
+        C[i].r = (float)SafeIntRound(clr.r * 31.0f + 0.5f) * (1.0f / 31.0f);
+        C[i].g = (float)SafeIntRound(clr.g * 63.0f + 0.5f) * (1.0f / 63.0f);
+        C[i].b = (float)SafeIntRound(clr.b * 31.0f + 0.5f) * (1.0f / 31.0f);
         C[i].a = 1.0f;
         if (flags & DITHER_RGB)
             Diffuse(err, i, Rgb{C[i].a * (clr.r - C[i].r), C[i].a * (clr.g - C[i].g), C[i].a * (clr.b - C[i].b)});
@@ -338,7 +380,7 @@ void EncodeRGB(unsigned char *out, const Color *pColor, bool colorKey, float thr
             if (flags & DITHER_RGB)
                 clr += err[i];
             float fDot = (clr.r - Step[0].r) * Dir.r + (clr.g - Step[0].g) * Dir.g + (clr.b - Step[0].b) * Dir.b;
-            unsigned s = fDot <= 0.0f ? 0 : fDot >= fSteps ? 1 : pSteps[(unsigned)(fDot + 0.5f)];
+            unsigned s = !(fDot > 0.0f) ? 0 : fDot >= fSteps ? 1 : pSteps[(unsigned)(fDot + 0.5f)];
             dw = (s << 30) | (dw >> 2);
             if (flags & DITHER_RGB)
                 Diffuse(err, i, Rgb{C[i].a * (clr.r - Step[s].r), C[i].a * (clr.g - Step[s].g), C[i].a * (clr.b - Step[s].b)});
@@ -402,7 +444,7 @@ void OptimizeAlpha(float *pX, float *pY, const float *pts, unsigned steps)
         {
             float fDot = (pts[i] - fX) * fScale;
             unsigned s;
-            if (fDot <= 0.0f)
+            if (!(fDot > 0.0f))
                 s = (steps == 6 && pts[i] <= fX * 0.5f) ? 6u : 0u;
             else if (fDot >= fSteps)
                 s = (steps == 6 && pts[i] >= (fY + 1.0f) * 0.5f) ? 7u : steps - 1;
@@ -430,14 +472,20 @@ void OptimizeAlpha(float *pX, float *pY, const float *pts, unsigned steps)
         if (dX * dX < 1.0f / 64.0f && dY * dY < 1.0f / 64.0f)
             break;
     }
-    *pX = fX < 0.0f ? 0.0f : fX > 1.0f ? 1.0f : fX;
-    *pY = fY < 0.0f ? 0.0f : fY > 1.0f ? 1.0f : fY;
+    *pX = !(fX > 0.0f) ? 0.0f : fX > 1.0f ? 1.0f : fX;
+    *pY = !(fY > 0.0f) ? 0.0f : fY > 1.0f ? 1.0f : fY;
 }
 
 } // namespace
 
-void EncodeDXT1(unsigned char *out, const Color *pixels, float threshold, unsigned flags)
+void EncodeDXT1(unsigned char *out, const Color *rawPixels, float threshold, unsigned flags)
 {
+    if (!out || !rawPixels)
+        return;
+    Color clean[16];
+    const Color *pixels = SanitizePixels(rawPixels, clean);
+    if (!IsFiniteFloat(threshold))
+        threshold = 0.5f;
     Color c[16];
     if (flags & DITHER_A)
     {
@@ -446,7 +494,8 @@ void EncodeDXT1(unsigned char *out, const Color *pixels, float threshold, unsign
         {
             float a = pixels[i].a + err[i];
             c[i] = pixels[i];
-            c[i].a = (float)(int)(pixels[i].a + err[i] + 0.5f);
+            float q = pixels[i].a + err[i] + 0.5f;
+            c[i].a = !(q >= 1.0f) ? 0.0f : 1.0f;
             Diffuse(err, i, a - c[i].a);
         }
     }
@@ -455,8 +504,12 @@ void EncodeDXT1(unsigned char *out, const Color *pixels, float threshold, unsign
     EncodeRGB(out, c, true, threshold, flags);
 }
 
-void EncodeDXT3(unsigned char *out, const Color *pixels, unsigned flags)
+void EncodeDXT3(unsigned char *out, const Color *rawPixels, unsigned flags)
 {
+    if (!out || !rawPixels)
+        return;
+    Color clean[16];
+    const Color *pixels = SanitizePixels(rawPixels, clean);
     unsigned bm[2] = {0, 0};
     float err[16] = {0};
     for (size_t i = 0; i < 16; i++)
@@ -464,7 +517,8 @@ void EncodeDXT3(unsigned char *out, const Color *pixels, unsigned flags)
         float a = pixels[i].a;
         if (flags & DITHER_A)
             a += err[i];
-        unsigned u = (unsigned)(a * 15.0f + 0.5f);
+        float q = a * 15.0f + 0.5f;
+        unsigned u = !(q >= 1.0f) ? 0u : q >= 15.0f ? 15u : (unsigned)q;
         bm[i >> 3] >>= 4;
         bm[i >> 3] |= u << 28;
         if (flags & DITHER_A)
@@ -475,17 +529,25 @@ void EncodeDXT3(unsigned char *out, const Color *pixels, unsigned flags)
     EncodeRGB(out + 8, pixels, false, 0.0f, flags);
 }
 
-void EncodeDXT5(unsigned char *out, const Color *pixels, unsigned flags)
+void EncodeDXT5(unsigned char *out, const Color *rawPixels, unsigned flags)
 {
+    if (!out || !rawPixels)
+        return;
+    Color clean[16];
+    const Color *pixels = SanitizePixels(rawPixels, clean);
     float fAlpha[16], err[16] = {0};
-    float fMin = pixels[0].a, fMax = pixels[0].a;
+    float fMin = 1.0f, fMax = 0.0f;
     for (size_t i = 0; i < 16; i++)
     {
         float a = pixels[i].a;
         if (flags & DITHER_A)
             a += err[i];
-        fAlpha[i] = (float)(int)(a * 255.0f + 0.5f) * (1.0f / 255.0f);
-        if (fAlpha[i] < fMin)
+        float q = a * 255.0f + 0.5f;
+        int qa = !(q >= 1.0f) ? 0 : q >= 255.0f ? 255 : (int)q;
+        fAlpha[i] = (float)qa * (1.0f / 255.0f);
+        if (i == 0)
+            fMin = fMax = fAlpha[0];
+        else if (fAlpha[i] < fMin)
             fMin = fAlpha[i];
         else if (fAlpha[i] > fMax)
             fMax = fAlpha[i];
@@ -551,7 +613,7 @@ void EncodeDXT5(unsigned char *out, const Color *pixels, unsigned flags)
                 a += err[i];
             float fDot = (a - fStep[0]) * fScale;
             unsigned s;
-            if (fDot <= 0.0f)
+            if (!(fDot > 0.0f))
                 s = (steps == 6 && a <= fStep[0] * 0.5f) ? 6u : 0u;
             else if (fDot >= fSteps)
                 s = (steps == 6 && a >= (fStep[1] + 1.0f) * 0.5f) ? 7u : 1u;

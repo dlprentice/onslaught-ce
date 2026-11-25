@@ -341,6 +341,10 @@ void CeFactoryTick(int level, int allegiance, float simulationTime) {
                 job.canQueue = job.mount && job.mount->mEnabled && job.mount->Unknown4e43d0();
                 if (job.stage == CE_FACTORY_QUEUED && job.now - job.queuedAt >= kAssemblySeconds) {
                     job.stage = CE_FACTORY_LAUNCHING;
+                    if (job.mount && job.mount->mEnabled && !job.mount->Unknown4e4430() && !job.mount->Unknown4e4420() &&
+                        job.mount->mUnknown3E0 >= simulationTime)
+                        job.mount->mUnknown3E0 = simulationTime - 0.05f;
+                    job.canQueue = job.mount && job.mount->mEnabled && job.mount->Unknown4e43d0();
                     if (!job.canQueue) { job.stage = CE_FACTORY_BLOCKED; }
                     else {
                         job.dispatch = true;

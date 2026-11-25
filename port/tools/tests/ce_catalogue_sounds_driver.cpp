@@ -119,6 +119,10 @@ int model_loaded = -1; unsigned model_loads, model_frees, model_draws;
 bool PortCeCatalogueModelLoad(int goodie) { ++model_loads; model_loaded = goodie; return true; }
 void PortCeCatalogueModelFree() { ++model_frees; model_loaded = -1; }
 bool PortCeCatalogueModelDraw(float, float, float, float, float) { ++model_draws; return model_loaded >= 0; }
+int fake_small_advance = 0;
+int PortCeCatalogueSmallWidth(const char* text) {
+    return (text && fake_small_advance > 0) ? int(std::strlen(text)) * fake_small_advance : 0;
+}
 // The game's own words: a few, as the running language's text gives them.
 void PortCeCatalogueTextWords(void (*add)(const char*, void*), void* context) {
     for (const char* w : {"tank", "trap", "dome", "commando", "the", "base"}) add(w, context);
@@ -560,6 +564,20 @@ static void TestSpeech() {
     Check(!PortCeCataloguePlaySound(broken) && fake.stops == stops + 1 && !PortCeCatalogueSoundsPlaying(),
           "another line stops the first; a file that cannot be decoded plays nothing");
     Check(std::strstr(PortCeCatalogueSoundProblem(), "could not be decoded") != nullptr, "the problem is said in plain words");
+    // A failed speech error must never leak into Sound effects failures, Open(), or Close().
+    fake.loaded = {"Bells\\N_A_ring"};
+    PortCeCatalogueSoundsOpen();
+    Check(!*PortCeCatalogueSoundProblem(), "reopening sounds clears any stale speech failure message");
+    PortCeCatalogueSelect(broken);
+    Check(!PortCeCataloguePlaySound(broken) && *PortCeCatalogueSoundProblem(), "failed speech sets problem again");
+    fake.refuse = true;
+    Check(!PortCeCatalogueSoundsPlay(0) && !*PortCeCatalogueSoundProblem(), "playing a sound effect clears stale speech problem even when backend refuses");
+    fake.refuse = false;
+    PortCeCatalogueSelect(broken);
+    Check(!PortCeCataloguePlaySound(broken) && *PortCeCatalogueSoundProblem(), "failed speech sets problem before close");
+    PortCeCatalogueSoundsClose();
+    Check(!*PortCeCatalogueSoundProblem(), "closing sounds clears stale speech problem");
+    fake.loaded.clear();
     PortCeCatalogueSelect(good);
     Check(PortCeCataloguePlaySound(good) && !*PortCeCatalogueSoundProblem(), "a good line still plays after a bad one");
     PortCeCatalogueBrowse(3);
@@ -702,6 +720,19 @@ static void TestList() {
     PortCeCatalogueBrowse(2);
     Check(Narrow(ListRow(page, 0).mLeft) == "A..." && Narrow(ListRow(page, 1).mLeft).find("end") != std::string::npos,
           "a short title matching a long neighbour's cut stays whole without underflow");
+    page->mClose();
+    PortCeCatalogueClose();
+    // Mixed ungrouped + grouped sounds label the ungrouped heading "General" instead of a blank heading row.
+    fake = Fake();
+    fake.loaded = {"pulse_01", "Bells\\N_A_ring"};
+    PortCeCatalogueOpen();
+    PortCeCatalogueBrowse(2);
+    PortCeCatalogueListTitle("Sound effects");
+    Check(page->mHeading(0) && Narrow(ListRow(page, 0).mLeft) == "General" &&
+          Narrow(ListRow(page, 1).mLeft) == "Pulse 01" &&
+          page->mHeading(2) && Narrow(ListRow(page, 2).mLeft) == "Bells",
+          "mixed ungrouped and grouped sounds label the ungrouped section General");
+    page->mClose();
     PortCeCatalogueClose();
 }
 }
@@ -741,20 +772,20 @@ static void TestAssetList() {
     // Matches sort by filename: 0=Alpha_Walker (row 8 under Models), 1=m_fa_heavy_bomber (row 3), 4=Zulu_Tank (row 1 under Units).
     Check(PortCeCatalogueListRowOf(0) == 8 && PortCeCatalogueListRowOf(1) == 3 && PortCeCatalogueListRowOf(4) == 1 && PortCeCatalogueListRowOf(-1) == 1,
           "PortCeCatalogueListRowOf maps unsorted match index to exact grouped row and skips headings");
-    Check(ListHint(page, zulu) == " | Item 1 of 5. Up and Down to look through them.",
+    Check(ListHint(page, zulu) == " | Item 1 of 5. Up and Down to browse.",
           "the foot carries the place and the keys; the name is in the pane's caption");
     Check(!ListRow(page, zulu).mRight[0] && page->mPane && page->mBoxRight == 372.f,
           "models have their pane beside a narrower list without gutter marks");
     fake_now = 20.f; model_loads = model_frees = model_draws = 0;
-    page->mPane(zulu, 372.f, 130.f, 556.f, 403.f);
+    page->mPane(zulu, 382.f, 130.f, 550.f, 403.f);
     Check(!model_loads, "a model is not read while the cursor has only just arrived");
     fake_now = 20.3f; pane_lines.clear();
-    page->mPane(zulu, 372.f, 130.f, 556.f, 403.f);
+    page->mPane(zulu, 382.f, 130.f, 550.f, 403.f);
     Check(model_loads == 1 && model_loaded == 14 && model_draws == 1 && pane_first == "ZT-9 Zulu Tank" && pane_second == "Units" &&
           PortCeCatalogueListRowOf(PortCeCatalogueSelectedIndex()) == zulu,
           "once the cursor has rested, the unit's model is read, drawn turning, selected and named under it");
     pane_lines.clear();
-    page->mPane(3, 372.f, 130.f, 556.f, 403.f);
+    page->mPane(3, 382.f, 130.f, 550.f, 403.f);
     Check(model_frees == 1 && model_loaded == -1 && std::count(pane_lines.begin(), pane_lines.end(), "This model is loaded with its level.") == 1 &&
           pane_first == "Heavy Bomber" && PortCeCatalogueListRowOf(PortCeCatalogueSelectedIndex()) == zulu,
           "moving briefly past another row frees the model without overwriting the settled selection");
@@ -774,6 +805,31 @@ static void TestAssetList() {
     const unsigned frees = model_frees;
     page->mClose();
     Check(model_frees == frees + 1 && model_loaded == -1, "leaving the page lets the loaded model go");
+    // Returning to the same row after ModelFree() must wait the full settle delay before loading.
+    const unsigned loads_before_reenter = model_loads;
+    page->mPane(zulu, 382.f, 130.f, 550.f, 403.f);
+    Check(model_loads == loads_before_reenter && model_loaded == -1, "ModelFree resets wait row so re-entering waits for settle");
+    fake_now += 0.3f;
+    page->mPane(zulu, 382.f, 130.f, 550.f, 403.f);
+    Check(model_loads == loads_before_reenter + 1 && model_loaded == 14, "model loads once settle elapses after re-entry");
+    // Pixel-measured small font cuts Models rows once at clean word boundaries inside 212px (never overflowing into a second cut).
+    page->mClose();
+    fake_small_advance = 9;
+    touch(base / "meshes/m_fg_ground_vehicle_transporter.msh.aya");
+    touch(base / "meshes/m_fa_air_vehicle_transporter.msh.aya");
+    PortCeCatalogueClose();
+    PortCeCatalogueOpen();
+    PortCeCatalogueBrowse(0);
+    PortCeCatalogueListTitle("Models");
+    for (int r = 0; r < page->mCount(); ++r) {
+        if (page->mHeading(r)) continue;
+        const std::string label = Narrow(ListRow(page, r).mLeft);
+        Check(PortCeCatalogueSmallWidth(label.c_str()) <= 212, "pixel-measured model row fits inside 212px without secondary truncation");
+        const size_t firstDots = label.find("...");
+        Check(firstDots == std::string::npos || label.find("...", firstDots + 3) == std::string::npos, "model row never carries double ellipses");
+    }
+    fake_small_advance = 0;
+    page->mClose();
     PortCeCatalogueListTitle("Models");
     PortCeCatalogueBrowse(1);
     PortCeCatalogueListTitle("Textures");
@@ -786,10 +842,10 @@ static void TestAssetList() {
           "textures are grouped with plural dedupe (Weather -> Cloud), designations, goodie titles, and Actions heading");
     const int panel = 7;
     preview_slot = -1; fake_now = 10.f; pane_lines.clear();
-    page->mPane(panel, 344.f, 130.f, 556.f, 403.f);
+    page->mPane(panel, 354.f, 130.f, 550.f, 403.f);
     Check(preview_slot == -1, "the picture is not read while the cursor has only just arrived");
     fake_now = 10.3f; preview_ok = true;
-    page->mPane(panel, 344.f, 130.f, 556.f, 403.f);
+    page->mPane(panel, 354.f, 130.f, 550.f, 403.f);
     Check(preview_slot >= 0 && pane_lines.size() == 2 && pane_lines[0] == "Panel 1" && pane_lines[1].rfind("Textures", 0) == 0,
           "once the cursor has rested, the picture is read: its name under it, then one line of its group and size");
     list_picture.clear(); list_details.clear(); preview_slot = -1;

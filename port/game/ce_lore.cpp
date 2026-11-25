@@ -7,6 +7,8 @@
 
 #include "common.h"
 #include "frontend.h"
+#include "FEMessBox.h"
+#include "ltshell.h"
 #include "mouse.h"
 #include "ce_extras.h"
 #include "ce_reading.h"
@@ -22,7 +24,7 @@ namespace
 // Text colours are authored for the font's doubling colour stage, so each is half of what the screen shows.
 const DWORD	kText = 0xffd0d0d0;			// a paragraph or a bullet: a little under the list rows' white, so that a page of it rests the eye
 const DWORD	kHead = 0xff7f6f5f;			// a heading: the colour of the original's own description text
-const DWORD	kQuote = 0xff6c6c6c;			// a quotation: lighter than the hint's grey, set in by a bullet's width
+const DWORD	kQuote = 0xff766c5c;			// a quotation: warm parchment tone set in with a vertical accent bar
 
 enum { kMaxLines = 900, kLineChars = 100, kBulletIndent = 14 };
 
@@ -41,6 +43,7 @@ int			sChosen = -1;
 SCeReading	sRead;
 int			sArticle;
 WCHAR		sTitle[64];
+bool		sDragging = false;
 
 void	Widen(WCHAR *out, int n, const char *in)
 {
@@ -99,6 +102,7 @@ void	Open()
 	sLineCount = 0;
 	sSectionCount = 0;
 	sChosen = -1;
+	sDragging = false;
 	if (sLines && (sArticle >= 0) && (sArticle < kCeLoreCount))
 	{
 		const SCeLoreArticle &article = kCeLore[sArticle];
@@ -129,6 +133,7 @@ void	Close()
 	sLineCount = 0;
 	sSectionCount = 0;
 	sChosen = -1;
+	sDragging = false;
 	CeReadOpen(&sRead, 0);
 }
 
@@ -171,15 +176,35 @@ void	Draw()
 	const DWORD box = 0x80ffffff;
 	FRONTEND.DrawPanel(kCeReadLeft - 12.f, kCeReadTop, kCeReadRight, bottom, 0.55f, 0xa0000000);
 	FRONTEND.DrawBox(kCeReadLeft - 12.f, kCeReadTop, kCeReadRight, bottom, box, 2.f, 0.5f);
-	// the wheel moves the view by three lines; the pointer held in the track moves it to where the bar would be
-	if (MOUSE_WHEEL)
+	// the wheel moves the view by three lines; a press in the track captures dragging until release
+	const bool wasDragging = sDragging;
+	if (!FEMESSBOX.IsInteractive())
 	{
-		const int notches = (MOUSE_WHEEL > 0) ? (MOUSE_WHEEL + 119) / 120 : -((-MOUSE_WHEEL + 119) / 120);
-		MOUSE_WHEEL = 0;
-		CeReadMove(&sRead, -notches * 3);
+		if (MOUSE_WHEEL)
+		{
+			const int notches = (MOUSE_WHEEL > 0) ? (MOUSE_WHEEL + 119) / 120 : -((-MOUSE_WHEEL + 119) / 120);
+			MOUSE_WHEEL = 0;
+			CeReadMove(&sRead, -notches * 3);
+		}
+		const bool trackPress = MOUSE_BUTTONS[0].mDown && !LT.GetKeytrap() &&
+				(float(MOUSE_X) >= kCeReadTrack) && (float(MOUSE_X) < kCeReadRight) &&
+				(float(MOUSE_Y) >= kCeReadTop) && (float(MOUSE_Y) < bottom);
+		if (trackPress)
+			sDragging = true;
+		else if (!MOUSE_HELD[0] || LT.GetKeytrap())
+			sDragging = false;
+		if (sDragging)
+		{
+			CeReadDrag(&sRead, pitch, float(MOUSE_Y));
+			if (!MOUSE_HELD[0])
+				sDragging = false;
+		}
 	}
-	if (FRONTEND.GetCursorStateInRect(kCeReadTrack, kCeReadTop, kCeReadRight, bottom) && MOUSE_HELD[0])
-		CeReadDrag(&sRead, pitch, float(MOUSE_Y));
+	else
+		sDragging = false;
+	if (wasDragging && !sDragging)
+		MOUSE_BUTTONS[0].mReleased = FALSE;
+	const bool dragBusy = sDragging || wasDragging;
 	for (int i = 0; i < kCeReadRows; i++)
 	{
 		const int index = sRead.mTop + i;
@@ -191,6 +216,15 @@ void	Draw()
 		const float y = kCeReadTop + 6.f + pitch * float(i);
 		const bool indented = (line->mKind == 'B') || (line->mKind == 'Q');
 		const DWORD colour = (line->mKind == 'H') ? kHead : (line->mKind == 'Q') ? kQuote : kText;
+		if (line->mKind == 'Q')
+		{
+			const bool prevQuote = (i > 0) && (sLines[index - 1].mKind == 'Q') && (sLines[index - 1].mText[0] != 0);
+			const bool nextQuote = (i + 1 < kCeReadRows) && (index + 1 < sLineCount) &&
+					(sLines[index + 1].mKind == 'Q') && (sLines[index + 1].mText[0] != 0);
+			FRONTEND.DrawPanel(kCeReadLeft + 3.f, y, kCeReadTrack - 6.f, y + pitch, 0.55f, 0x22c8a878);
+			FRONTEND.DrawPanel(kCeReadLeft + 3.f, prevQuote ? y : (y + 1.f), kCeReadLeft + 5.5f,
+					nextQuote ? (y + pitch) : (y + pitch - 1.f), 0.55f, 0xc8d8b480);
+		}
 		if (line->mMark)
 		{
 			static WCHAR dash[] = L"-";
@@ -198,10 +232,13 @@ void	Draw()
 		}
 		font->DrawTextWithShadow(kCeReadLeft + (indented ? float(kBulletIndent) : 0.f), y, colour, (WCHAR *)line->mText, 0, 0, 1.f, 1.f);
 	}
-	float top, foot;
-	CeReadBar(&sRead, pitch, &top, &foot);
 	FRONTEND.DrawBox(kCeReadTrack, kCeReadTop, kCeReadRight, bottom, box, 2.f, 0.5f);
-	FRONTEND.DrawBox(kCeReadTrack + 5.f, top, kCeReadRight - 5.f, foot, 0xffffffff, 5.f, 0.5f);
+	if (CeReadHasBar(&sRead))
+	{
+		float top, foot;
+		CeReadBar(&sRead, pitch, &top, &foot);
+		FRONTEND.DrawBox(kCeReadTrack + 5.f, top, kCeReadRight - 5.f, foot, 0xffffffff, 5.f, 0.5f);
+	}
 
 	static WCHAR help[120], extra[120];
 	char text[96];
@@ -219,9 +256,9 @@ void	Draw()
 	font->GetTextExtent(extra, &size);
 	const float left = 320.f - float(size.cx) / 2.f;
 	const float right = left + float(size.cx);
-	const bool over = sSectionCount && FRONTEND.MouseOverRect(left, next, right, next + pitch);
+	const bool over = !dragBusy && sSectionCount && FRONTEND.MouseOverRect(left, next, right, next + pitch);
 	PortCeExtrasHint(over ? extra : NULL, over ? NULL : extra, next);
-	if (sSectionCount && FRONTEND.MouseClickedInRect(left, next, right, next + pitch))
+	if (!dragBusy && sSectionCount && FRONTEND.MouseClickedInRect(left, next, right, next + pitch))
 		PortCeExtrasButton(BUTTON_PAUSE_MENU_SELECT, 1.f);
 }
 

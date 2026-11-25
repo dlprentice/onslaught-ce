@@ -255,6 +255,22 @@ class CareerPublishTests(unittest.TestCase):
         res = self.run_case(self.driver, base, "picker_lifecycle")
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
 
+    def test_absent_savegames_directories_and_deferred_creation(self):
+        base = self.make_profile("absent_dirs")
+        for sub in ("no_game_saves/user/savegames", "no_game_saves/game", "no_game_saves/package", "no_game_saves/backup",
+                    "no_user_saves/user", "no_user_saves/game/savegames", "no_user_saves/package", "no_user_saves/backup",
+                    "both_absent/user", "both_absent/game", "both_absent/package", "both_absent/backup",
+                    "file_at_saves/user", "file_at_saves/game", "file_at_saves/package", "file_at_saves/backup"):
+            (base / sub).mkdir(parents=True)
+        (base / "no_game_saves/user/savegames/Existing.bes").write_bytes(self.existing)
+        (base / "no_user_saves/game/savegames/GameSlot.bes").write_bytes(self.game_slot)
+        (base / "file_at_saves/user/savegames").write_bytes(b"not a directory")
+        res = self.run_case(self.driver, base, "absent_savegames_dirs")
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertFalse((base / "no_game_saves/game/savegames").exists())
+        self.assertFalse((base / "both_absent/user/savegames").exists())
+        self.assertEqual(sha((base / "no_user_saves/user/savegames/Hero.bes").read_bytes()), sha(self.hero))
+
     def test_uncertain_post_link_preserves_new_file_and_backup(self):
         for case in ("uncertain_after_link", "post_link_case_alias", "post_link_backup_swapped"):
             with self.subTest(case=case):
@@ -565,6 +581,19 @@ class WindowsCareerPublishTests(unittest.TestCase):
         pbase, pwin = self.make_profile("picker")
         res = self.run_win("pub32.exe", pwin, "picker_lifecycle")
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+
+        abase, awin = self.make_profile("absent_dirs")
+        for sub in ("no_game_saves/user/savegames", "no_game_saves/game", "no_game_saves/package", "no_game_saves/backup",
+                    "no_user_saves/user", "no_user_saves/game/savegames", "no_user_saves/package", "no_user_saves/backup",
+                    "file_at_saves/user", "file_at_saves/game", "file_at_saves/package", "file_at_saves/backup"):
+            (abase / sub).mkdir(parents=True)
+        (abase / "no_game_saves/user/savegames/Existing.bes").write_bytes(self.existing)
+        (abase / "no_user_saves/game/savegames/GameSlot.bes").write_bytes(self.game_slot)
+        (abase / "file_at_saves/user/savegames").write_bytes(b"not a directory")
+        res = self.run_win("pub32.exe", awin, "absent_savegames_dirs")
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertFalse((abase / "no_game_saves/game/savegames").exists())
+        self.assertEqual(sha((abase / "no_user_saves/user/savegames/Hero.bes").read_bytes()), sha(self.hero))
 
     def test_windows_rename_race_and_causal_mutants_under_wine(self):
         source = (PLATFORM / "windows/ce_career_publish.cpp").read_text()

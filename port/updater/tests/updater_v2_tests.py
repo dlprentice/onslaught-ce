@@ -116,6 +116,10 @@ def prepare(root: Path, platforms):
                 (bdir / "bea.c").write_text(GAME_C.replace("{version}", v))
                 subprocess.run([str(deps.DATA / "llvm-mingw/bin/i686-w64-mingw32-clang"), "-O1", str(bdir / "bea.c"),
                                 "-o", str(game)], check=True)
+                stdio_drv = root / "build/windows/launcher_stdio_driver.exe"
+                if not stdio_drv.exists():
+                    subprocess.run([str(deps.DATA / "llvm-mingw/bin/i686-w64-mingw32-clang"), "-O1",
+                                    str(HERE / "launcher_stdio_driver.c"), "-o", str(stdio_drv)], check=True)
                 files = {f"{top}/onslaught-ce.exe": (exe.read_bytes(), 0o755), f"{top}/bea.exe": (game.read_bytes(), 0o755),
                          f"{top}/SDL3.dll": ((deps.PREFIX_WIN / "bin/SDL3.dll").read_bytes(), 0o644),
                          f"{top}/libz.dll": ((deps.PREFIX_WIN / "bin/libz.dll").read_bytes(), 0o644),
@@ -727,6 +731,84 @@ class UpdaterV2(unittest.TestCase):
         self.assertEqual(r.returncode, EXIT["current"])
         # the next install's retention removes it once nothing runs from it
         self.assertTrue((self.install / "versions" / running).is_dir())
+
+    def test_versioned_launcher_self_update_releases_old_entry_lease(self):
+        if PLATFORM != "linux":
+            self.skipTest("Linux FD_CLOEXEC handoff test")
+        game = os.environ.get("UPDV2_GAME")
+        if not game:
+            self.skipTest("no game install to pass the launcher's game-data check")
+        self.update(VERSIONS[1])
+        first_entry = self.state()["active"]
+        mark = self.case / "updated-game-running"
+        proc = self.start_launcher(
+            BEA_GAME_DIR=game,
+            BEA_UPDATE_V2_FEED=self.publish(VERSIONS[2]),
+            BEA_UPDATE_ANSWER="update",
+            STANDIN_SLEEP=60,
+            STANDIN_MARK=mark,
+        )
+        try:
+            deadline = time.time() + 60
+            while not mark.exists() and time.time() < deadline:
+                time.sleep(0.2)
+            self.assertTrue(mark.exists(), "updated stand-in game did not start")
+            second_entry = self.state()["active"]
+            self.assertNotEqual(first_entry, second_entry)
+            # Updating to VERSIONS[3] while VERSIONS[2]'s game is running must remove retired VERSIONS[1]
+            # (old sUpdHold closed on execv into VERSIONS[2]) while keeping running VERSIONS[2].
+            r = self.update(VERSIONS[3])
+            self.assertFalse((self.install / "versions" / first_entry).exists(), r.log)
+            self.assertTrue((self.install / "versions" / second_entry).is_dir(), r.log)
+            self.assertIsNone(proc.poll(), "game ended prematurely")
+        finally:
+            proc.terminate()
+            proc.wait(timeout=30)
+
+    def test_windows_zip_inflate_drains_multi_chunk_output_on_exhausted_input(self):
+        if PLATFORM != "windows":
+            self.skipTest("Windows ZIP inflate test")
+        info = INFO["packages"][f"windows/{VERSIONS[1]}"]
+        top = info["top"]
+        buf = io.BytesIO()
+        large_readme = b"Onslaught CE boundary inflate test line\n" * 6000  # > 192 KiB uncompressed, < 1 KiB deflated
+        with zipfile.ZipFile(info["file"]) as src, zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            for n in src.namelist():
+                zi = zipfile.ZipInfo(n, (1980, 1, 1, 0, 0, 0))
+                zi.external_attr = src.getinfo(n).external_attr
+                zi.compress_type = zipfile.ZIP_DEFLATED
+                z.writestr(zi, large_readme if n == f"{top}/README.txt" else src.read(n))
+        pkg = Path(ROOT / "www/boundary-inflate.zip")
+        pkg.write_bytes(buf.getvalue())
+        saved = info["file"]
+        info["file"] = str(pkg)
+        try:
+            r = self.run_launcher("--update-only", feed=self.publish(VERSIONS[1]))
+        finally:
+            info["file"] = saved
+        self.assertEqual(r.returncode, EXIT["updated"], r.stderr + r.log)
+        active = self.state()["active"]
+        unpacked_readme = self.install / "versions" / active / top / "README.txt"
+        self.assertEqual(unpacked_readme.read_bytes(), large_readme)
+        self.assert_clean()
+
+    def test_windows_stderr_only_redirection_survives_handoff_to_active_launcher(self):
+        if PLATFORM != "windows":
+            self.skipTest("Windows stdio handoff test")
+        drv = ROOT / "build/windows/launcher_stdio_driver.exe"
+        self.assertTrue(drv.is_file(), "launcher_stdio_driver.exe missing")
+        # Direct launcher stdio checks (including invalid stdout + valid stderr pipe).
+        r0 = subprocess.run(["wine", str(drv), winpath(self.install / "onslaught-ce.exe")],
+                            env=self.wine_env(), capture_output=True, text=True, timeout=180)
+        self.assertEqual(r0.returncode, 0, r0.stdout + r0.stderr)
+        # Handoff from base 0.1.8 -> active 0.1.8.1 with invalid stdout and piped stderr.
+        self.update(VERSIONS[1])
+        bad_game = self.case / "missing-game"
+        bad_game.mkdir()
+        e = dict(self.wine_env(), BEA_USER_DIR=winpath(self.user), BEA_GAME_DIR=winpath(bad_game), BEA_NO_UPDATE_CHECK="1")
+        r1 = subprocess.run(["wine", str(drv), "--handoff-stderr-only", winpath(self.install / "onslaught-ce.exe"), "--no-update-check"],
+                            env=e, capture_output=True, text=True, timeout=180)
+        self.assertEqual(r1.returncode, 0, r1.stdout + r1.stderr)
 
     def test_copied_versions_folder_is_refused_with_recovery_advice(self):
         self.update(VERSIONS[1])

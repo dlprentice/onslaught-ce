@@ -1,0 +1,25 @@
+--- a/MCMech.cpp
++++ b/MCMech.cpp
+@@ -26,6 +26,9 @@
+ 
+ #include <string.h>
+ #include <stdlib.h>
++#ifdef CE_VERSION
++bool	PortCeLayer();		// Port (patch 0386): port/platform/common/ce.cpp
++#endif
+ 
+ // FUNCTION: 0x004982c0 init:ZERO_FVECTOR
+ // FUNCTION: 0x004982e0 init:ID_FMATRIX
+@@ -315,6 +318,12 @@
+ 	SINT	i, j;
+ 	for (i = 0; i < mNumLegs; i++)
+ 	{
++#ifdef CE_VERSION
++		// Retail leaves mLegA uninitialised (reading prior heap bytes in level 521); zero it in normal CE play
++		// so Windows and Linux behave identically, while keeping replays and recordings untouched.
++		if (PortCeLayer())
++			mLegA[i] = 0;
++#endif
+ 		mLegB[i] = 0;
+ 		mLegPos[i].Set(0, 0, 0);
+ 		mLegC[i] = 0;

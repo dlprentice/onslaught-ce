@@ -330,7 +330,7 @@ int main(int argc, char** argv) {
     for (const SCeSetting &setting : kSettings) if (std::strcmp(setting.mKey, "commander")) plainSettings[plainCount++] = setting;
     const Page pages[] = {
         {"hub", &all.rows[0].mHint, int(sizeof(SCeRow)), all.count, nullptr, kCeHubY, CCeBack::EXTRA_FOLLOW},
-        {"bonus levels", &kBonusRows[0].mHint, int(sizeof(SCeRow)), CE_NUM_BONUS, kBonusNote, kCeListY, CCeBack::EXTRA_FOLLOW},
+        {"bonus levels", &kBonusRows[0].mHint, int(sizeof(SCeRow)), CE_NUM_BONUS, kBonusNote, kCeBonusY, CCeBack::EXTRA_FOLLOW},
         {"settings", &kSettings[0].mHint, int(sizeof(SCeSetting)), CE_NUM_SETTINGS, nullptr, kCeSettingsY, CCeBack::EXTRA_FOOT},
         {"cheats", &kCheats[0].mHint, int(sizeof(SCeCheat)), CE_NUM_CHEATS, kCheatsNote, kCeListY, CCeBack::EXTRA_FIXED},
         {"help", &kHelpRows[0].mHint, int(sizeof(SCeRow)), int(sizeof(kHelpRows) / sizeof(kHelpRows[0])), nullptr, kCeListY, CCeBack::EXTRA_FOLLOW},
@@ -349,7 +349,7 @@ int main(int argc, char** argv) {
 #else
     const int expectedLabs = 10;
 #endif
-    check(pages[1].count == 9 && pages[2].count == 12 && pages[4].count == 5 &&
+    check(pages[1].count == 11 && pages[2].count == 12 && pages[4].count == 5 &&
           pages[5].count == 9 && pages[8].count == 12 && pages[7].count == 9 &&
           pages[6].count == 5 && pages[10].count == expectedLabs, "every page's rows");
     for (const Page &page : pages) {
@@ -372,7 +372,7 @@ int main(int argc, char** argv) {
                 back.Render(320.f, back_y, 0);
                 const SCeHint *hint = i < page.count ? (const SCeHint *)((const char *)page.hints + i * page.stride) : nullptr;
                 int help = hint ? lines(hint->mHelp) : 0, code = hint && hint->mExtra ? lines(hint->mExtra) : 0;
-                int bottom = page.note ? lines(page.note, 500.f) : 0;
+                int bottom = page.note ? lines(page.note, 420.f) : 0;
                 check(int(draws.size()) == help + code + bottom, "all help, code and note lines drawn, and none for Back");
                 if (hint) {
                     check(drawn(0, help) == compact(hint->mHelp), "help survives word wrapping");
@@ -395,7 +395,7 @@ int main(int argc, char** argv) {
                 }
                 if (page.note) check(drawn(help + code, bottom) == compact(page.note), "note survives word wrapping");
                 for (size_t idx = 0; idx < draws.size(); ++idx) {
-                    const int limit = int(idx) >= help + code ? 500 : 420;
+                    const int limit = 420;
                     check(draws[idx].width < limit, "line fits help or note width");
                 }
                 if (page.note == kLabsNote && width == 8) check(bottom == 1, "Labs restart caveat fits cleanly on one line");

@@ -419,13 +419,21 @@ bool BuildProceduralMixerMap(float sunX, float sunY, float sunZ) {
 					float ws = 0.0f, wr = 0.0f, wa = 0.0f;
 					computeWeights(wx, wy, ws, wr, wa);
 
+					// CHeightField::Unknown47eff0 adds pal[*tsrc] top byte [-32,+31] to aa and
+					// compares signed 32-bit d = c - *tp. Keep each layer's signed alpha in
+					// [-62,+62] and within 62 below any stronger earlier layer at this vertex so
+					// neither aa+pal nor c-*tp can wrap signed 32-bit across bilinear spans.
+					int maxPrev = 0;
 					for (int l = 0; l < count; ++l) {
 						const float w = (layers[l] == 2) ? ws
 						              : (layers[l] == 1) ? wr
 						                                 : wa;
-						int val = static_cast<int>(-120.0f + w * 236.0f);
-						if (val < -120) val = -120;
-						if (val > 116) val = 116;
+						int val = static_cast<int>(-62.0f + w * 124.0f);
+						const int floorVal = maxPrev - 62;
+						if (val < floorVal) val = floorVal;
+						if (val < -62) val = -62;
+						if (val > 62) val = 62;
+						if (val > maxPrev) maxPrev = val;
 						reinterpret_cast<signed char *>(slot.mData)[l * 81 + sy * 9 + sx] =
 							static_cast<signed char>(val);
 					}
@@ -566,17 +574,17 @@ extern "C" void PortCeLivingSandboxInstallArena(void) {
 	MAP.mHeightScale = CeSandboxWorld::kHeightScale;
 	MAP.mWaterLevel = CeSandboxWorld::kWaterLevel;
 
-	// Crisp coastal twilight-daylight atmosphere matching 700_res_PC.aya skybox
-	// with clear sightlines from the NW Sanctuary Citadel across the entire valley.
+	// Cool moonlit night atmosphere aligned with the starry 700_res_PC.aya skybox
+	// and Sanctuary Citadel's south-east moon key, keeping clear sightlines across the valley.
 	const UBYTE targetSkyCube = static_cast<UBYTE>(CeSandboxWorld::kSkyCubeIndex);
 	const UBYTE targetWaterSet = static_cast<UBYTE>(CeSandboxWorld::kWaterSetIndex);
 	std::memset(&MAP.mHFP, 0, sizeof(MAP.mHFP));
-	MAP.mHFP.Fog = 0xff6e84a2u;
-	MAP.mHFP.Sun = 0xfff0f2f8u;
-	MAP.mHFP.AntiSun = 0xff283850u;
-	const DWORD sunReflect = 0xffe8f2ffu;
+	MAP.mHFP.Fog = 0xff1a2436u;
+	MAP.mHFP.Sun = 0xff8fa6d0u;
+	MAP.mHFP.AntiSun = 0xff141c2eu;
+	const DWORD sunReflect = 0xff9cb4dcu;
 	std::memcpy(&MAP.mHFP.mUnknown0c[0], &sunReflect, sizeof(sunReflect));
-	MAP.mHFP.Ambient = 0xff3c4c64u;
+	MAP.mHFP.Ambient = 0xff1c2438u;
 	MAP.mHFP.mUnknown18[0] = targetSkyCube;
 	MAP.mHFP.mUnknown18[1] = 1;
 	MAP.mHFP.mUnknown18[2] = 129;
@@ -584,12 +592,12 @@ extern "C" void PortCeLivingSandboxInstallArena(void) {
 	MAP.mHFP.mUnknown18[4] = 0;
 	MAP.mHFP.mUnknown18[5] = targetWaterSet;
 	MAP.mHFP.FogDensity = 0.0014f;
-	const DWORD waterCol = 0xff163e60u;
+	const DWORD waterCol = 0xff0f243cu;
 	std::memcpy(&MAP.mHFP.mUnknown24[0], &waterCol, sizeof(waterCol));
 	MAP.mHFP.VisibleSun = true;
-	MAP.mHFP.SunPosX = 0.52f;
-	MAP.mHFP.SunPosY = 0.68f;
-	MAP.mHFP.SunPosZ = -0.51f;
+	MAP.mHFP.SunPosX = 0.620f;
+	MAP.mHFP.SunPosY = -0.500f;
+	MAP.mHFP.SunPosZ = -0.604f;
 
 	FinalizeHeightFieldLighting();
 	RefreshProceduralMapExtents();
@@ -694,6 +702,42 @@ extern "C" bool PortCeLivingSandboxPreloadMeshes(void) {
 	PortSessionLog(PORT_SESSION_GAME, false,
 	               "living sandbox escalation flagship: %s",
 	               allVenturerOk ? "F.S. Venturer preloaded" : "FSV Marshall fallback");
+
+	// Support meshes the level archive lacks (rockets, escape pods, wreckage): each
+	// one missing would be drawn as the engine's green "?" marker cube. Optional:
+	// whatever an install does not have is skipped, and the level still starts.
+	unsigned supportLoaded = 0u;
+	for (unsigned i = 0; i < CeSandboxWorld::kSupportMeshCount; ++i) {
+		const CeSandboxWorld::SupportMeshSpec &spec = CeSandboxWorld::SupportMesh(i);
+		if (CMesh::FindLoadedUnique(spec.mesh) != NULL) {
+			++supportLoaded;
+			continue;
+		}
+		bool ok = true;
+		if (spec.texture) {
+			char texPath[256] = {};
+			bool exists = false;
+			ok = BuildTextureDiskPath(spec.texture, texPath, sizeof(texPath)) &&
+			     VerifyPackedAyaFile(texPath, &exists) && exists &&
+			     PreloadRetailMeshTexture(spec.texture);
+		}
+		if (ok) {
+			char meshPath[128] = {};
+			bool exists = false;
+			std::snprintf(meshPath, sizeof(meshPath), "data\\resources\\meshes\\m_%s.aya", spec.mesh);
+			ok = VerifyPackedAyaFile(meshPath, &exists) && exists &&
+			     LoadRetailMeshFromStandaloneAya(spec.mesh, 924 + static_cast<int32_t>(i));
+		}
+		if (ok) {
+			++supportLoaded;
+		} else {
+			PortSessionLog(PORT_SESSION_GAME, false,
+			               "living sandbox support mesh unavailable (optional): %s", spec.mesh);
+		}
+	}
+	PortSessionLog(PORT_SESSION_GAME, false,
+	               "living sandbox support meshes: %u of %u loaded", supportLoaded,
+	               static_cast<unsigned>(CeSandboxWorld::kSupportMeshCount));
 	return true;
 }
 

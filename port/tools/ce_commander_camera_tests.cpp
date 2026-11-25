@@ -497,6 +497,9 @@ struct LivePointer { LivePointer() {} };
 int match_level_ends = 0;
 void CeCmdMatchLevelEnd() { ++match_level_ends; }
 struct Sink {} gSink;
+void RelinquishBuriedController(CCONTROLLER* controller, void* target) {
+    if (controller && controller->previous == target) controller->previous = NULL;
+}
 bool gOpen = false, gOpening = false, gShift = false, gLayoutLogged = false;
 bool gEscClosed = false, gDown[256] = {};
 int gArmed = 0, gSelected = 0, gHover=-1, gCount = 0, gKeptLevel = -1;

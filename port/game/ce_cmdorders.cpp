@@ -4,6 +4,9 @@
 #include "Guide.h"
 #include "ce_commander.h"
 #include "ce_cmdorders.h"
+#if !defined(CE_CMDUNIT_ORDERS_FIXTURE_H)
+#include "ce_entity_handles.h"
+#endif
 
 // The unit order adapter belongs to the CE layer (CE_VERSION), as the rest of the Commander does (ce_commander.h). Patch 0278 calls its two native
 // hooks from every build, so a build without the layer (the private, faithful one) gets them inert at the end of this file: nothing is tracked there,
@@ -17,7 +20,7 @@
 #endif
 
 namespace {
-constexpr unsigned kIdentities = 1024;
+constexpr unsigned kIdentities = 2048;
 constexpr unsigned kOrders = 64;
 CeCommandLifetimeTable<kIdentities> gIdentities;
 bool gWatching = false;
@@ -48,6 +51,23 @@ bool SameKey(const CeCommandLifetimeKey& a, const CeCommandLifetimeKey& b) {
 uint64_t ThingIdentityId(int number) {
     return static_cast<uint64_t>(static_cast<uint32_t>(number));
 }
+#if !defined(CE_CMDUNIT_ORDERS_FIXTURE_H)
+uint64_t UnitIdentityId(const CUnit* unit, int fallbackNumber) {
+    const CeEntityHandle h = CeEntityHandleFor(unit);
+    return h != kCeEntityHandleInvalid ? static_cast<uint64_t>(h) : ThingIdentityId(fallbackNumber);
+}
+uint64_t SquadIdentityId(const void* squad, int fallbackNumber) {
+    const CeEntityHandle h = CeEntityHandleFor(static_cast<const CSquad*>(squad));
+    return h != kCeEntityHandleInvalid ? static_cast<uint64_t>(h) : ThingIdentityId(fallbackNumber);
+}
+#else
+uint64_t UnitIdentityId(const CUnit*, int fallbackNumber) {
+    return ThingIdentityId(fallbackNumber);
+}
+uint64_t SquadIdentityId(const void*, int fallbackNumber) {
+    return ThingIdentityId(fallbackNumber);
+}
+#endif
 void Clear(UnitOrder& order) {
     if (!order.used) return;
     order.used = false;
@@ -67,7 +87,7 @@ CUnit* Resolve(const CeCommandLifetimeKey& key, CeCmdUnitAuthority* authority) {
     // This query finds the exact pointer in current native membership before
     // reading it. The destruction hook separately rejects reused lifetimes.
     if (!CeCmdUnitAuthorityNow(candidate, &current) || !current.found ||
-        ThingIdentityId(current.number) != key.id ||
+        UnitIdentityId(candidate, current.number) != key.id ||
         current.kind != ref.kind || candidate->IsDying() ||
         candidate->GetLife() <= 0) return NULL;
     if (authority) *authority = current;
@@ -80,7 +100,7 @@ bool Current(const UnitOrder& order, CUnit* unit) {
         unit == order.unit && !unit->IsShuttingDown() && unit->mGuide == order.guide &&
         order.guide && order.guide->GetUnit() == unit &&
         !unit->IsDying() && unit->GetLife() > 0 &&
-        ThingIdentityId(unit->GetThingNumber()) == order.key.id &&
+        UnitIdentityId(unit, unit->GetThingNumber()) == order.key.id &&
         static_cast<unsigned>(unit->GetThingType()) == order.kind &&
         unit->GetSquad() == order.squad && unit->GetSquad() &&
         !unit->GetSquad()->IsShuttingDown() &&
@@ -156,7 +176,7 @@ bool CeCmdUnitWatch(CUnit* unit, CeCommandLifetimeKey* key,
     if (!CeCmdUnitAuthorityNow(unit, &current) || !current.found) return false;
     CeCommandLifetimeKey candidate = {};
     if (!gIdentities.Observe(reinterpret_cast<uintptr_t>(unit),
-            ThingIdentityId(current.number), current.kind, &candidate))
+            UnitIdentityId(unit, current.number), current.kind, &candidate))
         return false;
     gWatching = true;
     *key = candidate;
@@ -170,7 +190,7 @@ bool CeCmdUnitVisibleKey(CUnit* unit, CeCommandLifetimeKey* key) {
     if (!unit || !key || !CeCmdUnitOrdersEligible() || unit->IsShuttingDown() || unit->IsDying() ||
         unit->GetLife() <= 0) return false;
     if (!gIdentities.Observe(reinterpret_cast<uintptr_t>(unit),
-            ThingIdentityId(unit->GetThingNumber()),
+            UnitIdentityId(unit, unit->GetThingNumber()),
             static_cast<unsigned>(unit->GetThingType()), key)) return false;
     gWatching = true;
     return true;
@@ -180,9 +200,9 @@ int CeCmdUnitCollect(CeCmdUnitSnapshot* out, int capacity, bool* complete) {
     if (complete) *complete = false;
     if (!out || capacity <= 0 || !complete || !CeCmdUnitOrdersEligible()) return 0;
     // One native walk produces all current facts; no UI pointer survives it.
-    static CeCmdUnitNativeRecord native[256];
+    static CeCmdUnitNativeRecord native[1024];
     bool all = false;
-    const int limit = capacity < 256 ? capacity : 256;
+    const int limit = capacity < 1024 ? capacity : 1024;
     const int count = CeCmdUnitCollectNative(native, limit, &all);
     if (count < 0 || count > limit) return 0;
     int accepted = 0;
@@ -192,12 +212,12 @@ int CeCmdUnitCollect(CeCmdUnitSnapshot* out, int capacity, bool* complete) {
         if (!item.unit || !authority.found || !authority.squad) { all = false; continue; }
         CeCmdUnitSnapshot result = {};
         if (!gIdentities.Observe(reinterpret_cast<uintptr_t>(item.unit),
-                ThingIdentityId(authority.number), authority.kind, &result.key)) {
+                UnitIdentityId(item.unit, authority.number), authority.kind, &result.key)) {
             all = false; continue;
         }
         gWatching = true;
         if (!gIdentities.Observe(reinterpret_cast<uintptr_t>(authority.squad),
-                ThingIdentityId(item.squadNumber), item.squadKind, &result.squadKey)) {
+                SquadIdentityId(authority.squad, item.squadNumber), item.squadKind, &result.squadKey)) {
             all = false; continue;
         }
         result.ordinal = authority.ordinal;
@@ -225,9 +245,9 @@ int CeCmdUnitCollect(CeCmdUnitSnapshot* out, int capacity, bool* complete) {
 
 bool CeCmdUnitInspect(const CeCommandLifetimeKey& key, CeCmdUnitSnapshot* out) {
     if (!out) return false;
-    static CeCmdUnitSnapshot current[256];
+    static CeCmdUnitSnapshot current[1024];
     bool complete = false;
-    const int count = CeCmdUnitCollect(current, 256, &complete);
+    const int count = CeCmdUnitCollect(current, 1024, &complete);
     if (!complete) return false;
     for (int i = 0; i < count; ++i)
         if (SameKey(current[i].key, key)) { *out = current[i]; return true; }

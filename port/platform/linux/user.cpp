@@ -138,24 +138,33 @@ struct Dib
 	void *bits;
 };
 const int kDibMagic = 0x44494221;
+const intptr_t kDcHandle = 0x4443;
+const intptr_t kMemDcHandle = 0x4444;
+const intptr_t kFontHandle = 0x464f;
 }
 
-extern "C" HDC WINAPI GetDC(HWND) { return (HDC)(intptr_t)0x4443; }
+extern "C" HDC WINAPI GetDC(HWND) { return (HDC)kDcHandle; }
 extern "C" int WINAPI ReleaseDC(HWND, HDC) { return 1; }
 extern "C" HDC WINAPI BeginPaint(HWND, LPPAINTSTRUCT ps) { memset(ps, 0, sizeof(*ps)); return GetDC(NULL); }
 extern "C" BOOL WINAPI EndPaint(HWND, const PAINTSTRUCT *) { return TRUE; }
-extern "C" HDC WINAPI CreateCompatibleDC(HDC) { return (HDC)(intptr_t)0x4444; }
+extern "C" HDC WINAPI CreateCompatibleDC(HDC) { return (HDC)kMemDcHandle; }
 extern "C" BOOL WINAPI DeleteDC(HDC) { return TRUE; }
 extern "C" HGDIOBJ WINAPI SelectObject(HDC, HGDIOBJ h) { return h; }
 extern "C" BOOL WINAPI DeleteObject(HGDIOBJ h)
 {
+	if (!h || h == (HGDIOBJ)(intptr_t)-1 || h == (HGDIOBJ)kDcHandle || h == (HGDIOBJ)kMemDcHandle)
+		return FALSE;
+	if (h == (HGDIOBJ)kFontHandle)
+		return TRUE;
 	Dib *d = (Dib *)h;
-	if (d && d->magic == kDibMagic)
+	if (d->magic == kDibMagic)
 	{
+		d->magic = 0;
 		free(d->bits);
 		free(d);
+		return TRUE;
 	}
-	return TRUE;
+	return FALSE;
 }
 extern "C" HGDIOBJ WINAPI GetStockObject(int) { return NULL; }
 extern "C" int WINAPI GetObjectA(HANDLE, int, LPVOID) { return 0; }
@@ -164,11 +173,30 @@ extern "C" int WINAPI GetDeviceCaps(HDC, int index) { return index == LOGPIXELSX
 extern "C" HBITMAP WINAPI CreateDIBSection(HDC, const BITMAPINFO *bmi, UINT, void **bits, HANDLE, DWORD)
 {
 	// Blank memory: text drawn through GDI stays blank until the port draws its own (port/PLAN.md, later).
-	int w = bmi->bmiHeader.biWidth, h = bmi->bmiHeader.biHeight < 0 ? -bmi->bmiHeader.biHeight : bmi->bmiHeader.biHeight;
+	if (bits)
+		*bits = NULL;
+	if (!bmi)
+		return NULL;
+	int64_t w = bmi->bmiHeader.biWidth;
+	int64_t rawH = bmi->bmiHeader.biHeight;
+	int64_t h = rawH < 0 ? -rawH : rawH;
 	int bpp = bmi->bmiHeader.biBitCount ? bmi->bmiHeader.biBitCount : 32;
+	if (w <= 0 || h <= 0 || w > 32768 || h > 32768 || !(bpp == 8 || bpp == 16 || bpp == 24 || bpp == 32))
+		return NULL;
+	uint64_t rowBytes = (((uint64_t)w * (unsigned)bpp / 8ull) + 3ull) & ~3ull;
+	uint64_t totalBytes = rowBytes * (uint64_t)h;
+	if (totalBytes == 0 || totalBytes > (uint64_t)(SIZE_MAX / 2))
+		return NULL;
 	Dib *d = (Dib *)calloc(1, sizeof(Dib));
+	if (!d)
+		return NULL;
+	d->bits = calloc((size_t)totalBytes, 1);
+	if (!d->bits)
+	{
+		free(d);
+		return NULL;
+	}
 	d->magic = kDibMagic;
-	d->bits = calloc((size_t)((w * bpp / 8 + 3) & ~3) * h, 1);
 	if (bits)
 		*bits = d->bits;
 	return (HBITMAP)d;
@@ -178,7 +206,7 @@ extern "C" int WINAPI GetDIBits(HDC, HBITMAP, UINT, UINT, LPVOID, LPBITMAPINFO, 
 extern "C" int WINAPI SetMapMode(HDC, int) { return MM_TEXT; }
 extern "C" HFONT WINAPI CreateFontA(int, int, int, int, int, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, LPCSTR)
 {
-	return (HFONT)(intptr_t)0x464f;
+	return (HFONT)kFontHandle;
 }
 extern "C" COLORREF WINAPI SetTextColor(HDC, COLORREF c) { return c; }
 extern "C" COLORREF WINAPI SetBkColor(HDC, COLORREF c) { return c; }

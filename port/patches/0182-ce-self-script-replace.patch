@@ -1,0 +1,144 @@
+--- a/MissionScript/IScript.cpp
++++ b/MissionScript/IScript.cpp
+@@ -203,6 +203,74 @@
+ 
+ static WCHAR	sSpeaker[256];			// 0089c328: AddMessage's speaker
+ 
++#ifdef CE_VERSION
++// An active script may replace itself only after OP_CALL has finished touching it. The game owns both
++// monitored objects; these readers cancel the request if either goes away before the instruction returns.
++struct CeSelfReplacement
++{
++    CActiveReader<IScript> script;
++    CActiveReader<CComplexThing> owner;
++    char name[256];
++    CVM *vm;
++    bool pending;
++    CeSelfReplacement() : vm(NULL), pending(false) { name[0] = '\0'; }
++};
++static CeSelfReplacement sCeSelfReplacement;
++
++static bool PortCeDeferSelfReplacement(IScript *script, const char *name)
++{
++    extern bool PortModLevelSupplied(int level);
++    if (!MISSION_SCRIPT_VM.mRunning || MISSION_SCRIPT_VM.mCode != script->mCode ||
++        !script->mDefaultThing || script->mThing != script->mDefaultThing ||
++        script->mDefaultThing->GetMissionScript() != script ||
++        !PortModLevelSupplied(GAME.GetCurrentLevel()))
++        return false;
++    if (sCeSelfReplacement.pending)
++    {
++        LOG.AddString("CE: a second self-replacement during one instruction was ignored.\n");
++        return true;
++    }
++    size_t i = 0;
++    if (name)
++    {
++        for (; i + 1 < sizeof(sCeSelfReplacement.name) && name[i]; ++i)
++            sCeSelfReplacement.name[i] = name[i];
++    }
++    sCeSelfReplacement.name[i] = '\0';
++    sCeSelfReplacement.script.SetReader(script);
++    sCeSelfReplacement.owner.SetReader(script->mDefaultThing);
++    sCeSelfReplacement.vm = &MISSION_SCRIPT_VM;
++    sCeSelfReplacement.pending = true;
++    return true;
++}
++
++// Called immediately after each instruction, before the VM reads its code again. This ends the old
++// execution, clears its stack and only then lets SetScript delete the old script and install its successor.
++bool PortCeCompleteSelfReplacement(CVM *vm)
++{
++    if (!sCeSelfReplacement.pending || sCeSelfReplacement.vm != vm)
++        return false;
++    IScript *old = sCeSelfReplacement.script.ToRead();
++    CComplexThing *owner = sCeSelfReplacement.owner.ToRead();
++    char name[sizeof(sCeSelfReplacement.name)];
++    size_t i = 0;
++    for (; i + 1 < sizeof(name) && sCeSelfReplacement.name[i]; ++i)
++        name[i] = sCeSelfReplacement.name[i];
++    name[i] = '\0';
++    sCeSelfReplacement.name[0] = '\0';
++    sCeSelfReplacement.script.SetReader(NULL);
++    sCeSelfReplacement.owner.SetReader(NULL);
++    sCeSelfReplacement.pending = false;
++    sCeSelfReplacement.vm = NULL;
++    vm->mStack.Clear();
++    vm->mRunning = FALSE;
++    vm->mCode = NULL;
++    if (owner && old && owner->GetMissionScript() == old)
++        owner->SetScript(name);
++    return true;
++}
++#endif
++
+ 
+ //******************************************************************************************
+ IScript::IScript(CComplexThing *thing, CMissionScriptObjectCode *code)	// FUNCTION: 0x005333b0
+@@ -230,10 +298,22 @@
+ //******************************************************************************************
+ void	IScript::Init()	// FUNCTION: 0x00533500
+ {
++#ifdef CE_VERSION
++    // Init has more work after the event; a self-replacement may destroy this script during the call.
++    extern bool PortModLevelSupplied(int level);
++    bool watchSelf = PortModLevelSupplied(GAME.GetCurrentLevel());
++    CActiveReader<IScript> self;
++    if (watchSelf)
++        self.SetReader(this);
++#endif
+ 	if (GAME.GetGameState() == GAME_STATE_LEVEL_LOST)
+ 		MISSION_SCRIPT_VM.Clean();
+ 	else
+ 		MISSION_SCRIPT_VM.CallEvent(mCode, SCRIPT_EVENT_INIT, NULL, 0);
++#ifdef CE_VERSION
++    if (watchSelf && !self.ToRead())
++        return;
++#endif
+ 
+ 	// the event functions listen for their named events
+ 	SPtrSet<CEventFunction>	*functions = &mCode->mEventFunctions;
+@@ -1135,6 +1215,10 @@
+ //******************************************************************************************
+ void	IScript::SetScript(CDataType **args, int num_args, CDataType **result)	// FUNCTION: 0x00535c50
+ {
++#ifdef CE_VERSION
++    if (PortCeDeferSelfReplacement(this, args[0]->GetString()))
++        return;
++#endif
+ 	((CComplexThing *)mThing)->SetScript(args[0]->GetString());
+ }
+ 
+--- a/MissionScript/vm.cpp
++++ b/MissionScript/vm.cpp
+@@ -48,6 +48,9 @@
+ 		mPC = 0;
+ 		mStackBase = mStack.Size();
+ 		Run();
++#ifdef CE_VERSION
++        if (!mCode) return; // the init instruction replaced and retired this script
++#endif
+ 		code->mInitRun = TRUE;
+ 	}
+ 
+@@ -75,6 +78,9 @@
+ 		mPC = 0;
+ 		mStackBase = mStack.Size();
+ 		Run();
++#ifdef CE_VERSION
++        if (!mCode) return; // the init instruction replaced and retired this script
++#endif
+ 		code->mInitRun = TRUE;
+ 	}
+ 
+@@ -115,6 +121,10 @@
+ 	{
+ 		int	pc = mPC++;
+ 		instruction->Execute(this, &mStack, symbols);
++#ifdef CE_VERSION
++        extern bool PortCeCompleteSelfReplacement(CVM *vm);
++        if (PortCeCompleteSelfReplacement(this)) return;
++#endif
+ 		if (mCode->mUnknown60 == 1)
+ 			LOG.AddMessage("-> %4d stack size = %d flags = %d", pc, mStack.mNumValues, mFlags);
+ 

@@ -85,6 +85,14 @@ extern "C" bool				PortCeLivingSandboxKey(unsigned char key, bool repeat) __attr
 extern "C" void				PortCeLivingSandboxUnitSpawn(CUnit *unit, CInitThing *init) __attribute__((weak));
 extern "C" void				PortCeLivingSandboxUnitDestroyed(CUnit *unit) __attribute__((weak));
 extern "C" void				PortCeLivingSandboxFilterSave(CCareer *career, void *dest) __attribute__((weak));
+extern "C" void				PortCeFlagshipDuelLevelBegin(int level) __attribute__((weak));
+extern "C" void				PortCeFlagshipDuelLevelEnd(int level, int quit) __attribute__((weak));
+extern "C" void				PortCeFlagshipDuelTickPre() __attribute__((weak));
+extern "C" void				PortCeFlagshipDuelDrawHud(CPlayer *player, int viewpoint) __attribute__((weak));
+extern "C" void				PortCeFlagshipDuelDrawOverlay(void) __attribute__((weak));
+extern "C" void				PortCeFlagshipDuelUnitSpawn(CUnit *unit, CInitThing *init) __attribute__((weak));
+extern "C" void				PortCeFlagshipDuelUnitDestroyed(CUnit *unit) __attribute__((weak));
+extern "C" void				PortCeFlagshipDuelFilterSave(CCareer *career, void *dest) __attribute__((weak));
 extern "C" void				PortCeMuspellCockpitLevelEnd(void) __attribute__((weak));
 
 static void CeHookGamepadBeginCycle() { PortCeGamepadBeginCycle(); }
@@ -287,6 +295,46 @@ static void CeHookLivingSandboxSave(CeHookSaveTarget target, CCareer *career, ch
 	if (PortCeLivingSandboxFilterSave && CeHookSaveCareerValid(target, career, dest, size))
 		PortCeLivingSandboxFilterSave(career, dest);
 }
+static void CeHookFlagshipDuelLevelBegin(int level)
+{
+	if (PortCeFlagshipDuelLevelBegin)
+		PortCeFlagshipDuelLevelBegin(level);
+}
+static void CeHookFlagshipDuelLevelEnd(int level, int quit)
+{
+	if (PortCeFlagshipDuelLevelEnd)
+		PortCeFlagshipDuelLevelEnd(level, quit);
+}
+static void CeHookFlagshipDuelTickPre()
+{
+	if (PortCeFlagshipDuelTickPre)
+		PortCeFlagshipDuelTickPre();
+}
+static void CeHookFlagshipDuelDrawHud(CPlayer *player, int viewpoint)
+{
+	if (PortCeFlagshipDuelDrawHud)
+		PortCeFlagshipDuelDrawHud(player, viewpoint);
+}
+static void CeHookFlagshipDuelDrawOverlay()
+{
+	if (PortCeFlagshipDuelDrawOverlay)
+		PortCeFlagshipDuelDrawOverlay();
+}
+static void CeHookFlagshipDuelUnitSpawn(CUnit *unit, CInitThing *init)
+{
+	if (PortCeFlagshipDuelUnitSpawn)
+		PortCeFlagshipDuelUnitSpawn(unit, init);
+}
+static void CeHookFlagshipDuelUnitDestroyed(CUnit *unit)
+{
+	if (PortCeFlagshipDuelUnitDestroyed)
+		PortCeFlagshipDuelUnitDestroyed(unit);
+}
+static void CeHookFlagshipDuelSave(CeHookSaveTarget target, CCareer *career, char *dest, int size)
+{
+	if (PortCeFlagshipDuelFilterSave && CeHookSaveCareerValid(target, career, dest, size))
+		PortCeFlagshipDuelFilterSave(career, dest);
+}
 static void CeHookMuspellCockpitLevelEnd(int, int)
 {
 	if (PortCeMuspellCockpitLevelEnd)
@@ -308,6 +356,7 @@ static constexpr CeHookRow<CeHookLevelBeginFn> kLevelBegin[] = {
 	{10, "multibe_level_begin", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookMultiBeLevelBegin},
 	{20, "carrier_clash_level_begin", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookCarrierClashLevelBegin},
 	{30, "living_sandbox_level_begin", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookLivingSandboxLevelBegin},
+	{40, "flagship_duel_level_begin", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookFlagshipDuelLevelBegin},
 	CE_HOOK_END
 };
 CE_HOOK_CHECK(kLevelBegin, CE_HOOK_SIM, CE_DISPATCH_ORDERED_BROADCAST, "level_begin");
@@ -320,6 +369,7 @@ static constexpr CeHookRow<CeHookLevelEndFn> kLevelEnd[] = {
 	{60, "entity_handles_level_end", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookEntityHandlesLevelEnd},
 	{70, "carrier_clash_level_end", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookCarrierClashLevelEnd},
 	{80, "living_sandbox_level_end", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookLivingSandboxLevelEnd},
+	{85, "flagship_duel_level_end", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookFlagshipDuelLevelEnd},
 	{90, "muspell_cockpit_level_end", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookMuspellCockpitLevelEnd},
 	CE_HOOK_END
 };
@@ -329,6 +379,7 @@ static constexpr CeHookRow<CeHookVoidFn> kTickPre[] = {
 	{20, "multibe_tick_pre", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookMultiBeTickPre},
 	{30, "carrier_clash_tick_pre", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookCarrierClashTickPre},
 	{40, "living_sandbox_tick_pre", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookLivingSandboxTickPre},
+	{50, "flagship_duel_tick_pre", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookFlagshipDuelTickPre},
 	CE_HOOK_END
 };
 CE_HOOK_CHECK(kTickPre, CE_HOOK_SIM, CE_DISPATCH_ORDERED_BROADCAST, "tick_pre");
@@ -361,12 +412,14 @@ static constexpr CeHookRow<CeHookViewFn> kDrawHud[] = {
 	{10, "multibe_draw_hud", CE_HOOK_RENDER, CE_GATE_LAYER, CE_MODE_NONE, CeHookMultiBeDrawHud},
 	{20, "carrier_clash_draw_hud", CE_HOOK_RENDER, CE_GATE_LAYER, CE_MODE_NONE, CeHookCarrierClashDrawHud},
 	{30, "living_sandbox_draw_hud", CE_HOOK_RENDER, CE_GATE_LAYER, CE_MODE_NONE, CeHookLivingSandboxDrawHud},
+	{40, "flagship_duel_draw_hud", CE_HOOK_RENDER, CE_GATE_LAYER, CE_MODE_NONE, CeHookFlagshipDuelDrawHud},
 	CE_HOOK_END
 };
 CE_HOOK_CHECK(kDrawHud, CE_HOOK_RENDER, CE_DISPATCH_ORDERED_BROADCAST, "draw_hud");
 static constexpr CeHookRow<CeHookVoidFn> kDrawOverlay[] = {
 	{10, "editor_overlay", CE_HOOK_RENDER, CE_GATE_VERSION, CE_MODE_NONE, CeHookEditorRender},
 	{20, "carrier_clash_draw_overlay", CE_HOOK_RENDER, CE_GATE_LAYER, CE_MODE_NONE, CeHookCarrierClashDrawOverlay},
+	{30, "flagship_duel_draw_overlay", CE_HOOK_RENDER, CE_GATE_LAYER, CE_MODE_NONE, CeHookFlagshipDuelDrawOverlay},
 	CE_HOOK_END
 };
 CE_HOOK_CHECK(kDrawOverlay, CE_HOOK_RENDER, CE_DISPATCH_ORDERED_BROADCAST, "draw_overlay");
@@ -384,6 +437,7 @@ static constexpr CeHookRow<CeHookSaveFn> kSaveGate[] = {
 	{30, "museum_visit_save", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookMuseumVisitSave},
 	{40, "carrier_clash_save", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookCarrierClashSave},
 	{50, "living_sandbox_save", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookLivingSandboxSave},
+	{60, "flagship_duel_save", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookFlagshipDuelSave},
 	CE_HOOK_END
 };
 CE_HOOK_CHECK(kSaveGate, CE_HOOK_SIM, CE_DISPATCH_FILTER, "save_gate");
@@ -413,14 +467,16 @@ static constexpr CeHookRow<CeHookUnitSpawnFn> kUnitSpawn[] = {
 	{20, "entity_handles_unit_spawn", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookEntityHandlesUnitSpawn},
 	{30, "carrier_clash_unit_spawn", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookCarrierClashUnitSpawn},
 	{40, "living_sandbox_unit_spawn", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookLivingSandboxUnitSpawn},
+	{50, "flagship_duel_unit_spawn", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookFlagshipDuelUnitSpawn},
 	CE_HOOK_END
 };
 CE_HOOK_CHECK(kUnitSpawn, CE_HOOK_SIM, CE_DISPATCH_ORDERED_BROADCAST, "unit_spawn");
 static constexpr CeHookRow<CeHookUnitDestroyedFn> kUnitDestroyed[] = {
 	{10, "multibe_unit_destroyed", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookMultiBeUnitDestroyed},
-	{20, "entity_handles_unit_destroyed", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookEntityHandlesUnitDestroyed},
 	{30, "carrier_clash_unit_destroyed", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookCarrierClashUnitDestroyed},
 	{40, "living_sandbox_unit_destroyed", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookLivingSandboxUnitDestroyed},
+	{50, "flagship_duel_unit_destroyed", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookFlagshipDuelUnitDestroyed},
+	{90, "entity_handles_unit_destroyed", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookEntityHandlesUnitDestroyed},
 	CE_HOOK_END
 };
 CE_HOOK_CHECK(kUnitDestroyed, CE_HOOK_SIM, CE_DISPATCH_ORDERED_BROADCAST, "unit_destroyed");

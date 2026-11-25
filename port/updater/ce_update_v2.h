@@ -1232,21 +1232,28 @@ static int upd_unpack(const char *pkg, UpdOut *o)
 			int r = Z_OK;
 			for (uint32_t left = csize; good && r != Z_STREAM_END;)
 			{
-				if (!z.avail_in)
+				if (!z.avail_in && left)
 				{
-					if (!left) { good = 0; break; }
 					size_t k = left < sizeof in ? left : sizeof in;
 					if (fread(in, 1, k, f) != k) { good = 0; break; }
 					z.next_in = in; z.avail_in = (uInt)k; left -= (uint32_t)k;
 				}
+				uInt before_in = z.avail_in;
 				z.next_out = out; z.avail_out = sizeof out;
 				r = inflate(&z, Z_NO_FLUSH);
-				if (r != Z_OK && r != Z_STREAM_END) { good = 0; break; }
 				size_t k = sizeof out - z.avail_out;
-				if (got + k > usize || !upd_file_write(&w, out, k)) { good = 0; break; }
-				sum = (uint32_t)crc32(sum, out, (uInt)k);
+				if (r == Z_BUF_ERROR)
+				{
+					if (!k && z.avail_in == before_in) { good = 0; break; }
+					r = Z_OK;
+				}
+				else if (r != Z_OK && r != Z_STREAM_END) { good = 0; break; }
+				if (!k && z.avail_in == before_in && r != Z_STREAM_END && !left) { good = 0; break; }
+				if (got + k > usize || (k && !upd_file_write(&w, out, k))) { good = 0; break; }
+				if (k) sum = (uint32_t)crc32(sum, out, (uInt)k);
 				got += (uint32_t)k;
 			}
+			if (r != Z_STREAM_END) good = 0;
 			inflateEnd(&z);
 		}
 		if (!upd_file_close(&w)) good = 0;
@@ -1482,8 +1489,9 @@ static int upd_active_program(char *exe, size_t n, char *version, size_t vn, int
 	if (!strcmp(st.active, "base")) return 0;
 	UpdEntry *e = upd_entry(&st, st.active);
 	if (!e || !e->ready || upd_version_cmp(e->version, CE_VERSION) <= 0) return 0;
-	snprintf(top, sizeof top, "onslaught-ce-%s-%s", e->version, PLATFORM);
-	if (!upd_join(entry, sizeof entry, vdir, e->name) || upd_kind(entry, &id) != UPD_DIR || !upd_same(&id, &e->id) ||
+	int tl = snprintf(top, sizeof top, "onslaught-ce-%s-%s", e->version, PLATFORM);
+	if (tl <= 0 || (size_t)tl >= sizeof top ||
+		!upd_join(entry, sizeof entry, vdir, e->name) || upd_kind(entry, &id) != UPD_DIR || !upd_same(&id, &e->id) ||
 		!upd_join(inner, sizeof inner, entry, top) || upd_kind(inner, NULL) != UPD_DIR ||
 		!upd_join(exe, n, inner, UPD_LAUNCHER) || upd_kind(exe, NULL) != UPD_FILE)
 	{
@@ -1491,9 +1499,27 @@ static int upd_active_program(char *exe, size_t n, char *version, size_t vn, int
 			e->version);
 		return 0;
 	}
-	snprintf(version, vn, "%s", e->version);
+	int vl = snprintf(version, vn, "%s", e->version);
+	if (vl <= 0 || (size_t)vl >= vn) return 0;
 	return 1;
 }
+
+#ifdef _WIN32
+static int upd_valid_std_handle(HANDLE h)
+{
+	return h && h != INVALID_HANDLE_VALUE && GetFileType(h) != FILE_TYPE_UNKNOWN;
+}
+
+static HANDLE upd_open_fallback_std(int is_input, SECURITY_ATTRIBUTES *sa)
+{
+	const char *dev = GetConsoleWindow() ? (is_input ? "CONIN$" : "CONOUT$") : "NUL";
+	DWORD access = is_input ? GENERIC_READ : GENERIC_WRITE;
+	HANDLE h = CreateFileA(dev, access, FILE_SHARE_READ | FILE_SHARE_WRITE, sa, OPEN_EXISTING, 0, NULL);
+	if (h == INVALID_HANDLE_VALUE && strcmp(dev, "NUL") != 0)
+		h = CreateFileA("NUL", access, FILE_SHARE_READ | FILE_SHARE_WRITE, sa, OPEN_EXISTING, 0, NULL);
+	return h;
+}
+#endif
 
 /* Starts exe with this launcher's arguments. Linux: exec (returns 0 only on failure). Windows: waits, puts the new
  * launcher's exit status in *rc and returns 1, or returns 0 when it could not be started. */
@@ -1502,19 +1528,92 @@ static int upd_run_program(const char *exe, int argc, char **argv, int *status)
 #ifdef _WIN32
 	char cmd[8192];
 	if (!ce_windows_command(cmd, sizeof cmd, exe, argv + 1, argc - 1, 0)) return 0;
-	STARTUPINFOA si = {sizeof si};
-	HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE), err = GetStdHandle(STD_ERROR_HANDLE), in = GetStdHandle(STD_INPUT_HANDLE);
-	int pass = out && out != INVALID_HANDLE_VALUE && GetFileType(out) != FILE_TYPE_UNKNOWN;
+	STARTUPINFOEXA si;
+	memset(&si, 0, sizeof si);
+	si.StartupInfo.cb = sizeof(STARTUPINFOA);
+	HANDLE in = GetStdHandle(STD_INPUT_HANDLE), out = GetStdHandle(STD_OUTPUT_HANDLE), err = GetStdHandle(STD_ERROR_HANDLE);
+	int valid_in = upd_valid_std_handle(in), valid_out = upd_valid_std_handle(out), valid_err = upd_valid_std_handle(err);
+	int pass = valid_in || valid_out || valid_err;
+	HANDLE own_in = INVALID_HANDLE_VALUE, own_out = INVALID_HANDLE_VALUE, own_err = INVALID_HANDLE_VALUE;
+	DWORD orig_in = 0, orig_out = 0, orig_err = 0;
+	int have_orig_in = 0, have_orig_out = 0, have_orig_err = 0;
+	LPPROC_THREAD_ATTRIBUTE_LIST attr_list = NULL;
+	HANDLE inherit_handles[3];
+	DWORD inherit_count = 0, create_flags = 0;
 	if (pass)
 	{
-		si.dwFlags = STARTF_USESTDHANDLES;
-		si.hStdInput = in; si.hStdOutput = out; si.hStdError = err;
-		SetHandleInformation(out, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
-		if (err && err != INVALID_HANDLE_VALUE) SetHandleInformation(err, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
-		if (in && in != INVALID_HANDLE_VALUE) SetHandleInformation(in, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+		SECURITY_ATTRIBUTES sa = {sizeof sa, NULL, TRUE};
+		if (valid_in)
+		{
+			have_orig_in = GetHandleInformation(in, &orig_in) != 0;
+			if (!SetHandleInformation(in, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)) pass = 0;
+		}
+		else if ((own_in = upd_open_fallback_std(1, &sa)) == INVALID_HANDLE_VALUE) pass = 0;
+		if (pass)
+		{
+			if (valid_out)
+			{
+				have_orig_out = GetHandleInformation(out, &orig_out) != 0;
+				if (!SetHandleInformation(out, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)) pass = 0;
+			}
+			else if ((own_out = upd_open_fallback_std(0, &sa)) == INVALID_HANDLE_VALUE) pass = 0;
+		}
+		if (pass)
+		{
+			if (valid_err)
+			{
+				have_orig_err = GetHandleInformation(err, &orig_err) != 0;
+				if (!SetHandleInformation(err, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)) pass = 0;
+			}
+			else if ((own_err = upd_open_fallback_std(0, &sa)) == INVALID_HANDLE_VALUE) pass = 0;
+		}
+		if (pass)
+		{
+			HANDLE h_in = valid_in ? in : own_in, h_out = valid_out ? out : own_out, h_err = valid_err ? err : own_err;
+			si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+			si.StartupInfo.hStdInput = h_in;
+			si.StartupInfo.hStdOutput = h_out;
+			si.StartupInfo.hStdError = h_err;
+			HANDLE candidates[3] = {h_in, h_out, h_err};
+			for (int i = 0; i < 3; ++i)
+			{
+				int dup = 0;
+				for (DWORD j = 0; j < inherit_count; ++j) if (inherit_handles[j] == candidates[i]) dup = 1;
+				if (!dup) inherit_handles[inherit_count++] = candidates[i];
+			}
+			SIZE_T attr_size = 0;
+			InitializeProcThreadAttributeList(NULL, 1, 0, &attr_size);
+			if (attr_size > 0) attr_list = (LPPROC_THREAD_ATTRIBUTE_LIST)malloc(attr_size);
+			if (attr_list && InitializeProcThreadAttributeList(attr_list, 1, 0, &attr_size) &&
+				UpdateProcThreadAttribute(attr_list, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+					inherit_handles, inherit_count * sizeof(HANDLE), NULL, NULL))
+			{
+				si.StartupInfo.cb = sizeof(STARTUPINFOEXA);
+				si.lpAttributeList = attr_list;
+				create_flags |= EXTENDED_STARTUPINFO_PRESENT;
+			}
+			else
+			{
+				if (attr_list) { free(attr_list); attr_list = NULL; }
+			}
+		}
 	}
 	PROCESS_INFORMATION pi;
-	if (!CreateProcessA(exe, cmd, NULL, NULL, pass, 0, NULL, NULL, &si, &pi)) return 0;
+	BOOL started = CreateProcessA(exe, cmd, NULL, NULL, pass, create_flags, NULL, NULL, &si.StartupInfo, &pi);
+	if (!started && (create_flags & EXTENDED_STARTUPINFO_PRESENT))
+	{
+		si.StartupInfo.cb = sizeof(STARTUPINFOA);
+		si.lpAttributeList = NULL;
+		started = CreateProcessA(exe, cmd, NULL, NULL, pass, 0, NULL, NULL, &si.StartupInfo, &pi);
+	}
+	if (attr_list) { DeleteProcThreadAttributeList(attr_list); free(attr_list); }
+	if (own_in != INVALID_HANDLE_VALUE) CloseHandle(own_in);
+	if (own_out != INVALID_HANDLE_VALUE) CloseHandle(own_out);
+	if (own_err != INVALID_HANDLE_VALUE) CloseHandle(own_err);
+	if (have_orig_in) SetHandleInformation(in, HANDLE_FLAG_INHERIT, orig_in & HANDLE_FLAG_INHERIT);
+	if (have_orig_out) SetHandleInformation(out, HANDLE_FLAG_INHERIT, orig_out & HANDLE_FLAG_INHERIT);
+	if (have_orig_err) SetHandleInformation(err, HANDLE_FLAG_INHERIT, orig_err & HANDLE_FLAG_INHERIT);
+	if (!started) return 0;
 	WaitForSingleObject(pi.hProcess, INFINITE);
 	DWORD rc = 1;
 	GetExitCodeProcess(pi.hProcess, &rc);
@@ -1524,10 +1623,17 @@ static int upd_run_program(const char *exe, int argc, char **argv, int *status)
 	return 1;
 #else
 	(void)argc; (void)status;
+	int hold_flags = -1;
+	if (sUpdHold >= 0)
+	{
+		hold_flags = fcntl(sUpdHold, F_GETFD);
+		if (hold_flags >= 0) fcntl(sUpdHold, F_SETFD, hold_flags | FD_CLOEXEC);
+	}
 	char *saved = argv[0];
 	argv[0] = (char *)exe;
 	execv(exe, argv);
 	argv[0] = saved;
+	if (sUpdHold >= 0 && hold_flags >= 0) fcntl(sUpdHold, F_SETFD, hold_flags);
 	return 0;
 #endif
 }
@@ -1682,21 +1788,61 @@ static int upd_install(const char *package, const UpdOffer *o, char *installed, 
 		int empty = 1;
 #ifdef _WIN32
 		WIN32_FIND_DATAA fd;
-		upd_join(pattern, sizeof pattern, vdir, "*");
+		if (!upd_join(pattern, sizeof pattern, vdir, "*")) goto out;
 		HANDLE h = FindFirstFileA(pattern, &fd);
-		if (h != INVALID_HANDLE_VALUE)
+		if (h == INVALID_HANDLE_VALUE)
 		{
-			do if (strcmp(fd.cFileName, ".") && strcmp(fd.cFileName, "..") && strcmp(fd.cFileName, "lock")) empty = 0;
-			while (FindNextFileA(h, &fd));
-			FindClose(h);
+			DWORD ferr = GetLastError();
+			if (ferr != ERROR_FILE_NOT_FOUND)
+			{
+				say("update: could not inspect the versions folder (error %lu); nothing changed", (unsigned long)ferr);
+				goto out;
+			}
+		}
+		else
+		{
+			for (;;)
+			{
+				if (strcmp(fd.cFileName, ".") && strcmp(fd.cFileName, "..") && strcmp(fd.cFileName, "lock")) empty = 0;
+				if (!FindNextFileA(h, &fd))
+				{
+					DWORD ferr = GetLastError();
+					if (ferr != ERROR_NO_MORE_FILES)
+					{
+						FindClose(h);
+						say("update: could not finish inspecting the versions folder (error %lu); nothing changed", (unsigned long)ferr);
+						goto out;
+					}
+					break;
+				}
+			}
+			if (!FindClose(h)) goto out;
 		}
 #else
 		(void)pattern;
 		DIR *d = opendir(vdir);
-		struct dirent *e;
-		while (d && (e = readdir(d)))
-			if (strcmp(e->d_name, ".") && strcmp(e->d_name, "..") && strcmp(e->d_name, "lock")) empty = 0;
-		if (d) closedir(d);
+		if (!d)
+		{
+			say("update: could not inspect the versions folder; nothing changed");
+			goto out;
+		}
+		for (;;)
+		{
+			errno = 0;
+			struct dirent *de = readdir(d);
+			if (!de)
+			{
+				if (errno != 0)
+				{
+					closedir(d);
+					say("update: could not finish inspecting the versions folder; nothing changed");
+					goto out;
+				}
+				break;
+			}
+			if (strcmp(de->d_name, ".") && strcmp(de->d_name, "..") && strcmp(de->d_name, "lock")) empty = 0;
+		}
+		if (closedir(d) != 0) goto out;
 #endif
 		if (!empty && !*jr.tmp && !*jr.dir) { say("update: the versions folder holds files this updater did not record; nothing changed"); goto out; }
 		st.dir = id;
@@ -1716,9 +1862,10 @@ static int upd_install(const char *package, const UpdOffer *o, char *installed, 
 	/* Room for the new entry: active and previous stay, everything else has been removed. */
 	if (st.n >= UPD_MAX_VERSIONS - 1) { say("update: too many recorded versions; nothing changed"); goto out; }
 	if (!upd_random_hex(hex)) goto out;
-	snprintf(name, sizeof name, "v%s-%s", o->version, hex);
-	snprintf(top, sizeof top, "onslaught-ce-%s-%s", o->version, PLATFORM);
-	if (!upd_join(entry, sizeof entry, vdir, name)) goto out;
+	int nl = snprintf(name, sizeof name, "v%s-%s", o->version, hex);
+	int tl = snprintf(top, sizeof top, "onslaught-ce-%s-%s", o->version, PLATFORM);
+	if (nl <= 0 || (size_t)nl >= sizeof name || tl <= 0 || (size_t)tl >= sizeof top ||
+		!upd_join(entry, sizeof entry, vdir, name)) goto out;
 	snprintf(jr.dir, sizeof jr.dir, "%s", name);
 	if (!upd_journal_write(&lk, &jr) || upd_mkdir(entry, 0) != 1 || upd_kind(entry, &id) != UPD_DIR)
 	{
@@ -1746,13 +1893,13 @@ static int upd_install(const char *package, const UpdOffer *o, char *installed, 
 	int unpacked = upd_unpack(package, &out);
 	if (unpacked)
 	{
-		snprintf(probe, sizeof probe, "%s" SEP "%s" SEP "%s", entry, top, UPD_LAUNCHER);
-		unpacked = upd_kind(probe, NULL) == UPD_FILE;
-		snprintf(probe, sizeof probe, "%s" SEP "%s" SEP "%s", entry, top, GAME_EXE);
-		unpacked = unpacked && upd_kind(probe, NULL) == UPD_FILE;
+		int p1 = snprintf(probe, sizeof probe, "%s" SEP "%s" SEP "%s", entry, top, UPD_LAUNCHER);
+		unpacked = p1 > 0 && (size_t)p1 < sizeof probe && upd_kind(probe, NULL) == UPD_FILE;
+		int p2 = snprintf(probe, sizeof probe, "%s" SEP "%s" SEP "%s", entry, top, GAME_EXE);
+		unpacked = unpacked && p2 > 0 && (size_t)p2 < sizeof probe && upd_kind(probe, NULL) == UPD_FILE;
 #ifndef _WIN32
-		snprintf(probe, sizeof probe, "%s" SEP "%s" SEP "onslaught-ce-launch", entry, top);
-		unpacked = unpacked && upd_kind(probe, NULL) == UPD_FILE;
+		int p3 = snprintf(probe, sizeof probe, "%s" SEP "%s" SEP "onslaught-ce-launch", entry, top);
+		unpacked = unpacked && p3 > 0 && (size_t)p3 < sizeof probe && upd_kind(probe, NULL) == UPD_FILE;
 #endif
 	}
 	if (!unpacked)
@@ -1781,7 +1928,11 @@ static int upd_install(const char *package, const UpdOffer *o, char *installed, 
 	}
 	upd_crash_point("switched");
 	say("update: v%s is now active (previous: %s)", o->version, previous);
-	snprintf(installed, in, "%s", name);
+	if (installed && in)
+	{
+		int il = snprintf(installed, in, "%s", name);
+		if (il < 0 || (size_t)il >= in) installed[0] = 0;
+	}
 	upd_install_recover(vdir, &lk, &jr, &st);	/* older entries beyond previous */
 	rc = UPD_UPDATED;
 out:
@@ -1853,10 +2004,15 @@ static int upd_check(int explicit_cmd)
 	jr.stage_has_id = 1;
 	if (!upd_journal_write(&lk, &jr)) goto recover;
 	upd_crash_point("stage-created");
-	upd_join(feed, sizeof feed, stage, UPD_STAGE_FILES[0]);
-	upd_join(sig, sizeof sig, stage, UPD_STAGE_FILES[1]);
-	upd_join(pkg, sizeof pkg, stage, UPD_STAGE_FILES[2]);
-	snprintf(sigurl, sizeof sigurl, "%s.sig", upd_feed_url());
+	int surl = snprintf(sigurl, sizeof sigurl, "%s.sig", upd_feed_url());
+	if (!upd_join(feed, sizeof feed, stage, UPD_STAGE_FILES[0]) ||
+		!upd_join(sig, sizeof sig, stage, UPD_STAGE_FILES[1]) ||
+		!upd_join(pkg, sizeof pkg, stage, UPD_STAGE_FILES[2]) ||
+		surl <= 0 || (size_t)surl >= sizeof sigurl)
+	{
+		say("update: stage path or feed signature URL is too long");
+		goto recover;
+	}
 	uint64_t fn = 0, sn = 0, pn = 0;
 	say("update: checking for a signed v2 feed");
 	if (!upd_fetch(upd_feed_url(), feed, UPD_FEED_MAX, 20, &fn) || !upd_fetch(sigurl, sig, 256, 20, &sn))

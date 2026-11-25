@@ -455,7 +455,147 @@ int main() {
         }
     }
 
-    std::printf("ce_sanctuary_citadel_tests: all geometry, shield, beam, ripple, cinema, pedestal, 360-deg dome seal & interior collision checks passed\n");
+    // 12. Cinema roof height rule (Z points DOWN; heights are above the terrace floor).
+    {
+        const float h = kBattleEngineCollisionHeight;
+        const float cofg = 1.9f;
+        auto worldZForFeet = [&](float feetH) { return kFloorZ - (feetH + cofg); };
+        auto feetOf = [&](float worldZ) { return (kFloorZ - worldZ) - cofg; };
+        Need(Near(kCinemaRoofMinX, 97.4f) && Near(kCinemaRoofMaxX, 126.6f) &&
+             Near(kCinemaRoofMinY, 409.4f) && Near(kCinemaRoofMaxY, 428.6f) &&
+             Near(kCinemaRoofBottomH, 9.0f) && Near(kCinemaRoofTopH, 10.65f),
+             "Cinema roof slab bounds match contract");
+
+        // A Jet descending onto the roof: feet inside the slab are stood on its top; falling speed is cancelled.
+        {
+            float z = worldZForFeet(9.8f), vz = 6.0f;
+            Need(ResolveCinemaRoofHeight(112.0f, 419.0f, &z, kFloorZ, h, cofg, &vz) == kRoofClampLanded,
+                 "feet inside the roof slab land on the roof");
+            Need(feetOf(z) >= kCinemaRoofTopH && feetOf(z) <= kCinemaRoofTopH + 0.05f && Near(vz, 0.0f),
+                 "landing rests just above the slab top with no falling speed");
+            // Resting there is stable: the next tick changes nothing, and gravity sinking it a little re-lands it.
+            float z2 = z, vz2 = 0.0f;
+            Need(ResolveCinemaRoofHeight(112.0f, 419.0f, &z2, kFloorZ, h, cofg, &vz2) == kRoofClampNone && Near(z2, z),
+                 "a body resting on the roof is left alone");
+            float z3 = z + 0.4f, vz3 = 2.0f;
+            Need(ResolveCinemaRoofHeight(112.0f, 419.0f, &z3, kFloorZ, h, cofg, &vz3) == kRoofClampLanded &&
+                 Near(z3, z) && Near(vz3, 0.0f), "gravity sag is put back on the slab top");
+            // Taking off again is never held down.
+            float z4 = z, vz4 = -8.0f;
+            Need(ResolveCinemaRoofHeight(112.0f, 419.0f, &z4, kFloorZ, h, cofg, &vz4) == kRoofClampNone && Near(vz4, -8.0f),
+                 "lifting off the roof keeps its climb speed");
+        }
+        // Every part of the slab holds, across the footprint and the slab's whole thickness.
+        for (float x = kCinemaRoofMinX + 0.1f; x < kCinemaRoofMaxX; x += 2.9f) {
+            for (float y = kCinemaRoofMinY + 0.1f; y < kCinemaRoofMaxY; y += 2.7f) {
+                for (float feet = kCinemaRoofBottomH; feet < kCinemaRoofTopH; feet += 0.33f) {
+                    float z = worldZForFeet(feet), vz = 4.0f;
+                    Need(ResolveCinemaRoofHeight(x, y, &z, kFloorZ, h, cofg, &vz) == kRoofClampLanded &&
+                         feetOf(z) >= kCinemaRoofTopH && vz == 0.0f, "roof holds everywhere on the slab");
+                }
+            }
+        }
+        // On the roof a body is clear of every wall box beneath it: no sideways shove.
+        {
+            const SolidLayout solids = MakeInteriorSolidLayout();
+            float z = worldZForFeet(10.2f);
+            Need(ResolveCinemaRoofHeight(99.0f, 419.0f, &z, kFloorZ, h, cofg) == kRoofClampLanded, "lands over the West wall");
+            Need(IsInteriorPointClear(solids, 99.0f, 419.0f, z, kFloorZ, kBattleEngineCollisionRadius, h, cofg),
+                 "a body standing on the roof is clear of the wall boxes below");
+            float x = 99.0f, y = 419.0f;
+            Need(!ResolveInteriorCollision(solids, &x, &y, z, kFloorZ, kBattleEngineCollisionRadius, h, cofg),
+                 "no horizontal push for a body standing on the roof");
+        }
+        // Inside the hall: a walker is untouched; a Jet rising into the soffit is held just under it.
+        {
+            float z = worldZForFeet(0.0f), vz = 0.0f;
+            Need(ResolveCinemaRoofHeight(112.0f, 419.0f, &z, kFloorZ, h, cofg, &vz) == kRoofClampNone &&
+                 Near(z, worldZForFeet(0.0f)), "a walker on the Cinema floor is untouched");
+            float zj = worldZForFeet(7.0f), vzj = -5.0f;
+            Need(ResolveCinemaRoofHeight(112.0f, 419.0f, &zj, kFloorZ, h, cofg, &vzj) == kRoofClampUnderSoffit,
+                 "a head inside the slab from below is caught by the soffit");
+            Need(feetOf(zj) + h <= kCinemaRoofBottomH && feetOf(zj) + h > kCinemaRoofBottomH - 0.05f && Near(vzj, 0.0f),
+                 "the body is held just under the ceiling with no climb speed");
+            Need(IsInsideCinema(112.0f, 419.0f, zj), "a body held under the soffit is still inside the Cinema");
+        }
+        // Outside the footprint, above the roof and bad input: nothing happens.
+        {
+            float z = worldZForFeet(9.8f);
+            Need(ResolveCinemaRoofHeight(96.9f, 419.0f, &z, kFloorZ, h, cofg) == kRoofClampNone, "West of the slab: no clamp");
+            Need(ResolveCinemaRoofHeight(112.0f, 408.9f, &z, kFloorZ, h, cofg) == kRoofClampNone, "South of the slab: no clamp");
+            Need(ResolveCinemaRoofHeight(112.0f, 429.1f, &z, kFloorZ, h, cofg) == kRoofClampNone, "North of the slab: no clamp");
+            Need(Near(z, worldZForFeet(9.8f)), "a miss leaves the height alone");
+            float zh = worldZForFeet(14.0f);
+            Need(ResolveCinemaRoofHeight(112.0f, 419.0f, &zh, kFloorZ, h, cofg) == kRoofClampNone, "flying over the roof: no clamp");
+            float zn = std::nanf("");
+            Need(ResolveCinemaRoofHeight(112.0f, 419.0f, &zn, kFloorZ, h, cofg) == kRoofClampNone, "NaN height refused");
+            Need(ResolveCinemaRoofHeight(112.0f, 419.0f, NULL, kFloorZ, h, cofg) == kRoofClampNone, "null height refused");
+            float zz = worldZForFeet(9.8f);
+            Need(ResolveCinemaRoofHeight(112.0f, 419.0f, &zz, kFloorZ, 0.0f, cofg) == kRoofClampNone, "zero body height refused");
+        }
+    }
+
+    // 13. Cinema weapon disarm: the machine OR the camera inside the hall is enough.
+    Need(!CinemaDisarmsWeapons(false, false), "armed outside the Cinema");
+    Need(CinemaDisarmsWeapons(true, false), "machine inside, camera still trailing outside: disarmed");
+    Need(CinemaDisarmsWeapons(false, true), "camera inside, machine at the door: disarmed");
+    Need(CinemaDisarmsWeapons(true, true), "both inside: disarmed");
+
+    // 14. Dome seen from inside: overhead glass nearly gone, ribs at 40%, horizon band at full strength.
+    {
+        Need(Near(DomeViewerInsideBlend(kCenterX, kCenterY, kFloorZ - 2.0f), 1.0f), "viewer at the rotunda is fully inside");
+        Need(Near(DomeViewerInsideBlend(kCenterX + 80.0f, kCenterY, kFloorZ - 2.0f), 0.0f), "viewer in the valley is outside");
+        Need(DomeViewerInsideBlend(std::nanf(""), kCenterY, kFloorZ) == 0.0f, "NaN eye counts as outside");
+        float last = 2.0f;
+        for (float d = kDomeRadius - 6.0f; d <= kDomeRadius + 6.0f; d += 0.25f) {
+            const float b = DomeViewerInsideBlend(kCenterX + d, kCenterY, kFloorZ - 2.0f);
+            Need(b >= 0.0f && b <= 1.0f && b <= last + 1e-6f, "inside blend falls smoothly across the shell");
+            last = b;
+        }
+        for (float e = 0.0f; e <= 1.0f; e += 0.05f) {
+            Need(Near(DomeShellGain(e, 0.0f), 1.0f) && Near(DomeRibGain(e, 0.0f), 1.0f),
+                 "from outside the dome is drawn at full strength");
+            Need(DomeShellGain(e, 1.0f) <= DomeRibGain(e, 1.0f) + 1e-6f, "glass fades at least as much as the ribs");
+            Need(DomeShellGain(e, 0.5f) <= 1.0f && DomeShellGain(e, 0.5f) >= DomeShellGain(e, 1.0f) - 1e-6f,
+                 "half-way through the shell sits between the two looks");
+        }
+        Need(DomeShellGain(1.0f, 1.0f) <= 0.06f && DomeShellGain(0.6f, 1.0f) <= 0.06f, "overhead glass is near zero from inside");
+        Need(Near(DomeRibGain(1.0f, 1.0f), 0.40f, 0.005f) && Near(DomeRibGain(0.6f, 1.0f), 0.40f, 0.005f),
+             "overhead ribs are toned to 40% from inside");
+        Need(Near(DomeShellGain(0.0f, 1.0f), 1.0f) && Near(DomeRibGain(0.0f, 1.0f), 1.0f) &&
+             DomeShellGain(0.15f, 1.0f) > 0.95f && DomeRibGain(0.15f, 1.0f) > 0.95f,
+             "the golden horizon band keeps its full strength from inside");
+    }
+
+    // 15. Forseti signal mast: one tall off-axis landmark, solid at its base, inside the dome, clear of the routes.
+    {
+        const SolidLayout solids = MakeInteriorSolidLayout();
+        const float walkZ = kFloorZ - 1.9f;
+        const float r = kBattleEngineCollisionRadius;
+        Need(kSignalMastHeight >= 22.0f, "the mast stands well above the 9-10 m colonnades");
+        Need(std::fabs(kSignalMastX - kCenterX) > 20.0f, "the mast is off the Citadel's axis");
+        Need(IsOnTerrace(kSignalMastX, kSignalMastY), "the mast stands on the terrace");
+        Need(IsInsideDome(kSignalMastX, kSignalMastY, kFloorZ - kSignalMastHeight - 1.0f),
+             "the mast tip is inside the shield dome");
+        Need(!IsInteriorPointClear(solids, kSignalMastX, kSignalMastY, walkZ, kFloorZ, r, kBattleEngineCollisionHeight, 1.9f),
+             "the mast base is solid");
+        Need(!IsInteriorPointClear(solids, kSignalMastX - (kSignalMastBaseHalf + r - 0.15f), kSignalMastY, walkZ, kFloorZ, r,
+                                   kBattleEngineCollisionHeight, 1.9f),
+             "the mast's wide plinth, not just its shaft, stops a walker");
+        float mx = kSignalMastX - 0.4f, my = kSignalMastY + 0.3f;
+        Need(ResolveInteriorCollision(solids, &mx, &my, walkZ, kFloorZ, r, kBattleEngineCollisionHeight, 1.9f) &&
+             IsInteriorPointClear(solids, mx, my, walkZ, kFloorZ, r, kBattleEngineCollisionHeight, 1.9f),
+             "walking into the mast pushes out cleanly");
+        Need(!IsInteriorPointClear(solids, kSignalMastX, kSignalMastY, kFloorZ - 1.9f - 14.0f, kFloorZ, r,
+                                   kBattleEngineCollisionHeight, 1.9f), "a Jet cannot fly through the mast shaft");
+        Need(IsInteriorPointClear(solids, 128.0f, 354.5f, walkZ, kFloorZ, r, kBattleEngineCollisionHeight, 1.9f) &&
+             IsInteriorPointClear(solids, 128.0f, 358.0f, walkZ, kFloorZ, r, kBattleEngineCollisionHeight, 1.9f) &&
+             IsInteriorPointClear(solids, kCenterX, 366.0f, walkZ, kFloorZ, r, kBattleEngineCollisionHeight, 1.9f),
+             "the mast leaves the ramp gateway and the launch pad clear");
+        Need(solids.count <= kMaxSolidBoxes - 8u, "solid layout keeps headroom");
+    }
+
+    std::printf("ce_sanctuary_citadel_tests: all geometry, shield, beam, ripple, cinema, pedestal, 360-deg dome seal, interior collision, roof height, dome interior & signal mast checks passed\n");
     return 0;
 }
 """
@@ -515,6 +655,39 @@ MUTANTS = [
     ("collision-no-push-out",
      "x += nx * (pen + kCollisionPushEps);",
      "(void)pen;"),
+    ("roof-falls-through",
+     "if (feetH >= kCinemaRoofBottomH && feetH < kCinemaRoofTopH) {",
+     "if (false && feetH >= kCinemaRoofBottomH && feetH < kCinemaRoofTopH) {"),
+    ("roof-lands-inside-slab",
+     "*ioWorldZ = floorZ - (kCinemaRoofTopH + kEps + cofg);",
+     "*ioWorldZ = floorZ - (kCinemaRoofBottomH + kEps + cofg);"),
+    ("roof-keeps-falling-speed",
+     "if (ioVz && *ioVz > 0.0f) *ioVz = 0.0f;   // Z points down: positive is falling",
+     "(void)ioVz;"),
+    ("roof-ignores-footprint",
+     "if (x < kCinemaRoofMinX || x > kCinemaRoofMaxX || y < kCinemaRoofMinY || y > kCinemaRoofMaxY)\n        return kRoofClampNone;",
+     "(void)x; (void)y;"),
+    ("roof-no-soffit",
+     "if (feetH < kCinemaRoofBottomH && headH > kCinemaRoofBottomH) {",
+     "if (false && feetH < kCinemaRoofBottomH && headH > kCinemaRoofBottomH) {"),
+    ("disarm-camera-only",
+     "return playerInside || cameraInside;",
+     "return cameraInside;"),
+    ("dome-ribs-full-inside",
+     "const float interior = 0.40f + 0.60f * DomeHorizonBand(elev01);",
+     "const float interior = 1.0f + 0.0f * DomeHorizonBand(elev01);"),
+    ("dome-glass-full-inside",
+     "const float interior = 0.05f + 0.95f * DomeHorizonBand(elev01);",
+     "const float interior = 1.0f + 0.0f * DomeHorizonBand(elev01);"),
+    ("dome-horizon-band-dimmed",
+     "return 1.0f - u * u * (3.0f - 2.0f * u);\n}\n\ninline float DomeShellGain(",
+     "return 0.0f * u;\n}\n\ninline float DomeShellGain("),
+    ("mast-not-solid",
+     "AddSolidBox(&out, kSignalMastX - kSignalMastBaseHalf, kSignalMastY - kSignalMastBaseHalf,",
+     "if (false) AddSolidBox(&out, kSignalMastX - kSignalMastBaseHalf, kSignalMastY - kSignalMastBaseHalf,"),
+    ("mast-too-short",
+     "constexpr float kSignalMastHeight = 25.9f;",
+     "constexpr float kSignalMastHeight = 9.0f;"),
 ]
 
 
@@ -536,7 +709,7 @@ def main():
         if not ok:
             failures.append(name)
 
-    # 1. Host ASan/UBSan test driver + 12 causal mutants (strictly under tempfile.gettempdir()).
+    # 1. Host ASan/UBSan test driver + causal mutants (strictly under tempfile.gettempdir()).
     with tempfile.TemporaryDirectory(prefix="ce-sanctuary-citadel-", dir=tempfile.gettempdir()) as tmp:
         d = Path(tmp)
         (d / "driver.cpp").write_text(DRIVER)
@@ -576,6 +749,7 @@ def main():
               "void RuntimeInit(",
               "void RuntimeShutdown()",
               "void RuntimeUpdate(",
+              "void RuntimeTickSim()",
               "void RuntimeDrawWorld()",
               "void RuntimeDrawDomeFx()",
               "bool RuntimeHandleKey(",
@@ -681,7 +855,64 @@ def main():
           and "gCitadel->solids = MakeInteriorSolidLayout();" in cit_cpp
           and "EnforceInteriorUnitCollisions();" in cit_cpp
           and "ResolveInteriorCollision(gCitadel->solids," in cit_cpp
-          and "if (gCitadel->insideCinema)\n        return true;" in cit_cpp)
+          and "if (CinemaDisarmsWeapons(gCitadel->playerInsideCinema, gCitadel->insideCinema))\n        return true;" in cit_cpp)
+
+    # 2b. Collision is simulation, occupancy is read fresh, the roof is a height rule, the terrace is lit for night.
+    def body(src, start, end):
+        a = src.index(start)
+        return src[a:src.index(end, a)]
+    update_fn = body(cit_cpp, "void RuntimeUpdate(float dtSeconds, bool paused,", "void RuntimeTickSim()")
+    tick_fn = body(cit_cpp, "void RuntimeTickSim() {", "bool RuntimeHandleKey(")
+    draw_fn = body(cit_cpp, "void RuntimeDrawWorld() {", "void RuntimeDrawDomeFx() {")
+    fire_fn = body(cit_cpp, "bool RuntimeHandleFire(bool release, float value) {", "bool RuntimeIsInsideDome(")
+    skip_fn = body(cit_cpp, 'extern "C" bool PortCeSanctuarySkipOutdoorWorld(void) {', 'extern "C" bool PortCeSanctuaryInterceptRound(')
+    enforce_fn = body(cit_cpp, "static void EnforceInteriorUnitCollisions() {", "static void RefreshCinemaOccupancy() {")
+    sandbox_cpp = (GAME / "ce_sandbox_director.cpp").read_text()
+    sb_tick = body(sandbox_cpp, 'extern "C" void PortCeLivingSandboxTickPre(void) {', 'extern "C" void PortCeLivingSandboxDrawWorld(')
+    sb_draw = body(sandbox_cpp, 'extern "C" void PortCeLivingSandboxDrawWorld(', 'extern "C" bool PortCeLivingSandboxKey(')
+    check("interior unit collision runs in the sim tick, never in a render pass",
+          "EnforceInteriorUnitCollisions();" in tick_fn
+          and "EnforceInteriorUnitCollisions" not in update_fn
+          and "EnforceInteriorUnitCollisions" not in draw_fn
+          and "CeSanctuaryCitadel::RuntimeTickSim();" in sb_tick
+          and "RuntimeTickSim" not in sb_draw
+          and sb_tick.index("GAME.IsPaused()") < sb_tick.index("CeSanctuaryCitadel::RuntimeTickSim();"))
+    check("Cinema occupancy is read fresh before the outdoor-draw skip and at the trigger",
+          "RefreshCinemaOccupancy();" in tick_fn
+          and skip_fn.index("RefreshCinemaOccupancy();") < skip_fn.index("gCitadel->insideCinema")
+          and fire_fn.index("RefreshCinemaOccupancy();") < fire_fn.index("CinemaDisarmsWeapons(")
+          and "ENGINE.GetCameraForViewpoint(0)" in cit_cpp
+          and "gCitadel->playerInsideCinema = playerInside;" in cit_cpp)
+    occupancy_fn = body(cit_cpp, "static void RefreshCinemaOccupancy() {", "} // namespace")
+    check("the player's machine for the Cinema disarm is the unit they pilot, else their Battle Engine",
+          "PortCePlayUnitIsDriven(u)" in occupancy_fn
+          and occupancy_fn.index("if (driven) {") < occupancy_fn.index("pl->GetBattleEngine()")
+          and "driven->GetPos()" in occupancy_fn)
+    check("Cinema roof is a height clamp applied before the horizontal push-out, with no ceiling SolidBox",
+          enforce_fn.index("ResolveCinemaRoofHeight(") < enforce_fn.index("ResolveInteriorCollision(")
+          and "t->MoveTo(FVector(x, y, z));" in enforce_fn
+          and re.search(r"AddSolidBox\(&out,[^;]*kCinemaRoof", cit_h) is None)
+    rig_fn = body(cit_cpp, "static void SetupCitadelLightRig(IDirect3DDevice9 *dev) {", "static void RestoreEngineRenderState(")
+    amb = re.search(r"D3DRS_AMBIENT, D3DCOLOR_XRGB\((\d+), (\d+), (\d+)\)", rig_fn)
+    key = re.search(r"setDirLight\(0,[^;]*?\n\s*([0-9.]+)f, ([0-9.]+)f, ([0-9.]+)f,", rig_fn)
+    check("citadel is lit for its starfield sky: low cool ambient, moon key bluer than it is red, baked lantern pools",
+          amb is not None and key is not None
+          and max(int(v) for v in amb.groups()) <= 40 and int(amb.group(3)) > int(amb.group(1))
+          and float(key.group(3)) > float(key.group(1)) + 0.2
+          and "kLightPools[]" in cit_cpp
+          and "AddLightPools(wx, wy, lz, isFloor, isVertical, &lightR, &lightG, &lightB);" in cit_cpp
+          and "{kSignalMastX, kSignalMastY," in cit_cpp)
+    dome_fn = body(cit_cpp, "void RuntimeDrawDomeFx() {", "} // namespace CeSanctuaryCitadel")
+    ripple_at = dome_fn.index("Pass 2B")
+    check("dome seen from inside: glass and ribs take the interior gains, impact ripples do not",
+          "DomeViewerInsideBlend(gCitadel->eyeX, gCitadel->eyeY, gCitadel->eyeZ, cz)" in dome_fn
+          and "DomeShellGain(elev, insideBlend)" in dome_fn[:ripple_at]
+          and "DomeRibGain(elev, insideBlend)" in dome_fn[:ripple_at]
+          and "insideBlend" not in dome_fn[ripple_at:])
+    check("signal mast is built with its own contact shadow, AO footprint and lantern",
+          "const float mx = kSignalMastX, my = kSignalMastY;" in cit_cpp
+          and "RegisterAoBox(kSignalMastX - 1.3f" in cit_cpp
+          and "kSignalMastHeight, kMatForsetiGlow" in cit_cpp)
 
     sys.path.insert(0, str(PORT))
     sys.path.insert(0, str(PORT / "tools"))

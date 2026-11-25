@@ -8,6 +8,7 @@
 #ifndef CE_ONLINE_UI_MODEL_H
 #define CE_ONLINE_UI_MODEL_H
 
+#include "ce_online_ui.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
@@ -51,23 +52,12 @@ static const float CE_ONLINE_SAFE_Y1 = 448.f;
 
 // Required privacy notice for Direct P2P vs Relay Only (TURN).
 static const char *const kCeOnlinePrivacyNotice =
-    "Direct P2P shares your IP with the host. Relay Only hides your IP via TURN.";
+    "Direct P2P shows your IP to players who join. Relay Only hides your IP via TURN.";
 
 // ---------------------------------------------------------------------------
 // BEA Bitmap Font Safety Whitelist
-// (src/Font.cpp: no _ ` ~ \ $ @ [ ] ^ { | } or control/non-ASCII chars)
+// CeOnlineFontCharSafe is shared with the game adapter in ce_online_ui.h.
 // ---------------------------------------------------------------------------
-inline bool CeOnlineFontCharSafe(unsigned char c) {
-    if (c < 0x20u || c >= 0x7Fu) return false;
-    switch (c) {
-    case '$': case '@': case '[': case '\\': case ']': case '^':
-    case '_': case '`': case '{': case '|': case '}': case '~':
-        return false;
-    default:
-        return true;
-    }
-}
-
 inline bool CeOnlineStringIsFontSafe(const std::string &s) {
     for (size_t i = 0; i < s.size(); ++i) {
         if (!CeOnlineFontCharSafe(static_cast<unsigned char>(s[i]))) return false;
@@ -238,7 +228,7 @@ inline bool CeOnlineValidateRoomName(const std::string &raw, std::string *outNor
     for (size_t i = 0; i < raw.size(); ++i) {
         unsigned char c = static_cast<unsigned char>(raw[i]);
         if (!CeOnlineFontCharSafe(c)) {
-            if (outError) *outError = "Room name contains an unsupported character.";
+            if (outError) *outError = "Lobby name contains an unsupported character.";
             return false;
         }
         if (c == ' ') {
@@ -255,11 +245,11 @@ inline bool CeOnlineValidateRoomName(const std::string &raw, std::string *outNor
         collapsed.erase(collapsed.size() - 1);
     }
     if (collapsed.size() < CE_ONLINE_UI_ROOM_NAME_MIN) {
-        if (outError) *outError = "Room name must be at least 3 characters.";
+        if (outError) *outError = "Lobby name must be at least 3 characters.";
         return false;
     }
     if (collapsed.size() > CE_ONLINE_UI_ROOM_NAME_MAX) {
-        if (outError) *outError = "Room name must be 28 characters or fewer.";
+        if (outError) *outError = "Lobby name must be 28 characters or fewer.";
         return false;
     }
     if (outNormalized) *outNormalized = collapsed;
@@ -275,13 +265,13 @@ inline bool CeOnlineValidateRoomCode(const std::string &raw, std::string *outCod
         if (c == ' ' || c == '-' || c == '\t' || c == '\r' || c == '\n') continue;
         if (c >= 'a' && c <= 'z') c = static_cast<unsigned char>(c - 'a' + 'A');
         if (!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))) {
-            if (outError) *outError = "Room codes use only letters and digits.";
+            if (outError) *outError = "Lobby codes use only letters and digits.";
             return false;
         }
         cleaned.push_back(static_cast<char>(c));
     }
     if (cleaned.size() != CE_ONLINE_UI_CODE_LEN) {
-        if (outError) *outError = "Enter a 6-character room code.";
+        if (outError) *outError = "Enter a 6-character lobby code.";
         return false;
     }
     if (outCode) *outCode = cleaned;
@@ -443,7 +433,7 @@ inline const char *CeOnlinePageTitle(CeOnlinePage page) {
     case CE_ONLINE_PAGE_BROWSER:    return "Online Lobbies";
     case CE_ONLINE_PAGE_CREATE:     return "Create Lobby";
     case CE_ONLINE_PAGE_JOIN_CODE:  return "Join by Code";
-    case CE_ONLINE_PAGE_ROOM:       return "Online Room";
+    case CE_ONLINE_PAGE_ROOM:       return "Online Lobby";
     case CE_ONLINE_PAGE_PROFILE:    return "Online Profile";
     case CE_ONLINE_PAGE_CONNECTING: return "Connecting";
     default:                        return "Play Online";
@@ -760,8 +750,8 @@ struct CeOnlineLayout {
     }
 
     // Browser page: toolbar (top) + room list panel (6 rows) + pager + bottom bar
-    static CeOnlineRect BrowserFilterBtn()   { return { 84.f,  132.f, 230.f, 152.f }; }
-    static CeOnlineRect BrowserRefreshBtn()  { return { 236.f, 132.f, 320.f, 152.f }; }
+    static CeOnlineRect BrowserFilterBtn()   { return { 84.f,  132.f, 236.f, 152.f }; }
+    static CeOnlineRect BrowserRefreshBtn()  { return { 242.f, 132.f, 320.f, 152.f }; }
     static CeOnlineRect BrowserCreateBtn()   { return { 326.f, 132.f, 438.f, 152.f }; }
     static CeOnlineRect BrowserJoinCodeBtn() { return { 444.f, 132.f, 556.f, 152.f }; }
     static CeOnlineRect BrowserTableHeader() { return { 84.f,  158.f, 556.f, 176.f }; }
@@ -772,10 +762,10 @@ struct CeOnlineLayout {
     static CeOnlineRect BrowserPrevBtn()     { return { 84.f,  352.f, 164.f, 372.f }; }
     static CeOnlineRect BrowserPageBadge()   { return { 170.f, 352.f, 286.f, 372.f }; }
     static CeOnlineRect BrowserNextBtn()     { return { 292.f, 352.f, 372.f, 372.f }; }
-    static CeOnlineRect BrowserJoinBtn()     { return { 380.f, 352.f, 556.f, 372.f }; }
-    static CeOnlineRect BrowserProfileBtn()  { return { 84.f,  380.f, 226.f, 402.f }; }
-    static CeOnlineRect BrowserLanBtn()      { return { 234.f, 380.f, 404.f, 402.f }; }
-    static CeOnlineRect BrowserBackBtn()     { return { 412.f, 380.f, 556.f, 402.f }; }
+    static CeOnlineRect BrowserJoinBtn()     { return { 378.f, 352.f, 556.f, 372.f }; }
+    static CeOnlineRect BrowserProfileBtn()  { return { 84.f,  378.f, 228.f, 398.f }; }
+    static CeOnlineRect BrowserLanBtn()      { return { 234.f, 378.f, 406.f, 398.f }; }
+    static CeOnlineRect BrowserBackBtn()     { return { 412.f, 378.f, 556.f, 398.f }; }
     static CeOnlineRect BrowserPwdModal()    { return { 130.f, 206.f, 510.f, 314.f }; }
     static CeOnlineRect BrowserPwdSubmit()   { return { 150.f, 282.f, 310.f, 304.f }; }
     static CeOnlineRect BrowserPwdCancel()   { return { 330.f, 282.f, 490.f, 304.f }; }
@@ -784,9 +774,9 @@ struct CeOnlineLayout {
     static const int kCreateFieldCount = 8;
     static CeOnlineRect CreateFieldRow(int idx) {
         const float y0 = 132.f + float(idx) * 26.f;
-        return { 88.f, y0, 552.f, y0 + 22.f };
+        return { 84.f, y0, 556.f, y0 + 22.f };
     }
-    static CeOnlineRect CreatePrivacyBox()   { return { 88.f, 344.f, 552.f, 380.f }; }
+    static CeOnlineRect CreatePrivacyBox()   { return { 84.f, 344.f, 556.f, 380.f }; }
     static CeOnlineRect CreateSubmitBtn()    { return { 120.f, 388.f, 312.f, 414.f }; }
     static CeOnlineRect CreateBackBtn()      { return { 328.f, 388.f, 520.f, 414.f }; }
 
@@ -801,9 +791,10 @@ struct CeOnlineLayout {
     static CeOnlineRect RoomInfoBar()        { return { 84.f,  128.f, 464.f, 146.f }; }
     static CeOnlineRect RoomCopyCodeBtn()    { return { 468.f, 128.f, 556.f, 146.f }; }
     static CeOnlineRect RoomMapBar()         { return { 84.f,  148.f, 556.f, 166.f }; }
-    static CeOnlineRect RoomRosterHeader()   { return { 84.f,  168.f, 508.f, 184.f }; }
-    static CeOnlineRect RoomPagePrevBtn()    { return { 512.f, 168.f, 532.f, 184.f }; }
-    static CeOnlineRect RoomPageNextBtn()    { return { 536.f, 168.f, 556.f, 184.f }; }
+    static CeOnlineRect RoomRosterHeader()   { return { 84.f,  168.f, 556.f, 184.f }; }
+    static CeOnlineRect RoomFooterBar()      { return { 84.f,  424.f, 508.f, 446.f }; }
+    static CeOnlineRect RoomPagePrevBtn()    { return { 512.f, 424.f, 532.f, 446.f }; }
+    static CeOnlineRect RoomPageNextBtn()    { return { 536.f, 424.f, 556.f, 446.f }; }
     static CeOnlineRect RoomSeatRow(int visIdx) {
         const float y0 = 186.f + float(visIdx) * 19.f;
         return { 84.f, y0, 556.f, y0 + 18.f };
@@ -815,11 +806,11 @@ struct CeOnlineLayout {
     static CeOnlineRect RoomMuteBtn()        { return { 396.f, 264.f, 474.f, 284.f }; }
     static CeOnlineRect RoomLeaveBtn()       { return { 478.f, 264.f, 556.f, 284.f }; }
     // Host action row (y = 288..308)
-    static CeOnlineRect RoomMapBtn()         { return { 84.f,  288.f, 174.f, 308.f }; }
-    static CeOnlineRect RoomModeBtn()        { return { 178.f, 288.f, 282.f, 308.f }; }
-    static CeOnlineRect RoomSlotBtn()        { return { 286.f, 288.f, 374.f, 308.f }; }
-    static CeOnlineRect RoomKickBtn()        { return { 378.f, 288.f, 438.f, 308.f }; }
-    static CeOnlineRect RoomStartBtn()       { return { 442.f, 288.f, 556.f, 308.f }; }
+    static CeOnlineRect RoomMapBtn()         { return { 84.f,  288.f, 172.f, 308.f }; }
+    static CeOnlineRect RoomModeBtn()        { return { 176.f, 288.f, 274.f, 308.f }; }
+    static CeOnlineRect RoomSlotBtn()        { return { 278.f, 288.f, 392.f, 308.f }; }
+    static CeOnlineRect RoomKickBtn()        { return { 396.f, 288.f, 450.f, 308.f }; }
+    static CeOnlineRect RoomStartBtn()       { return { 454.f, 288.f, 556.f, 308.f }; }
     // Chat box & compose bar (y = 312..420)
     static CeOnlineRect RoomChatLog()        { return { 84.f,  312.f, 556.f, 398.f }; }
     static CeOnlineRect RoomChatCompose()    { return { 84.f,  400.f, 486.f, 420.f }; }
@@ -837,7 +828,7 @@ struct CeOnlineLayout {
     static CeOnlineRect ConnectingCancelBtn(){ return { 220.f, 332.f, 420.f, 360.f }; }
 
     // Multiplayer entry bar (drawn on FEP_MULTIPLAYER, clear of grid y=240..400 and help y=455)
-    static CeOnlineRect MultiplayerEntryBar(){ return { 115.f, 412.f, 525.f, 442.f }; }
+    static CeOnlineRect MultiplayerEntryBar(){ return { 125.f, 412.f, 515.f, 442.f }; }
 };
 
 // ---------------------------------------------------------------------------
@@ -1023,8 +1014,10 @@ public:
         mRequestedDirectLan = false;
         mStatusNotice.clear();
         mStatusIsError = false;
+        mBrowserFetchError.clear();
         mPasswordPromptOpen = false;
         mChatComposing = false;
+        mChatDraft.clear();
         mJoinPendingResolve = false;
         mPendingStartMatch = false;
         mHomeFocus = 0;
@@ -1049,6 +1042,7 @@ public:
         mActive = false;
         mPasswordPromptOpen = false;
         mChatComposing = false;
+        mChatDraft.clear();
         mJoinPendingResolve = false;
         mPendingStartMatch = false;
         mLastRoomMap = -1;
@@ -1072,8 +1066,13 @@ public:
     CeOnlinePage Page() const { return mPage; }
     const CeOnlineProfileView &Profile() const { return mProfile; }
     const CeOnlineRoomView &Room() const { return mRoom; }
-    const std::string &StatusNotice() const { return mStatusNotice; }
-    bool StatusIsError() const { return mStatusIsError; }
+    const std::string &StatusNotice() const {
+        return mPage == CE_ONLINE_PAGE_BROWSER && mStatusNotice.empty()
+            ? mBrowserFetchError : mStatusNotice;
+    }
+    bool StatusIsError() const {
+        return mStatusNotice.empty() ? !StatusNotice().empty() : mStatusIsError;
+    }
     void SetStatusNotice(const std::string &msg, bool isError = false) {
         mStatusNotice = CeOnlineSanitizeForFont(msg);
         mStatusIsError = isError;
@@ -1105,20 +1104,7 @@ public:
         }
 
         if (mPage == CE_ONLINE_PAGE_BROWSER) {
-            std::string err;
-            std::vector<CeOnlineUiRoomSummary> latest;
-            bool loading = false;
-            if (mBackend->GetLobbies(&latest, &loading, &err)) {
-                mRooms.swap(latest);
-                ClampBrowserSelection();
-            }
-            mBrowserLoading = loading;
-            if (!err.empty()) {
-                SetStatusNotice(err, true);
-            } else if (mStatusIsError && !loading && opErr.empty()) {
-                mStatusNotice.clear();
-                mStatusIsError = false;
-            }
+            UpdateBrowserResults();
         }
 
         if (mJoinPendingResolve) {
@@ -1135,10 +1121,10 @@ public:
                 } else {
                     std::string err;
                     if (mBackend->RequestJoinRoom(res.roomId, mJoinPassword, "", &err)) {
-                        BeginConnecting("Joining Lobby", "Connecting to room...", true);
+                        BeginConnecting("Joining Lobby", "Connecting to lobby...", true);
                     } else {
                         mPage = CE_ONLINE_PAGE_JOIN_CODE;
-                        SetStatusNotice(err.empty() ? "Could not join room." : err, true);
+                        SetStatusNotice(err.empty() ? "Could not join lobby." : err, true);
                     }
                 }
             }
@@ -1152,11 +1138,12 @@ public:
                 if (closed) {
                     mRoom = CeOnlineRoomView();
                     mChatComposing = false;
+                    mChatDraft.clear();
                     mLastRoomMap = -1;
                     ClearOptimisticRoomState();
                     mLastTicketMatchId.clear();
                     EnterBrowser(CE_ONLINE_PAGE_HOME);
-                    SetStatusNotice("The lobby room was closed.", false);
+                    SetStatusNotice("The lobby was closed.", false);
                     return;
                 }
                 if (latestRoom.chat.size() > CE_ONLINE_UI_CHAT_RING) {
@@ -1212,11 +1199,12 @@ public:
             } else if (mPage == CE_ONLINE_PAGE_ROOM) {
                 mRoom = CeOnlineRoomView();
                 mChatComposing = false;
+                mChatDraft.clear();
                 mPendingStartMatch = false;
                 mLastRoomMap = -1;
                 ClearOptimisticRoomState();
                 EnterBrowser(CE_ONLINE_PAGE_HOME);
-                SetStatusNotice(opErr.empty() ? "Disconnected from lobby room." : opErr, true);
+                SetStatusNotice(opErr.empty() ? "Disconnected from lobby." : opErr, true);
             } else if (mPage == CE_ONLINE_PAGE_CONNECTING && !mConnectingCancellable &&
                        mLastTicketMatchId.empty()) {
                 mRoom = CeOnlineRoomView();
@@ -1255,11 +1243,11 @@ public:
 
     static const char *HomeRowHint(int idx) {
         switch (idx) {
-        case HOME_BROWSE:     return "View public 2 to 4 player rooms and join a match.";
+        case HOME_BROWSE:     return "Browse public 2-4 player lobbies and join.";
         case HOME_CREATE:     return "Host a new public or unlisted online lobby.";
-        case HOME_JOIN_CODE:  return "Enter a 6-character code to join a friend's room.";
-        case HOME_PROFILE:    return "Edit your callsign and check lobby server status.";
-        case HOME_DIRECT_LAN: return "Host or join directly on LAN or IP address.";
+        case HOME_JOIN_CODE:  return "Enter a 6-character code to join a lobby.";
+        case HOME_PROFILE:    return "Edit your callsign and check server status.";
+        case HOME_DIRECT_LAN: return "Host or join directly by LAN or IP.";
         case HOME_BACK:       return "Return to the previous menu.";
         default:              return "";
         }
@@ -1301,20 +1289,7 @@ public:
         mBrowserLoading = true;
         if (mBackend) {
             mBackend->RequestRefreshLobbies(!mCompatibleOnly);
-            std::string err;
-            bool loading = false;
-            std::vector<CeOnlineUiRoomSummary> latest;
-            if (mBackend->GetLobbies(&latest, &loading, &err)) {
-                mRooms.swap(latest);
-                ClampBrowserSelection();
-            }
-            mBrowserLoading = loading;
-            if (!err.empty()) {
-                SetStatusNotice(err, true);
-            } else if (mStatusIsError && !loading) {
-                mStatusNotice.clear();
-                mStatusIsError = false;
-            }
+            UpdateBrowserResults();
         }
     }
 
@@ -1327,6 +1302,7 @@ public:
         mBrowserPageOffset = 0;
         BrowserRefresh();
         ClampBrowserSelection();
+        NormalizeBrowserPagerFocus();
     }
 
     std::vector<CeOnlineUiRoomSummary> FilteredRooms() const {
@@ -1378,6 +1354,7 @@ public:
         if (mBrowserPageOffset + CE_ONLINE_UI_BROWSER_PAGE_SIZE < n) {
             mBrowserPageOffset += CE_ONLINE_UI_BROWSER_PAGE_SIZE;
             mBrowserSelected = mBrowserPageOffset;
+            NormalizeBrowserPagerFocus();
         }
     }
 
@@ -1385,6 +1362,7 @@ public:
         if (mBrowserPageOffset >= CE_ONLINE_UI_BROWSER_PAGE_SIZE) {
             mBrowserPageOffset -= CE_ONLINE_UI_BROWSER_PAGE_SIZE;
             mBrowserSelected = mBrowserPageOffset;
+            NormalizeBrowserPagerFocus();
         }
     }
 
@@ -1441,6 +1419,9 @@ public:
                 mBrowserPagerFocus = i;
                 return;
             }
+        }
+        if (mBrowserZone == BROWSER_ZONE_PAGER || mBrowserZone == BROWSER_ZONE_LIST) {
+            mBrowserZone = BROWSER_ZONE_TOOLBAR;
         }
     }
 
@@ -1527,8 +1508,8 @@ public:
         } else if (mBrowserZone == BROWSER_ZONE_PAGER) {
             if (!BrowserPagerButtonEnabled(mBrowserPagerFocus)) return false;
             switch (mBrowserPagerFocus) {
-            case BROWSER_PG_PREV: BrowserPrevPage(); NormalizeBrowserPagerFocus(); return true;
-            case BROWSER_PG_NEXT: BrowserNextPage(); NormalizeBrowserPagerFocus(); return true;
+            case BROWSER_PG_PREV: BrowserPrevPage(); return true;
+            case BROWSER_PG_NEXT: BrowserNextPage(); return true;
             case BROWSER_PG_JOIN: BrowserJoinSelected(); return true;
             default: return false;
             }
@@ -1774,7 +1755,7 @@ public:
             SetStatusNotice(err.empty() ? "Could not create lobby." : err, true);
             return false;
         }
-        BeginConnecting("Creating Lobby", "Registering room with lobby server...", true);
+        BeginConnecting("Creating Lobby", "Registering lobby with server...", true);
         return true;
     }
 
@@ -1842,7 +1823,7 @@ public:
             return false;
         }
         mJoinCode = cleaned;
-        SetStatusNotice("Room code pasted.", false);
+        SetStatusNotice("Lobby code pasted.", false);
         return true;
     }
 
@@ -1858,11 +1839,11 @@ public:
             return false;
         }
         if (!mBackend->RequestResolveCode(code, &err)) {
-            SetStatusNotice(err.empty() ? "Could not resolve room code." : err, true);
+            SetStatusNotice(err.empty() ? "Could not resolve lobby code." : err, true);
             return false;
         }
         mJoinPendingResolve = true;
-        BeginConnecting("Resolving Code", "Looking up room " + code + "...", true);
+        BeginConnecting("Resolving Code", "Looking up lobby " + code + "...", true);
         return true;
     }
 
@@ -1935,6 +1916,7 @@ public:
         if (mRosterPageOffset + CE_ONLINE_UI_ROSTER_PAGE_SIZE < n) {
             mRosterPageOffset += CE_ONLINE_UI_ROSTER_PAGE_SIZE;
             mRosterSelected = mRosterPageOffset;
+            NormalizeRoomFocus();
         }
     }
 
@@ -1942,6 +1924,7 @@ public:
         if (mRosterPageOffset >= CE_ONLINE_UI_ROSTER_PAGE_SIZE) {
             mRosterPageOffset -= CE_ONLINE_UI_ROSTER_PAGE_SIZE;
             mRosterSelected = mRosterPageOffset;
+            NormalizeRoomFocus();
         }
     }
 
@@ -2115,8 +2098,8 @@ public:
             if (!RoomHeaderButtonEnabled(mRoomHeaderFocus)) return false;
             switch (mRoomHeaderFocus) {
             case ROOM_HD_COPY: RoomCopyCode(); return true;
-            case ROOM_HD_PREV: RosterPrevPage(); NormalizeRoomFocus(); return true;
-            case ROOM_HD_NEXT: RosterNextPage(); NormalizeRoomFocus(); return true;
+            case ROOM_HD_PREV: RosterPrevPage(); return true;
+            case ROOM_HD_NEXT: RosterNextPage(); return true;
             default: return false;
             }
         } else if (mRoomZone == ROOM_ZONE_ROSTER) {
@@ -2180,10 +2163,10 @@ public:
             name += "#";
             name += CeOnlineSanitizeForFont(seat.tag);
         }
-        if (seat.seat == mRoom.hostSeat) name += " (Host)";
-        else if (seat.seat == mRoom.localSeat) name += " (You)";
-        if (IsPlayerMuted(seat.playerId)) name += " (Muted)";
-        return CeOnlineTruncateFontSafe(name, 24);
+        if (IsPlayerMuted(seat.playerId)) {
+            return CeOnlineTruncateFontSafe(name, 18) + " (Muted)";
+        }
+        return CeOnlineTruncateFontSafe(name, 25);
     }
 
     std::string FormatSeatPing(const CeOnlineSeatView &seat) const {
@@ -2548,7 +2531,7 @@ public:
     bool RoomCopyCode() {
         if (!mRoom.active || mRoom.code.empty()) return false;
         if (mBackend && mBackend->CopyToClipboard(mRoom.code)) {
-            SetStatusNotice("Room code copied: " + CeOnlineSanitizeForFont(mRoom.code), false);
+            SetStatusNotice("Lobby code copied: " + CeOnlineSanitizeForFont(mRoom.code), false);
             return true;
         }
         SetStatusNotice("Share code: " + CeOnlineSanitizeForFont(mRoom.code), false);
@@ -2557,7 +2540,7 @@ public:
 
     bool RoomCanStartMatch(std::string *reasonOut) const {
         if (!mRoom.active) {
-            if (reasonOut) *reasonOut = "Not in an online room.";
+            if (reasonOut) *reasonOut = "Not in an online lobby.";
             return false;
         }
         if (!IsLocalHost()) {
@@ -2610,7 +2593,7 @@ public:
             }
             if (active0 < 1 || active1 < 1) {
                 if (reasonOut) {
-                    *reasonOut = std::string("Both Forseti and Muspell need at least one pilot in ") +
+                    *reasonOut = std::string("Both sides need at least one pilot in ") +
                                  CeOnlineModeDisplayLabel(mRoom.mode, mRoom.maxSeats) + ".";
                 }
                 return false;
@@ -2758,35 +2741,36 @@ public:
     }
 
     bool PasteIntoActiveField() {
-        if (!mBackend) return false;
-        if (mPage == CE_ONLINE_PAGE_JOIN_CODE && mJoinCodeFocus == JOIN_CODE_INPUT) {
+        if (!mBackend || !CanPasteIntoActiveField()) return false;
+        if (mPage == CE_ONLINE_PAGE_JOIN_CODE &&
+            (mJoinCodeFocus == JOIN_CODE_INPUT || mJoinCodeFocus == JOIN_PASTE_BTN)) {
             return JoinCodePaste();
         }
         std::string clip;
         if (!mBackend->PasteFromClipboard(&clip) || clip.empty()) return false;
-        if (mPage == CE_ONLINE_PAGE_BROWSER && mPasswordPromptOpen) {
-            for (size_t i = 0; i < clip.size(); ++i) BrowserPasswordTypeChar(clip[i]);
-            return true;
-        }
-        if (mPage == CE_ONLINE_PAGE_CREATE) {
-            for (size_t i = 0; i < clip.size(); ++i) CreateTypeChar(clip[i]);
-            return true;
-        }
-        if (mPage == CE_ONLINE_PAGE_JOIN_CODE && mJoinCodeFocus == JOIN_PASSWORD_INPUT) {
-            for (size_t i = 0; i < clip.size(); ++i) JoinCodeTypeChar(clip[i]);
-            return true;
-        }
-        if (mPage == CE_ONLINE_PAGE_PROFILE && mProfileFocus == PROFILE_CALLSIGN_INPUT) {
-            for (size_t i = 0; i < clip.size(); ++i) {
-                if (!ProfileTypeChar(clip[i])) break;
+        const bool password = mPage == CE_ONLINE_PAGE_BROWSER ||
+            mPage == CE_ONLINE_PAGE_JOIN_CODE ||
+            (mPage == CE_ONLINE_PAGE_CREATE && mCreateFocus == CREATE_PASSWORD);
+        bool accepted = false;
+        bool separator = false;
+        for (size_t i = 0; i < clip.size(); ++i) {
+            const char c = clip[i];
+            if (c == '\r' || c == '\n' || c == '\t') {
+                separator = !password && accepted;
+                continue;
             }
-            return true;
+            if (separator) PasteChar(' ');
+            separator = false;
+            const bool inserted = PasteChar(c);
+            if (!inserted && mPage == CE_ONLINE_PAGE_PROFILE) break;
+            accepted = accepted || inserted;
         }
-        if (mPage == CE_ONLINE_PAGE_ROOM && mChatComposing) {
-            for (size_t i = 0; i < clip.size(); ++i) RoomChatTypeChar(clip[i]);
-            return true;
-        }
-        return false;
+        return accepted;
+    }
+
+    bool CanPasteIntoActiveField() const {
+        return WantsTextInput() || (mActive && mPage == CE_ONLINE_PAGE_JOIN_CODE &&
+                                    mJoinCodeFocus == JOIN_PASTE_BTN);
     }
 
     bool WantsTextInput() const {
@@ -2840,6 +2824,30 @@ public:
     }
 
 private:
+    void UpdateBrowserResults() {
+        std::string err;
+        std::vector<CeOnlineUiRoomSummary> latest;
+        bool loading = false;
+        if (mBackend->GetLobbies(&latest, &loading, &err)) {
+            mRooms.swap(latest);
+            ClampBrowserSelection();
+            NormalizeBrowserPagerFocus();
+        }
+        mBrowserLoading = loading;
+        if (!err.empty() || !loading) mBrowserFetchError = CeOnlineSanitizeForFont(err);
+    }
+
+    bool PasteChar(char c) {
+        switch (mPage) {
+        case CE_ONLINE_PAGE_BROWSER:   return BrowserPasswordTypeChar(c);
+        case CE_ONLINE_PAGE_CREATE:    return CreateTypeChar(c);
+        case CE_ONLINE_PAGE_JOIN_CODE: return JoinCodeTypeChar(c);
+        case CE_ONLINE_PAGE_PROFILE:   return ProfileTypeChar(c);
+        case CE_ONLINE_PAGE_ROOM:      return RoomChatTypeChar(c);
+        default: return false;
+        }
+    }
+
     void RefreshProfileFromBackend() {
         if (mBackend) {
             CeOnlineProfileView p;
@@ -2925,7 +2933,7 @@ private:
             SetStatusNotice(err.empty() ? "Could not join lobby." : err, true);
             return false;
         }
-        BeginConnecting("Joining Lobby", "Connecting to room...", true);
+        BeginConnecting("Joining Lobby", "Connecting to lobby...", true);
         return true;
     }
 
@@ -2971,6 +2979,7 @@ private:
 
     // Browser
     std::vector<CeOnlineUiRoomSummary> mRooms;
+    std::string mBrowserFetchError;
     bool mBrowserLoading;
     bool mCompatibleOnly;
     int mBrowserSelected;

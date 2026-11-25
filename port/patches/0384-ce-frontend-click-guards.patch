@@ -1,0 +1,257 @@
+--- a/FEPMultiplayerStart.cpp
++++ b/FEPMultiplayerStart.cpp
+@@ -375,6 +375,14 @@
+ 	RENDERINFO.SRS(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+ 	CFEPBEConfig::PopProjection();
+ 
++#ifdef CE_VERSION
++	extern bool PortCeMenus();
++	const bool ceMenus = PortCeMenus();
++	const bool ceInputOk = (transition == 1.f) &&
++	                       (RECONNECT_INTERFACE[0].GetState() == CReconnectInterface::OK) &&
++	                       ((PortCeSoloSkirmishActive && PortCeSoloSkirmishActive()) ||
++	                        (RECONNECT_INTERFACE[1].GetState() == CReconnectInterface::OK));
++#endif
+ 	for (i = 0; i < 2; i++)
+ 	{
+ 		if ((mPort[i] <= -1) || (mReady[i]))
+@@ -401,7 +409,12 @@
+ 			CSPRITERENDERER::DrawColouredSprite((float)dx, 171.f, FO(100), FED.GetTexture(FET_HELP_ARROW), flash, scale, scale, SA_CENTRE, SPT_NONE, 1.f, -PI / 2);
+ 		}
+ 		dx = x;
++#ifdef CE_VERSION
++		if (ceMenus ? (ceInputOk && FRONTEND.MouseClickedInRect((float)dx - 32.f, 139.f, (float)dx + 32.f, 188.f))
++		            : ::MouseClickedInRect((float)dx - 32.f, 139.f, (float)dx + 32.f, 203.f))
++#else
+ 		if (::MouseClickedInRect((float)dx - 32.f, 139.f, (float)dx + 32.f, 203.f))
++#endif
+ 			ChangeConfig(BUTTON_FRONTEND_MENU_UP, i);
+ 
+ 		if (((SINT(FRONTEND.GetCounter()) % 64) < 50) || (mDownFlash[i] > 0.f))
+@@ -413,8 +426,22 @@
+ 			scale = (1.f - mDownFlash[i]) + 1.f;
+ 			CSPRITERENDERER::DrawColouredSprite((float)dx, 384.f, FO(100), FED.GetTexture(FET_HELP_ARROW), flash, scale, scale, SA_CENTRE, SPT_NONE, 1.f, PI / 2);
+ 		}
++#ifdef CE_VERSION
++		if (ceMenus ? (ceInputOk && FRONTEND.MouseClickedInRect((float)dx - 32.f, 352.f, (float)dx + 32.f, 416.f))
++		            : ::MouseClickedInRect((float)dx - 32.f, 352.f, (float)dx + 32.f, 416.f))
++#else
+ 		if (::MouseClickedInRect((float)dx - 32.f, 352.f, (float)dx + 32.f, 416.f))
++#endif
+ 			ChangeConfig(BUTTON_FRONTEND_MENU_DOWN, i);
++#ifdef CE_VERSION
++		if (ceMenus && ceInputOk &&
++		    (FRONTEND.MouseClickedInRect((float)dx - 88.f, 115.f, (float)dx + 88.f, 138.f) ||
++		     FRONTEND.MouseClickedInRect((float)dx - 88.f, 190.f, (float)dx + 88.f, 350.f)))
++		{
++			mReady[0] = TRUE;
++			mReady[1] = TRUE;
++		}
++#endif
+ 
+ 		// the configuration's name
+ 		SIZE	size;
+@@ -464,6 +491,22 @@
+ 	FRONTEND.DrawTitleBar(FET.GetText(FEX_BE_CONFIG), transition, dest);
+ 	FRONTEND.GetCommonPage()->RenderHelpText(5, transition);
+ 	FRONTEND.GetCommonPage()->RenderHelpText(1, transition);
++#ifdef CE_VERSION
++	if (ceMenus && ceInputOk)
++	{
++		if ((!mReady[0] || !mReady[1]) && FRONTEND.MouseClickedInRect(540.f, 415.f, 640.f, 480.f))
++		{
++			mReady[0] = TRUE;
++			mReady[1] = TRUE;
++		}
++		else if ((RECONNECT_INTERFACE[1].GetState() != CReconnectInterface::OK) &&
++		         FRONTEND.MouseClickedInRect(0.f, 415.f, 100.f, 480.f))
++		{
++			FRONTEND.mReceivingButtonActionPort = mPort[0];
++			ButtonPressed(BUTTON_FRONTEND_MENU_BACK, 1.f);
++		}
++	}
++#endif
+ }
+ 
+ //*********************************************************************************
+--- a/FEPBEConfig.cpp
++++ b/FEPBEConfig.cpp
+@@ -723,7 +723,14 @@
+ 	if (GetNumConfigs() > 1)
+ 	{
+ 		float	scale;
++#ifdef CE_VERSION
++		extern bool PortCeMenus();
++		const bool ceMenus = PortCeMenus();
++		if (!ceMenus || (transition == 1.f))
++			FRONTEND.ProcessMouseClickInRect(x - 40.f, 101.f, x + 40.f, 181.f, BUTTON_FRONTEND_MENU_UP);
++#else
+ 		FRONTEND.ProcessMouseClickInRect(x - 40.f, 101.f, x + 40.f, 181.f, BUTTON_FRONTEND_MENU_UP);
++#endif
+ 		if (((SINT(FRONTEND.GetCounter()) % 64) < 50) || (mUpFlash > 0.f))
+ 		{
+ 			CSPRITERENDERER::DrawColouredSprite(x, 141.f, FO(100), FED.GetTexture(FET_HELP_ARROW), 0xffffffff, 1.f, 1.f, SA_CENTRE, SPT_NONE, 1.f, -PI / 2);
+@@ -733,9 +740,18 @@
+ 			CSPRITERENDERER::DrawColouredSprite(x, 141.f, FO(100), FED.GetTexture(FET_HELP_ARROW), col, scale, scale, SA_CENTRE, SPT_NONE, 1.f, -PI / 2);
+ 		}
+ 
++#ifdef CE_VERSION
++		if (ceMenus && (transition == 1.f))
++			FRONTEND.ProcessMouseClickInRect(x - 40.f, 344.f, x + 40.f, 424.f, BUTTON_FRONTEND_MENU_DOWN);
++#endif
+ 		if (((SINT(FRONTEND.mCounter) % 64) < 50) || (mDownFlash > 0.f))
+ 		{
++#ifdef CE_VERSION
++			if (!ceMenus)
++				FRONTEND.ProcessMouseClickInRect(x - 40.f, 344.f, x + 40.f, 424.f, BUTTON_FRONTEND_MENU_DOWN);
++#else
+ 			FRONTEND.ProcessMouseClickInRect(x - 40.f, 344.f, x + 40.f, 424.f, BUTTON_FRONTEND_MENU_DOWN);
++#endif
+ 			CSPRITERENDERER::DrawColouredSprite(x, 384.f, FO(100), FED.GetTexture(FET_HELP_ARROW), 0xffffffff, 1.f, 1.f, SA_CENTRE, SPT_NONE, 1.f, PI / 2);
+ 			DWORD	col = 0xffffffff;
+ 			BlendAlpha(col, SINT(mDownFlash * 255.f));
+--- a/FEPBriefing.cpp
++++ b/FEPBriefing.cpp
+@@ -8,6 +8,10 @@
+ #include	"ltshell.h"
+ #include	"renderinfo.h"
+ #include	"SpriteRenderer.h"
++#ifdef CE_VERSION
++#include	"FEMessBox.h"
++#include	"reconnectinterface.h"
++#endif
+ #include	<math.h>
+ 
+ // the briefing video's size relative to the full-size one (a smaller video is shown larger)
+@@ -185,6 +189,15 @@
+ 
+ 	FRONTEND.GetCommonPage()->RenderHelpText(4, transition);
+ 	FRONTEND.GetCommonPage()->RenderHelpText(1, transition);
++#ifdef CE_VERSION
++	extern bool PortCeMenus();
++	if (PortCeMenus() && (transition == 1.f) && (!FEMESSBOX.IsInteractive()) &&
++	    (RECONNECT_INTERFACE[0].GetState() == CReconnectInterface::OK))
++	{
++		if (!FRONTEND.ProcessMouseClickInRect(0.f, 0.f, 640.f, 415.f, BUTTON_FRONTEND_MENU_SELECT))
++			FRONTEND.ProcessMouseClickInRect(120.f, 415.f, 578.f, 480.f, BUTTON_FRONTEND_MENU_SELECT);
++	}
++#endif
+ 	FRONTEND.DrawTitleBar(FET.GetText(FEX_MISSION_BRIEFING), transition, dest);
+ }
+ 
+--- a/FEPDirectory.cpp
++++ b/FEPDirectory.cpp
+@@ -190,6 +190,18 @@
+ 		mUnknown400c++;
+ 	while (mUnknown400c > mCursor)
+ 		mUnknown400c--;
++#ifdef CE_VERSION
++	extern bool PortCeMenus();
++	const bool ceMenus = PortCeMenus();
++	if (ceMenus)
++	{
++		const SINT maxOffset = (mNumSaves > DIR_VISIBLE_ROWS) ? (mNumSaves - DIR_VISIBLE_ROWS) : 0;
++		if (mUnknown400c > maxOffset)
++			mUnknown400c = maxOffset;
++		if (mUnknown400c < 0)
++			mUnknown400c = 0;
++	}
++#endif
+ 
+ 	SINT	i;
+ 	for (i = mUnknown400c; i < MAX_DIRECTORY_SAVES; i++)
+@@ -219,12 +231,20 @@
+ 
+ 		PLATFORM.Font(FONT_NORMAL)->DrawTextDynamic(DIR_LEFT, y, FO(100), 1.f, 1.f, col, text, 1000.f, 0, 0);
+ 
++#ifdef CE_VERSION
++		if ((!ceMenus || (transition == 1.f)) && FRONTEND.MouseOverRect(DIR_LEFT, y, 510.f, y + DIR_LINE))
++#else
+ 		if (FRONTEND.MouseOverRect(DIR_LEFT, y, 510.f, y + DIR_LINE))
++#endif
+ 		{
+ 			mCursor = i;
+ 			mTime = FRONTEND.GetCounter();
+ 		}
++#ifdef CE_VERSION
++		if ((!ceMenus || (transition == 1.f)) && FRONTEND.MouseClickedInRect(DIR_LEFT, y, 510.f, y + DIR_LINE))
++#else
+ 		if (FRONTEND.MouseClickedInRect(DIR_LEFT, y, 510.f, y + DIR_LINE))
++#endif
+ 		{
+ 			mCursor = i;
+ 			mTime = FRONTEND.GetCounter();
+@@ -259,7 +279,11 @@
+ 			barcol = 0;
+ 		FRONTEND.DrawBox(515.f, bar_top, 525.f, bar_bottom, barcol, 5.f, 0.5f);
+ 
++#ifdef CE_VERSION
++		if ((!ceMenus || (transition == 1.f)) && FRONTEND.GetCursorStateInRect(510.f, top, 530.f, bottom) && mNumSaves && MOUSE_HELD[0])
++#else
+ 		if (FRONTEND.GetCursorStateInRect(510.f, top, 530.f, bottom) && mNumSaves && MOUSE_HELD[0])
++#endif
+ 		{
+ 			mCursor = SINT(((float(MOUSE_Y) - top - bar * 0.5f) / (height - bar)) * (float(mNumSaves) - 0.1f));
+ 			if (mCursor < 0)
+@@ -268,7 +292,18 @@
+ 				mCursor = mNumSaves - 1;
+ 
+ 			if (mNumSaves > DIR_VISIBLE_ROWS)
++			{
+ 				mUnknown400c = SINT(((float(MOUSE_Y) - top) / height) * (float(mNumSaves - DIR_VISIBLE_ROWS) + 0.9f));
++#ifdef CE_VERSION
++				if (ceMenus)
++				{
++					if (mUnknown400c > mNumSaves - DIR_VISIBLE_ROWS)
++						mUnknown400c = mNumSaves - DIR_VISIBLE_ROWS;
++					if (mUnknown400c < 0)
++						mUnknown400c = 0;
++				}
++#endif
++			}
+ 			else
+ 				mUnknown400c = 0;
+ 		}
+--- a/FEPGoodies.cpp
++++ b/FEPGoodies.cpp
+@@ -1876,7 +1876,12 @@
+ 	}
+ 
+ 	// the right mouse button goes back
++#ifdef CE_VERSION
++	extern bool PortCeMenus();
++	if ((state == FEPS_ACTIVE) && (MOUSE_BUTTONS[2].mDown) && (!PortCeMenus() || !FEMESSBOX.IsInteractive()))
++#else
+ 	if ((state == FEPS_ACTIVE) && (MOUSE_BUTTONS[2].mDown))
++#endif
+ 	{
+ 		MOUSE_BUTTONS[2].mDown = FALSE;
+ 		ButtonPressed(BUTTON_FRONTEND_MENU_BACK, 1.f);
+@@ -2309,7 +2314,12 @@
+ 					float cy = GoodieY(c1);
+ 
+ 					// the mouse
++#ifdef CE_VERSION
++					extern bool PortCeMenus();
++					if ((mDisplayGoody != TRUE) && (!PortCeMenus() || ((transition == 1.f) && (mImageZoom == 0.f))))
++#else
+ 					if (mDisplayGoody != TRUE)
++#endif
+ 					{
+ 						if ((cx >= GOODIES_SCROLL_LEFT) && (cx <= GOODIES_SCROLL_RIGHT))
+ 						{
+--- a/FEPMultiplayer.cpp
++++ b/FEPMultiplayer.cpp
+@@ -315,7 +315,12 @@
+ 
+ 			if (transition == 1.f)
+ 			{
++#ifdef CE_VERSION
++				extern bool PortCeMenus();
++				if ((!PortCeMenus() || mp_cell_open(x, y)) && FRONTEND.GetCursorStateInRect(gx - 20.f, gy - 20.f, gx + 20.f, gy + 20.f))
++#else
+ 				if (FRONTEND.GetCursorStateInRect(gx - 20.f, gy - 20.f, gx + 20.f, gy + 20.f))
++#endif
+ 				{
+ 					mCX = x;
+ 					mCY = y;

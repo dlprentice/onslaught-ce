@@ -278,6 +278,74 @@ struct ParsedJuiceConfig {
         return true;
     }
 };
+
+bool ParseMetaU64(const char *s, size_t len, uint64_t *out) {
+    if (!s || len == 0 || len > 20 || !out) return false;
+    uint64_t v = 0;
+    for (size_t i = 0; i < len; ++i) {
+        if (s[i] < '0' || s[i] > '9') return false;
+        const uint64_t d = static_cast<uint64_t>(s[i] - '0');
+        if (v > (UINT64_MAX - d) / 10ULL) return false;
+        v = v * 10ULL + d;
+    }
+    *out = v;
+    return v > 0;
+}
+
+void AppendSignalMeta(std::string &sdp, uint64_t offer_seq, uint64_t offer_gen) {
+    if (sdp.empty() || (offer_seq == 0 && offer_gen == 0)) return;
+    std::string extra;
+    if (sdp.back() != '\n') extra += "\r\n";
+    if (offer_seq > 0) extra += "a=x-ce-offer:" + std::to_string(offer_seq) + "\r\n";
+    if (offer_gen > 0) extra += "a=x-ce-gen:" + std::to_string(offer_gen) + "\r\n";
+    if (sdp.size() + extra.size() <= CE_ONLINE_MAX_SDP_BYTES) {
+        sdp += extra;
+    }
+}
+
+void ExtractSignalMeta(const std::string &raw_sdp, std::string *out_clean_sdp,
+                       uint64_t *out_offer_seq, uint64_t *out_offer_gen) {
+    if (out_clean_sdp) out_clean_sdp->clear();
+    if (out_offer_seq) *out_offer_seq = 0;
+    if (out_offer_gen) *out_offer_gen = 0;
+    if (out_clean_sdp) out_clean_sdp->reserve(raw_sdp.size());
+
+    size_t pos = 0;
+    while (pos < raw_sdp.size()) {
+        size_t nl = raw_sdp.find('\n', pos);
+        const size_t line_end = (nl == std::string::npos) ? raw_sdp.size() : (nl + 1u);
+        size_t content_end = (nl == std::string::npos) ? raw_sdp.size() : nl;
+        if (content_end > pos && raw_sdp[content_end - 1u] == '\r') --content_end;
+        const size_t content_len = content_end - pos;
+        const char *line_ptr = raw_sdp.data() + pos;
+
+        static constexpr char kOfferPrefix[] = "a=x-ce-offer:";
+        static constexpr size_t kOfferPrefixLen = sizeof(kOfferPrefix) - 1u;
+        static constexpr char kGenPrefix[] = "a=x-ce-gen:";
+        static constexpr size_t kGenPrefixLen = sizeof(kGenPrefix) - 1u;
+
+        bool consumed = false;
+        if (content_len > kOfferPrefixLen &&
+            std::memcmp(line_ptr, kOfferPrefix, kOfferPrefixLen) == 0) {
+            uint64_t parsed = 0;
+            if (ParseMetaU64(line_ptr + kOfferPrefixLen, content_len - kOfferPrefixLen, &parsed)) {
+                if (out_offer_seq) *out_offer_seq = parsed;
+            }
+            consumed = true;
+        } else if (content_len > kGenPrefixLen &&
+                   std::memcmp(line_ptr, kGenPrefix, kGenPrefixLen) == 0) {
+            uint64_t parsed = 0;
+            if (ParseMetaU64(line_ptr + kGenPrefixLen, content_len - kGenPrefixLen, &parsed)) {
+                if (out_offer_gen) *out_offer_gen = parsed;
+            }
+            consumed = true;
+        }
+        if (!consumed && out_clean_sdp) {
+            out_clean_sdp->append(raw_sdp, pos, line_end - pos);
+        }
+        pos = line_end;
+    }
+}
 #endif
 
 // ---------------------------------------------------------------------------
@@ -377,6 +445,9 @@ public:
 
         // Dispatch next queued user request
         if (!pending_queue_.empty()) {
+            if (pending_queue_.front().retry_after_ms > now_ms) {
+                return;
+            }
             PendingAction act = std::move(pending_queue_.front());
             pending_queue_.pop_front();
             DispatchAction(act, now_ms);
@@ -613,12 +684,15 @@ public:
                 cancelled_inflight_entry_ = true;
             }
         }
-        if (client_ && client_->Authenticated() && !active_room_id_.empty()) {
-            PendingAction act;
-            act.kind = ActionKind::LeaveRoom;
-            act.generation = room_generation_;
-            act.room_id = active_room_id_;
-            pending_queue_.push_back(std::move(act));
+        if (client_ && !active_room_id_.empty()) {
+            if (!client_->Authenticated() && profile_.Loaded() && !origin_.empty()) {
+                want_connect_ = true;
+                conn_status_ = 1;
+                status_detail_ = "Session expired, re-authenticating...";
+            }
+            if (client_->Authenticated() || want_connect_) {
+                EnqueueLeaveRoom(active_room_id_, false);
+            }
         }
         RefreshLeavePending();
         room_active_ = false;
@@ -718,7 +792,7 @@ public:
 
     void FlushLeave(uint64_t now_ms) override {
         if (IsLaunchPreserved()) return;
-        if (!client_ || !client_->Authenticated()) return;
+        if (!client_ || (!client_->Authenticated() && !want_connect_)) return;
         // Pump any queued or in-flight LeaveRoom (or cancelled entry op) using a monotonic clock base.
         const auto wall_start = std::chrono::steady_clock::now();
         uint64_t base_ms = std::max(now_ms, last_now_ms_);
@@ -728,9 +802,13 @@ public:
                     wall_start.time_since_epoch()).count());
             if (base_ms == 0u) base_ms = 1u;
         }
+        uint64_t virtual_advance_ms = 0;
         for (int step = 0; step < 35; ++step) {
             bool has_leave = client_->Busy() &&
-                             (client_->ActiveOp() == CeOnlineOpKind::LeaveRoom || cancelled_inflight_entry_);
+                             (client_->ActiveOp() == CeOnlineOpKind::LeaveRoom ||
+                              client_->ActiveOp() == CeOnlineOpKind::Authenticate ||
+                              client_->ActiveOp() == CeOnlineOpKind::Health ||
+                              cancelled_inflight_entry_);
             for (const auto &a : pending_queue_) {
                 if (a.kind == ActionKind::LeaveRoom) { has_leave = true; break; }
             }
@@ -738,13 +816,21 @@ public:
             const uint64_t elapsed = static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now() - wall_start).count());
-            const uint64_t tick_ms = base_ms + std::max<uint64_t>(elapsed, static_cast<uint64_t>(step) * 10u);
+            const uint64_t step_offset = std::max<uint64_t>(elapsed, static_cast<uint64_t>(step) * 10u);
+            if (!client_->Busy() && !want_connect_ && !pending_queue_.empty() &&
+                pending_queue_.front().kind == ActionKind::LeaveRoom &&
+                pending_queue_.front().retry_after_ms > base_ms + virtual_advance_ms + step_offset) {
+                virtual_advance_ms = pending_queue_.front().retry_after_ms - base_ms - step_offset;
+            }
+            const uint64_t tick_ms = base_ms + virtual_advance_ms + step_offset;
             Poll(tick_ms);
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }
 
 private:
+    static constexpr uint32_t kMaxLeaveRetries = 3;
+
     enum class ActionKind {
         ListLobbies,
         CreateRoom,
@@ -762,6 +848,8 @@ private:
         uint64_t generation = 0;
         bool include_incompatible = false;
         bool retried_401 = false;
+        uint32_t retry_count = 0;
+        uint64_t retry_after_ms = 0;
         CeSvcCreateParams create;
         std::string room_id;
         std::string password;
@@ -771,6 +859,24 @@ private:
         bool ready = false;
         CeSvcHostPatch patch;
     };
+
+    void EnqueueLeaveRoom(const std::string &room_id, bool front) {
+        if (!client_ || room_id.empty()) return;
+        for (const auto &existing : pending_queue_) {
+            if (existing.kind == ActionKind::LeaveRoom && existing.room_id == room_id) {
+                return;
+            }
+        }
+        PendingAction act;
+        act.kind = ActionKind::LeaveRoom;
+        act.generation = room_generation_;
+        act.room_id = room_id;
+        if (front) {
+            pending_queue_.push_front(std::move(act));
+        } else {
+            pending_queue_.push_back(std::move(act));
+        }
+    }
 
     void RefreshLeavePending() {
         leave_pending_ = cancelled_inflight_entry_ ||
@@ -859,6 +965,14 @@ private:
         }
         case ActionKind::LeaveRoom:
             started = client_->BeginLeaveRoom(act.room_id, now_ms);
+            if (!started && CeOnlineLobbyClient::IsValidSafeId(act.room_id) &&
+                act.retry_count < kMaxLeaveRetries) {
+                PendingAction retry_act = act;
+                ++retry_act.retry_count;
+                retry_act.retry_after_ms =
+                    now_ms + (200ULL << std::min<uint32_t>(retry_act.retry_count - 1u, 2u));
+                pending_queue_.push_front(std::move(retry_act));
+            }
             break;
         case ActionKind::UpdateSelf: {
             CeOnlineUpdateRoomReq req;
@@ -1016,11 +1130,7 @@ private:
             ++room_generation_;
             const std::string room_id = !active_room_id_.empty() ? active_room_id_ : r.room_id;
             if (!room_id.empty()) {
-                PendingAction leave_act;
-                leave_act.kind = ActionKind::LeaveRoom;
-                leave_act.generation = room_generation_;
-                leave_act.room_id = room_id;
-                pending_queue_.push_front(std::move(leave_act));
+                EnqueueLeaveRoom(room_id, true);
             }
             room_active_ = false;
             active_room_id_.clear();
@@ -1101,25 +1211,30 @@ private:
             (op == CeOnlineOpKind::CreateLobby || op == CeOnlineOpKind::JoinRoom)) {
             cancelled_inflight_entry_ = false;
             if (st == CeOnlineOpStatus::Completed && !client_->CurrentRoom().room_id.empty()) {
-                PendingAction leave_act;
-                leave_act.kind = ActionKind::LeaveRoom;
-                leave_act.generation = room_generation_;
-                leave_act.room_id = client_->CurrentRoom().room_id;
-                pending_queue_.push_front(std::move(leave_act));
+                EnqueueLeaveRoom(client_->CurrentRoom().room_id, true);
             }
             RefreshLeavePending();
             return;
         }
 
         if (op == CeOnlineOpKind::LeaveRoom) {
-            if (st == CeOnlineOpStatus::Failed && client_->LastHttpCode() == 401u &&
-                had_action && !finished_action.retried_401) {
-                client_->ClearSession();
-                want_connect_ = true;
-                conn_status_ = 1;
-                status_detail_ = "Session expired, re-authenticating...";
-                finished_action.retried_401 = true;
-                pending_queue_.push_front(std::move(finished_action));
+            if (st == CeOnlineOpStatus::Failed && had_action) {
+                const unsigned code = client_->LastHttpCode();
+                if (code == 401u && !finished_action.retried_401) {
+                    client_->ClearSession();
+                    want_connect_ = true;
+                    conn_status_ = 1;
+                    status_detail_ = "Session expired, re-authenticating...";
+                    finished_action.retried_401 = true;
+                    finished_action.retry_after_ms = 0;
+                    pending_queue_.push_front(std::move(finished_action));
+                } else if (code != 400u && code != 401u && code != 403u && code != 404u && code != 409u &&
+                           finished_action.retry_count < kMaxLeaveRetries) {
+                    ++finished_action.retry_count;
+                    finished_action.retry_after_ms =
+                        now_ms + (200ULL << std::min<uint32_t>(finished_action.retry_count - 1u, 2u));
+                    pending_queue_.push_front(std::move(finished_action));
+                }
             }
             RefreshLeavePending();
             return;
@@ -1132,11 +1247,7 @@ private:
             if (st == CeOnlineOpStatus::Completed &&
                 (op == CeOnlineOpKind::CreateLobby || op == CeOnlineOpKind::JoinRoom) &&
                 !client_->CurrentRoom().room_id.empty()) {
-                PendingAction leave_act;
-                leave_act.kind = ActionKind::LeaveRoom;
-                leave_act.generation = room_generation_;
-                leave_act.room_id = client_->CurrentRoom().room_id;
-                pending_queue_.push_front(std::move(leave_act));
+                EnqueueLeaveRoom(client_->CurrentRoom().room_id, true);
             }
             RefreshLeavePending();
             return;
@@ -1186,6 +1297,7 @@ private:
                     }
                 }
                 pending_queue_.clear();
+                RefreshLeavePending();
             } else if (op == CeOnlineOpKind::ListLobbies) {
                 lobbies_loading_ = false;
                 lobbies_err_ = msg;
@@ -1327,6 +1439,8 @@ public:
 
     bool Init(const CE_OnlineMatchTicket &ticket, const uint8_t compat_digest[32]) {
         ticket_ = ticket;
+        finish_room_id_ = ticket_.room_id;
+        finish_match_id_ = ticket_.match_id;
         is_host_ = (ticket_.local_sim_slot == 0);
         host_seat_ = ticket_.slots[0].seat;
         guest_require_relay_ = (ticket_.require_relay != 0);
@@ -1453,13 +1567,18 @@ public:
                     wall_start.time_since_epoch()).count());
             if (base_ms == 0u) base_ms = 1u;
         }
+        uint64_t virtual_advance_ms = 0;
         for (int step = 0; step < 35 && !finish_sent_; ++step) {
             const uint64_t elapsed = static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now() - wall_start).count());
-            const uint64_t tick_ms = base_ms + std::max<uint64_t>(elapsed, static_cast<uint64_t>(step) * 10u);
+            const uint64_t step_offset = std::max<uint64_t>(elapsed, static_cast<uint64_t>(step) * 10u);
+            if (!lobby_->Busy() && finish_retry_after_ms_ > base_ms + virtual_advance_ms + step_offset) {
+                virtual_advance_ms = finish_retry_after_ms_ - base_ms - step_offset;
+            }
+            const uint64_t tick_ms = base_ms + virtual_advance_ms + step_offset;
             PumpFinishMatch(tick_ms);
-            if (finish_sent_ || (!lobby_->Busy() && finish_started_)) break;
+            if (finish_sent_) break;
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }
@@ -1505,6 +1624,9 @@ public:
     bool BridgeRelaysGuestChat() const override { return true; }
 
 private:
+    static constexpr uint32_t kMaxFinishAttempts = 4;
+    static constexpr uint64_t kMatchHeartbeatIntervalMs = 60000ULL;
+
     struct GuestLink {
         uint16_t seat = 0;
         uint8_t sim_slot = 0;
@@ -1519,31 +1641,106 @@ private:
         uint32_t consecutive_failures = 0;
         uint64_t retry_after_ms = 0;
         uint64_t offer_seq = 0;
+        uint64_t offer_gen = 0;
+        uint64_t inflight_offer_gen = 0;
         uint64_t answer_seq = 0;
         uint64_t bridge_attached_ms = 0;
         std::string pending_answer_sdp;
         uint64_t pending_answer_seq = 0;
+        uint64_t pending_answer_offer_seq = 0;
+        uint64_t pending_answer_offer_gen = 0;
     };
+
+    static bool IsAnswerBoundToCurrentOffer(const GuestLink &g, uint64_t msg_seq,
+                                            uint64_t bound_offer_seq, uint64_t bound_offer_gen) {
+        if (msg_seq <= g.answer_seq || msg_seq <= g.offer_seq) return false;
+        if (bound_offer_gen > 0 && g.offer_gen > 0 && bound_offer_gen != g.offer_gen) return false;
+        if (bound_offer_seq > 0 && g.offer_seq > 0 && bound_offer_seq != g.offer_seq) return false;
+        return true;
+    }
+
+    bool IsFinishStillCurrentMatch() const {
+        if (finish_room_id_.empty() || finish_match_id_.empty()) return false;
+        if (PortCeOnlineMatchActive() != 0) {
+            CE_OnlineMatchTicket cur_tk = {};
+            if (PortCeOnlineMatchGetTicket(&cur_tk)) {
+                const bool same = (finish_room_id_ == cur_tk.room_id) &&
+                                  (finish_match_id_ == cur_tk.match_id);
+                crypto_wipe(&cur_tk, sizeof(cur_tk));
+                if (!same) return false;
+            }
+            crypto_wipe(&cur_tk, sizeof(cur_tk));
+        }
+        return true;
+    }
 
     void PumpFinishMatch(uint64_t now_ms) {
         if (!is_host_ || direct_mode_ || !lobby_ || finish_sent_) return;
+        if (!IsFinishStillCurrentMatch()) {
+            if (lobby_->Busy()) lobby_->Cancel();
+            finish_sent_ = true;
+            return;
+        }
         if (lobby_->Busy()) {
-            if (lobby_->ActiveOp() != CeOnlineOpKind::FinishMatch) {
+            const CeOnlineOpKind cur_op = lobby_->ActiveOp();
+            if (cur_op != CeOnlineOpKind::FinishMatch && cur_op != CeOnlineOpKind::Authenticate) {
                 lobby_->Cancel();
                 active_op_guest_index_ = -1;
             } else {
                 const CeOnlineOpStatus st = lobby_->Poll(now_ms);
-                if (st != CeOnlineOpStatus::Pending) {
-                    finish_sent_ = true;
+                if (st == CeOnlineOpStatus::Pending) return;
+                if (cur_op == CeOnlineOpKind::Authenticate) {
+                    if (st != CeOnlineOpStatus::Completed) {
+                        finish_sent_ = true;
+                        return;
+                    }
+                } else {
+                    if (st == CeOnlineOpStatus::Completed) {
+                        finish_sent_ = true;
+                        return;
+                    }
+                    const unsigned code = lobby_->LastHttpCode();
+                    if (code == 401u && !finish_reauthed_) {
+                        finish_reauthed_ = true;
+                        const char *udir = PortUserDir();
+                        std::string perr;
+                        if (udir && udir[0] && finish_profile_.LoadOrCreate(udir, &perr) &&
+                            finish_profile_.PlayerId() == ticket_.slots[0].player_id) {
+                            lobby_->ClearSession();
+                            if (lobby_->BeginAuthenticate(finish_profile_, kOnlineBuildId,
+                                                          ComputeContentId(), now_ms)) {
+                                return;
+                            }
+                        }
+                        finish_sent_ = true;
+                        return;
+                    }
+                    if (code == 400u || code == 401u || code == 403u || code == 404u || code == 409u) {
+                        finish_sent_ = true;
+                        return;
+                    }
+                    ++finish_failures_;
+                    if (finish_failures_ >= kMaxFinishAttempts) {
+                        finish_sent_ = true;
+                        return;
+                    }
+                    const uint32_t shift = std::min<uint32_t>(finish_failures_ - 1u, 2u);
+                    finish_retry_after_ms_ = now_ms + (250ULL << shift);
+                    return;
                 }
-                return;
             }
         }
-        if (!finish_started_) {
-            finish_started_ = true;
-            if (!lobby_->BeginFinishMatch(ticket_.room_id, now_ms)) {
+        if (finish_retry_after_ms_ && now_ms < finish_retry_after_ms_) return;
+        finish_retry_after_ms_ = 0;
+        if (!lobby_->BeginFinishMatch(finish_room_id_, now_ms,
+                                      CeOnlineLobbyClient::kDefaultTimeoutMs, finish_match_id_)) {
+            ++finish_failures_;
+            if (finish_failures_ >= kMaxFinishAttempts) {
                 finish_sent_ = true;
+                return;
             }
+            const uint32_t shift = std::min<uint32_t>(finish_failures_ - 1u, 2u);
+            finish_retry_after_ms_ = now_ms + (250ULL << shift);
         }
     }
 
@@ -1557,6 +1754,8 @@ private:
         g.answer_applied = false;
         g.pending_answer_sdp.clear();
         g.pending_answer_seq = 0;
+        g.pending_answer_offer_seq = 0;
+        g.pending_answer_offer_gen = 0;
         g.pending_answer_tried = false;
 
         CeOnlineStarEvent disc = {};
@@ -1626,9 +1825,11 @@ private:
         if (is_host_) {
             // 1. Attach per-guest ICE bridge (STUN-only first when !require_relay; TURN on Relay Only or STUN fallback).
             bool any_unauthenticated = false;
+            size_t active_guests = 0;
             for (size_t i = 0; i < expected_guests_.size(); ++i) {
                 GuestLink &g = expected_guests_[i];
                 if (g.disconnected) continue;
+                ++active_guests;
                 CeStarPeerInfo pinfo{};
                 const bool authed = transport_->GetPeerInfo(g.sim_slot, pinfo) && pinfo.authenticated;
                 if (!authed) any_unauthenticated = true;
@@ -1642,9 +1843,12 @@ private:
                         g.turn_fetched = false;
                         g.bridge_attached = false;
                         g.offer_sent = false;
+                        g.inflight_offer_gen = 0;
                         g.answer_applied = false;
                         g.pending_answer_sdp.clear();
                         g.pending_answer_seq = 0;
+                        g.pending_answer_offer_seq = 0;
+                        g.pending_answer_offer_gen = 0;
                         g.pending_answer_tried = false;
                     } else {
                         HandleHostGuestFatalIce(g);
@@ -1689,11 +1893,14 @@ private:
                         have_sdp = transport_->GetGuestEarlyRelayIceDescription(g.sim_slot, sdp);
                     }
                     if (have_sdp) {
+                        const uint64_t next_gen = g.offer_gen + 1u;
+                        AppendSignalMeta(sdp, 0, next_gen);
+                        g.inflight_offer_gen = next_gen;
                         active_guest_index_ = i;
                         active_op_guest_index_ = static_cast<int>(i);
-                        g.offer_seq = std::max(g.offer_seq, std::max(signal_seq_, g.answer_seq));
                         if (!lobby_->BeginSendSignal(ticket_.room_id, ticket_.match_id,
                                                      ticket_.local_seat, g.seat, "offer", sdp, now_ms)) {
+                            g.inflight_offer_gen = 0;
                             active_op_guest_index_ = -1;
                             RecordGuestSignalFailure(i, now_ms, "begin_send_offer");
                             if (failed_) return;
@@ -1708,9 +1915,12 @@ private:
                             g.turn_fetched = false;
                             g.bridge_attached = false;
                             g.offer_sent = false;
+                            g.inflight_offer_gen = 0;
                             g.answer_applied = false;
                             g.pending_answer_sdp.clear();
                             g.pending_answer_seq = 0;
+                            g.pending_answer_offer_seq = 0;
+                            g.pending_answer_offer_gen = 0;
                             g.pending_answer_tried = false;
                         } else {
                             fprintf(stderr, "onslaught-ce: online match host: ICE gathering finished with no usable relay candidate for slot %u\n",
@@ -1723,12 +1933,16 @@ private:
                 }
                 if (g.bridge_attached && g.offer_sent && !g.answer_applied &&
                     !g.pending_answer_sdp.empty() && !g.pending_answer_tried) {
-                    if (g.pending_answer_seq > g.offer_seq && g.pending_answer_seq > g.answer_seq) {
+                    if (IsAnswerBoundToCurrentOffer(g, g.pending_answer_seq,
+                                                    g.pending_answer_offer_seq,
+                                                    g.pending_answer_offer_gen)) {
                         if (transport_->SetGuestRemoteIceDescription(g.sim_slot, g.pending_answer_sdp)) {
                             g.answer_applied = true;
                             g.answer_seq = g.pending_answer_seq;
                             g.pending_answer_sdp.clear();
                             g.pending_answer_seq = 0;
+                            g.pending_answer_offer_seq = 0;
+                            g.pending_answer_offer_gen = 0;
                             g.pending_answer_tried = false;
                         } else {
                             g.pending_answer_tried = true;
@@ -1736,6 +1950,8 @@ private:
                     } else {
                         g.pending_answer_sdp.clear();
                         g.pending_answer_seq = 0;
+                        g.pending_answer_offer_seq = 0;
+                        g.pending_answer_offer_gen = 0;
                         g.pending_answer_tried = false;
                     }
                 }
@@ -1747,6 +1963,28 @@ private:
                 active_op_guest_index_ = -1;
                 if (!lobby_->BeginPollSignal(ticket_.room_id, ticket_.match_id, signal_seq_, now_ms)) {
                     RecordSignalFailure(now_ms, "begin_poll_signal");
+                }
+            } else if (!any_unauthenticated && active_guests > 0 && !match_heartbeat_stopped_ &&
+                       (!match_lifecycle_retry_after_ms_ || now_ms >= match_lifecycle_retry_after_ms_)) {
+                // 3. Once all active guests authenticate, promote the room from "starting" (5m TTL)
+                //    to "in_match" (2h TTL) and heartbeat it during play so long matches never expire
+                //    before /finish returns players to the lobby.
+                if (!room_in_match_promoted_) {
+                    CeOnlineUpdateRoomReq ureq;
+                    ureq.has_state = true;
+                    ureq.state = "in_match";
+                    active_op_guest_index_ = -1;
+                    if (!lobby_->BeginUpdateRoom(ticket_.room_id, ureq, now_ms)) {
+                        ++room_in_match_failures_;
+                        match_lifecycle_retry_after_ms_ = now_ms +
+                            (room_in_match_failures_ <= 4u ? (1000ULL << std::min<uint32_t>(room_in_match_failures_ - 1u, 3u)) : 30000ULL);
+                    }
+                } else if (now_ms >= last_match_heartbeat_ms_ + kMatchHeartbeatIntervalMs) {
+                    last_match_heartbeat_ms_ = now_ms;
+                    active_op_guest_index_ = -1;
+                    if (!lobby_->BeginPollRoom(ticket_.room_id, last_room_rev_, 0, now_ms)) {
+                        match_lifecycle_retry_after_ms_ = now_ms + 15000ULL;
+                    }
                 }
             }
         } else {
@@ -1798,19 +2036,22 @@ private:
                     pending_offer_tried_ = true;
                 }
             }
-            if (guest_bridge_attached_ && guest_offer_applied_ && !guest_answer_sent_) {
+            if (guest_bridge_attached_ && !guest_answer_sent_) {
                 std::string sdp;
                 bool have_sdp = transport_->GetLocalIceDescription(sdp);
                 if (!have_sdp && guest_require_relay_ && now_ms >= guest_bridge_attached_ms_ + 300u) {
                     have_sdp = transport_->GetEarlyRelayIceDescription(sdp);
                 }
                 if (have_sdp) {
-                    active_op_guest_index_ = -1;
-                    if (!lobby_->BeginSendSignal(ticket_.room_id, ticket_.match_id,
-                                                 ticket_.local_seat, host_seat_, "answer", sdp, now_ms)) {
-                        RecordSignalFailure(now_ms, "begin_send_answer");
+                    if (guest_offer_applied_) {
+                        AppendSignalMeta(sdp, guest_offer_seq_, guest_offer_gen_);
+                        active_op_guest_index_ = -1;
+                        if (!lobby_->BeginSendSignal(ticket_.room_id, ticket_.match_id,
+                                                     ticket_.local_seat, host_seat_, "answer", sdp, now_ms)) {
+                            RecordSignalFailure(now_ms, "begin_send_answer");
+                        }
+                        return;
                     }
-                    return;
                 } else if (transport_->IsIceGatheringDone()) {
                     if (!guest_retried_relay_ && !guest_require_relay_) {
                         transport_->DetachHostIceBridge();
@@ -1848,8 +2089,65 @@ private:
 #if defined(CE_NETWORK_ICE)
         const int op_guest = active_op_guest_index_;
         active_op_guest_index_ = -1;
+        // Post-auth room promotion ("in_match") and keepalive polls must never fail a live match.
+        if (op == CeOnlineOpKind::UpdateRoom || op == CeOnlineOpKind::PollRoom ||
+            op == CeOnlineOpKind::Authenticate) {
+            if (op == CeOnlineOpKind::Authenticate) {
+                match_lifecycle_retry_after_ms_ = (st == CeOnlineOpStatus::Completed) ? 0ULL : (now_ms + 15000ULL);
+                return;
+            }
+            if (st == CeOnlineOpStatus::Completed) {
+                if (op == CeOnlineOpKind::UpdateRoom) {
+                    room_in_match_promoted_ = true;
+                    room_in_match_failures_ = 0;
+                }
+                match_lifecycle_retry_after_ms_ = 0;
+                last_match_heartbeat_ms_ = now_ms;
+                if (lobby_->CurrentRoom().rev > last_room_rev_) {
+                    last_room_rev_ = lobby_->CurrentRoom().rev;
+                }
+                return;
+            }
+            const unsigned code = lobby_->LastHttpCode();
+            if (code == 401u && !room_in_match_reauthed_) {
+                room_in_match_reauthed_ = true;
+                const char *udir = PortUserDir();
+                std::string perr;
+                if (udir && udir[0] && finish_profile_.LoadOrCreate(udir, &perr) &&
+                    finish_profile_.PlayerId() == ticket_.slots[0].player_id) {
+                    lobby_->ClearSession();
+                    if (lobby_->BeginAuthenticate(finish_profile_, kOnlineBuildId,
+                                                  ComputeContentId(), now_ms)) {
+                        return;
+                    }
+                }
+            }
+            if (op == CeOnlineOpKind::UpdateRoom) {
+                if (code == 404u) {
+                    room_in_match_promoted_ = true;
+                    match_heartbeat_stopped_ = true;
+                } else if (code == 400u || code == 403u || code == 409u) {
+                    room_in_match_promoted_ = true;
+                    last_match_heartbeat_ms_ = now_ms;
+                } else {
+                    ++room_in_match_failures_;
+                    match_lifecycle_retry_after_ms_ = now_ms +
+                        (room_in_match_failures_ <= 4u ? (1000ULL << std::min<uint32_t>(room_in_match_failures_ - 1u, 3u)) : 30000ULL);
+                }
+            } else { // PollRoom keepalive
+                if (code == 403u || code == 404u) {
+                    match_heartbeat_stopped_ = true;
+                } else {
+                    match_lifecycle_retry_after_ms_ = now_ms + 15000ULL;
+                }
+            }
+            return;
+        }
         if (st != CeOnlineOpStatus::Completed) {
             if (is_host_ && op_guest >= 0) {
+                if (static_cast<size_t>(op_guest) < expected_guests_.size()) {
+                    expected_guests_[static_cast<size_t>(op_guest)].inflight_offer_gen = 0;
+                }
                 RecordGuestSignalFailure(static_cast<size_t>(op_guest), now_ms, "op_failed");
             } else {
                 RecordSignalFailure(now_ms, "op_failed");
@@ -1864,13 +2162,14 @@ private:
             retry_after_ms_ = 0;
         }
         if (op == CeOnlineOpKind::FetchTurn) {
-            if (is_host_ && active_guest_index_ < expected_guests_.size()) {
-                GuestLink &g = expected_guests_[active_guest_index_];
+            const size_t g_idx = (op_guest >= 0) ? static_cast<size_t>(op_guest) : active_guest_index_;
+            if (is_host_ && g_idx < expected_guests_.size()) {
+                GuestLink &g = expected_guests_[g_idx];
                 ParsedJuiceConfig parsed;
                 const bool built = parsed.Build(lobby_->LastTurnBundle(), g.require_relay);
                 if (!built ||
                     !transport_->AttachGuestIceBridge(g.sim_slot, parsed.cfg, g.require_relay)) {
-                    RecordGuestSignalFailure(active_guest_index_, now_ms, "attach_turn_bridge");
+                    RecordGuestSignalFailure(g_idx, now_ms, "attach_turn_bridge");
                     return;
                 }
                 g.turn_fetched = true;
@@ -1892,10 +2191,18 @@ private:
                 pending_offer_tried_ = false;
             }
         } else if (op == CeOnlineOpKind::SendSignal) {
-            if (is_host_ && active_guest_index_ < expected_guests_.size()) {
-                GuestLink &g = expected_guests_[active_guest_index_];
+            const size_t g_idx = (op_guest >= 0) ? static_cast<size_t>(op_guest) : active_guest_index_;
+            if (is_host_ && g_idx < expected_guests_.size()) {
+                GuestLink &g = expected_guests_[g_idx];
                 g.offer_sent = true;
-                g.offer_seq = std::max(g.offer_seq, std::max(signal_seq_, g.answer_seq));
+                g.offer_gen = g.inflight_offer_gen ? g.inflight_offer_gen : (g.offer_gen + 1u);
+                g.inflight_offer_gen = 0;
+                const uint64_t ack_seq = lobby_->LastSentSignalSeq();
+                if (ack_seq > 0) {
+                    g.offer_seq = ack_seq;
+                } else {
+                    g.offer_seq = std::max(g.offer_seq, g.answer_seq);
+                }
             } else if (!is_host_) {
                 guest_answer_sent_ = true;
             }
@@ -1904,45 +2211,64 @@ private:
             if (res.seq > signal_seq_) signal_seq_ = res.seq;
             for (const auto &msg : res.messages) {
                 if (is_host_ && msg.kind == "answer") {
+                    std::string clean_sdp;
+                    uint64_t ans_offer_seq = 0;
+                    uint64_t ans_offer_gen = 0;
+                    ExtractSignalMeta(msg.sdp, &clean_sdp, &ans_offer_seq, &ans_offer_gen);
                     for (auto &g : expected_guests_) {
                         if (g.disconnected || g.seat != msg.from_seat) continue;
-                        if (msg.seq <= g.answer_seq || msg.seq <= g.offer_seq) continue;
+                        if (msg.seq <= g.answer_seq) continue;
+                        if (g.offer_sent &&
+                            !IsAnswerBoundToCurrentOffer(g, msg.seq, ans_offer_seq, ans_offer_gen)) {
+                            continue;
+                        }
                         if (g.bridge_attached && g.offer_sent && !g.answer_applied) {
-                            if (transport_->SetGuestRemoteIceDescription(g.sim_slot, msg.sdp)) {
+                            if (transport_->SetGuestRemoteIceDescription(g.sim_slot, clean_sdp)) {
                                 g.answer_applied = true;
                                 g.answer_seq = msg.seq;
                                 g.pending_answer_sdp.clear();
                                 g.pending_answer_seq = 0;
+                                g.pending_answer_offer_seq = 0;
+                                g.pending_answer_offer_gen = 0;
                                 g.pending_answer_tried = false;
                             } else if (msg.seq > g.pending_answer_seq) {
                                 // Do not advance answer_seq when SetGuestRemoteIceDescription fails.
-                                g.pending_answer_sdp = msg.sdp;
+                                g.pending_answer_sdp = clean_sdp;
                                 g.pending_answer_seq = msg.seq;
+                                g.pending_answer_offer_seq = ans_offer_seq;
+                                g.pending_answer_offer_gen = ans_offer_gen;
                                 g.pending_answer_tried = true;
                             }
                         } else if (!g.answer_applied && msg.seq > g.pending_answer_seq) {
-                            g.pending_answer_sdp = msg.sdp;
+                            g.pending_answer_sdp = clean_sdp;
                             g.pending_answer_seq = msg.seq;
+                            g.pending_answer_offer_seq = ans_offer_seq;
+                            g.pending_answer_offer_gen = ans_offer_gen;
                             g.pending_answer_tried = false;
                         }
                     }
                 } else if (!is_host_ && msg.kind == "offer" && msg.seq > guest_offer_seq_) {
+                    std::string clean_sdp;
+                    uint64_t unused_offer_seq = 0;
+                    uint64_t offer_gen = 0;
+                    ExtractSignalMeta(msg.sdp, &clean_sdp, &unused_offer_seq, &offer_gen);
                     const bool had_offer = (guest_offer_seq_ != 0);
                     guest_offer_seq_ = msg.seq;
+                    guest_offer_gen_ = offer_gen;
                     pending_offer_tried_ = false;
                     if (had_offer && !IsConnected()) {
                         if (guest_require_relay_ && guest_bridge_attached_ && !guest_offer_applied_) {
                             // Reuse fresh unapplied TURN bridge instead of tearing it down twice.
-                            guest_offer_applied_ = transport_->SetRemoteIceDescription(msg.sdp);
+                            guest_offer_applied_ = transport_->SetRemoteIceDescription(clean_sdp);
                             if (guest_offer_applied_) {
                                 pending_remote_offer_.clear();
                                 pending_offer_tried_ = false;
                             } else {
-                                pending_remote_offer_ = msg.sdp;
+                                pending_remote_offer_ = clean_sdp;
                                 pending_offer_tried_ = true;
                             }
                         } else if (guest_require_relay_ && !guest_bridge_attached_ && !guest_offer_applied_) {
-                            pending_remote_offer_ = msg.sdp;
+                            pending_remote_offer_ = clean_sdp;
                         } else {
                             // Host initiated a fresh relay offer: detach STUN/applied bridge and switch to TURN Relay.
                             transport_->DetachHostIceBridge();
@@ -1952,19 +2278,19 @@ private:
                             guest_bridge_attached_ = false;
                             guest_offer_applied_ = false;
                             guest_answer_sent_ = false;
-                            pending_remote_offer_ = msg.sdp;
+                            pending_remote_offer_ = clean_sdp;
                         }
                     } else if (guest_bridge_attached_ && !guest_offer_applied_) {
-                        guest_offer_applied_ = transport_->SetRemoteIceDescription(msg.sdp);
+                        guest_offer_applied_ = transport_->SetRemoteIceDescription(clean_sdp);
                         if (guest_offer_applied_) {
                             pending_remote_offer_.clear();
                             pending_offer_tried_ = false;
                         } else {
-                            pending_remote_offer_ = msg.sdp;
+                            pending_remote_offer_ = clean_sdp;
                             pending_offer_tried_ = true;
                         }
                     } else {
-                        pending_remote_offer_ = msg.sdp;
+                        pending_remote_offer_ = clean_sdp;
                     }
                 }
             }
@@ -2084,12 +2410,24 @@ private:
     }
 
     CE_OnlineMatchTicket ticket_{};
+    std::string finish_room_id_;
+    std::string finish_match_id_;
+    CeOnlineProfile finish_profile_;
     bool is_host_ = false;
     bool direct_mode_ = false;
     bool failed_ = false;
     bool finish_requested_ = false;
-    bool finish_started_ = false;
     bool finish_sent_ = false;
+    bool finish_reauthed_ = false;
+    uint32_t finish_failures_ = 0;
+    uint64_t finish_retry_after_ms_ = 0;
+    bool room_in_match_promoted_ = false;
+    bool room_in_match_reauthed_ = false;
+    bool match_heartbeat_stopped_ = false;
+    uint32_t room_in_match_failures_ = 0;
+    uint64_t match_lifecycle_retry_after_ms_ = 0;
+    uint64_t last_match_heartbeat_ms_ = 0;
+    uint64_t last_room_rev_ = 0;
     uint16_t host_seat_ = 0;
     std::vector<GuestLink> expected_guests_;
     size_t active_guest_index_ = 0;
@@ -2102,6 +2440,7 @@ private:
     bool guest_retried_relay_ = false;
     bool pending_offer_tried_ = false;
     uint64_t guest_offer_seq_ = 0;
+    uint64_t guest_offer_gen_ = 0;
     uint64_t guest_bridge_attached_ms_ = 0;
     std::string pending_remote_offer_;
     uint64_t signal_seq_ = 0;

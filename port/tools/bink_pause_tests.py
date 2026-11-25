@@ -33,7 +33,8 @@ MUTANTS = [
 
 
 def run(command, expect=0, cwd=ROOT):
-    result = subprocess.run(command, cwd=cwd, capture_output=True, text=True, timeout=120)
+    env = dict(os.environ, ASAN_OPTIONS="detect_leaks=0:abort_on_error=0", UBSAN_OPTIONS="halt_on_error=1")
+    result = subprocess.run(command, cwd=cwd, env=env, capture_output=True, text=True, timeout=120)
     return result.returncode == expect, result.stdout + result.stderr
 
 
@@ -55,7 +56,9 @@ def main():
         common / "local-data/port-deps-canonical/dxvk-native/usr/include/dxvk",
     ])
     dxvk = next((p for p in candidates if p.is_dir()), candidates[0])
-    flags = ["clang++", "-std=c++17", "-O1", "-g", "-w", "-DNOMINMAX", "-DINITGUID", "-fms-extensions",
+    flags = ["clang++", "-std=c++17", "-O1", "-g", "-w", "-pthread",
+             "-fsanitize=address,undefined", "-fno-sanitize-recover=all",
+             "-DNOMINMAX", "-DINITGUID", "-fms-extensions",
              "-I" + str(ROOT / "port/d3dx/include"), "-I" + str(ROOT / "port/include"), "-I" + str(ROOT / "port/include/linux"),
              "-I" + str(dxvk), "-I" + str(ROOT / "port/bink"), "-include", str(ROOT / "port/platform/common/portlog.h")]
     libs = ["-lavformat", "-lavcodec", "-lavutil"]
@@ -63,6 +66,7 @@ def main():
     out = ROOT / "local-data" / "bink-pause-tests"
     out.mkdir(parents=True, exist_ok=True)
     cases = ("mid-film", "after-end", "no-sound", "twice")
+    hardening_cases = ("loop-restart", "zero-frames", "copy-bounds", "make-sound-safety", "dsound-thread-safety")
     with tempfile.TemporaryDirectory(dir=out) as folder:
         folder = Path(folder)
 
@@ -72,7 +76,7 @@ def main():
         good, detail = build(SOURCE, folder / "driver")
         check("bink.cpp and the driver build on the host", good, detail)
         if good:
-            for case in cases:
+            for case in cases + hardening_cases:
                 passed, detail = run([str(folder / "driver"), case])
                 check("case " + case + " holds on bink.cpp", passed, detail)
         text = SOURCE.read_text()

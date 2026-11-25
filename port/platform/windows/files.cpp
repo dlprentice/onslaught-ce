@@ -18,10 +18,7 @@
 #include <fcntl.h>
 
 #include <stdio.h>
-#ifndef CE_NETWORK_OFF
 #include <errno.h>
-#include <fcntl.h>
-#endif
 #include <stdlib.h>
 #include <string.h>
 
@@ -215,6 +212,8 @@ enum Mode { READ, WRITE, SHADOW };
 // 0 and a host path in out, or -1.
 int Resolve(const char *game_path, Mode mode, char *out, size_t n)
 {
+	if (out && n)
+		out[0] = 0;
 	Init();
 	if (!gRootsValid || !game_path || !*game_path || !out || !n)
 		return -1;
@@ -225,7 +224,9 @@ int Resolve(const char *game_path, Mode mode, char *out, size_t n)
 		if (mode != READ)
 			return -1;
 		int w = snprintf(out, n, "%s", game_path);
-		return w > 0 && (size_t)w < n ? 0 : -1;
+		if (w <= 0 || (size_t)w >= n)
+			return out[0] = 0, -1;
+		return 0;
 	}
 	char rel[MAX_PATH], user[MAX_PATH * 2], game[MAX_PATH * 2];
 	if (!Relative(game_path, rel, sizeof(rel)))
@@ -238,18 +239,20 @@ int Resolve(const char *game_path, Mode mode, char *out, size_t n)
 	{
 		const char *chosen = Exists(user) ? user : game;
 		int w = snprintf(out, n, "%s", chosen);
-		return w > 0 && (size_t)w < n ? 0 : -1;
+		if (w <= 0 || (size_t)w >= n)
+			return out[0] = 0, -1;
+		return 0;
 	}
 	int w = snprintf(out, n, "%s", user);
 	if (w <= 0 || (size_t)w >= n)
-		return -1;
+		return out[0] = 0, -1;
 	if (mode == WRITE)
 	{
 		// Parent folders the game folder has are created in the writable folder (savegames\, ...).
 		char parent[MAX_PATH * 2];
 		int pw = snprintf(parent, sizeof(parent), "%s", rel);
 		if (pw <= 0 || (size_t)pw >= sizeof(parent))
-			return -1;
+			return out[0] = 0, -1;
 		if (char *slash = strrchr(parent, '\\'))
 		{
 			*slash = 0;
@@ -257,9 +260,9 @@ int Resolve(const char *game_path, Mode mode, char *out, size_t n)
 			int gpw = snprintf(gparent, sizeof(gparent), "%s\\%s", gGameDir, parent);
 			int upw = snprintf(uparent, sizeof(uparent), "%s\\%s", gUserDir, parent);
 			if (gpw <= 0 || (size_t)gpw >= sizeof(gparent) || upw <= 0 || (size_t)upw >= sizeof(uparent))
-				return -1;
+				return out[0] = 0, -1;
 			if (!Exists(uparent) && Exists(gparent) && !MakeDirs(uparent))
-				return -1;
+				return out[0] = 0, -1;
 		}
 	}
 	return 0;
@@ -510,20 +513,25 @@ void FindSort(Find *f)
 Find *FindStart(const char *spec)
 {
 	Find *f = (Find *)calloc(1, sizeof(Find));
+	if (!f) return NULL;
 	f->saveNames = spec && (!_stricmp(spec, "savegames\\*.bes") || !_stricmp(spec, "savegames/*.bes"));
-	char user[MAX_PATH * 2], game[MAX_PATH * 2];
-	if (Resolve(spec, SHADOW, user, sizeof(user)) == 0)
+	char user[MAX_PATH * 2] = {}, game[MAX_PATH * 2] = {};
+	bool haveUser = Resolve(spec, SHADOW, user, sizeof(user)) == 0;
+	if (haveUser)
 		FindScan(f, user);
-	if (f->error) return f;
-	Resolve(spec, READ, game, sizeof(game));
-	if (_stricmp(game, user) != 0)
+	if (f->error) { free(f->entries); f->entries = NULL; f->count = 0; return f; }
+	if (Resolve(spec, READ, game, sizeof(game)) != 0)
+	{ free(f->entries); f->entries = NULL; f->count = 0; f->error = ERROR_INVALID_NAME; return f; }
+	if (!haveUser || _stricmp(game, user) != 0)
 		FindScan(f, game);
+	if (f->error) { free(f->entries); f->entries = NULL; f->count = 0; return f; }
 	FindSort(f);
 	return f;
 }
 
 void FindFree(Find *f)
 {
+	if (!f) return;
 	free(f->entries);
 	free(f);
 }
@@ -531,6 +539,7 @@ void FindFree(Find *f)
 DWORD SaveFoldedNameAbsent(const void *name)
 {
 	Find *f = FindStart("savegames\\*.bes");
+	if (!f) return ERROR_NOT_ENOUGH_MEMORY;
 	DWORD error = f->error;
 	for (int i = 0; !error && i < f->count; i++)
 	{
@@ -606,6 +615,7 @@ static unsigned LookupSave(const void *name, int *index, char *leaf, unsigned ca
 	DWORD error = PortSavePathUtf8(name, path, sizeof(path));
 	if (error) return error;
 	Find *f = FindStart("savegames\\*.bes");
+	if (!f) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return ERROR_NOT_ENOUGH_MEMORY; }
 	error = f->error;
 	int admitted = 0;
 	char canonicalPath[MAX_PATH] = {};
@@ -827,11 +837,23 @@ int port_mkdir(const char *name)
 intptr_t port_findfirst(const char *spec, struct _finddata_t *d)
 {
 	Find *f = FindStart(spec);
+	if (!f)
+	{
+		errno = ENOMEM;
+		SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+		return -1;
+	}
 	if (!f->count)
 	{
 		DWORD error = f->error;
 		FindFree(f);
-		if (error) SetLastError(error);
+		if (error)
+		{
+			errno = error == ERROR_NOT_ENOUGH_MEMORY ? ENOMEM : EINVAL;
+			SetLastError(error);
+		}
+		else
+			errno = ENOENT;
 		return -1;
 	}
 	if (port_findnext((intptr_t)f, d) != 0)
@@ -918,6 +940,11 @@ HANDLE WINAPI PortCreateFileA(LPCSTR name, DWORD access, DWORD share, LPSECURITY
 HANDLE WINAPI PortFindFirstFileA(LPCSTR spec, LPWIN32_FIND_DATAA data)
 {
 	Find *f = FindStart(spec);
+	if (!f)
+	{
+		SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+		return INVALID_HANDLE_VALUE;
+	}
 	if (!f->count)
 	{
 		DWORD error = f->error ? f->error : ERROR_FILE_NOT_FOUND;

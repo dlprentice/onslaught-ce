@@ -30,23 +30,44 @@ bool validFolderPath(const char *path) {
     return path[0]=='/';
 #endif
 }
+size_t trimmedFolderLen(const char *path, size_t cap) {
+    if (!path) return 0;
+    size_t len = strnlen(path, cap);
+    if (len >= cap) return len;
+#ifdef _WIN32
+    const bool driveRoot = len >= 3 &&
+        ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) &&
+        path[1] == ':' && (path[2] == '\\' || path[2] == '/');
+    const size_t minLen = driveRoot ? 3 : 1;
+    while (len > minLen && (path[len - 1] == '/' || path[len - 1] == '\\'))
+        --len;
+#else
+    while (len > 1 && path[len - 1] == '/')
+        --len;
+#endif
+    return len;
+}
 void SDLCALL picked(void *context,const char *const *files,int) {
     const unsigned long id=static_cast<Ticket*>(context)->serial;delete static_cast<Ticket*>(context);
     State &s=state();std::lock_guard<std::mutex> hold(s.lock);
     if(!s.open||s.page!=id||s.view.state!=CE_BACKUP_PICKING)return;
     if(!files){note(s.view,CE_BACKUP_ERROR,"The folder chooser could not open.");return;}
     if(!files[0]){note(s.view,CE_BACKUP_IDLE,"No new folder chosen.");return;}
-    if(files[1] || !validFolderPath(files[0]) || strnlen(files[0],sizeof(s.view.folder))>=sizeof(s.view.folder)){
+    const size_t len = trimmedFolderLen(files[0], sizeof(s.view.folder));
+    if(files[1] || !validFolderPath(files[0]) || len>=sizeof(s.view.folder)){
         note(s.view,CE_BACKUP_ERROR,"Choose one local folder.");return;
     }
-    snprintf(s.view.folder,sizeof(s.view.folder),"%s",files[0]);note(s.view,CE_BACKUP_IDLE,"Ready when you are.");
+    snprintf(s.view.folder,sizeof(s.view.folder),"%.*s",int(len),files[0]);note(s.view,CE_BACKUP_IDLE,"Ready when you are.");
 }
 }
 void CeBackupEnter(const char *configured) {
     State &s=state();std::lock_guard<std::mutex> hold(s.lock);s.open=true;
     ++s.page;s.view={};
-    if(configured && *configured && strnlen(configured,sizeof(s.view.folder))<sizeof(s.view.folder))
-        snprintf(s.view.folder,sizeof(s.view.folder),"%s",configured);
+    if(configured && *configured) {
+        const size_t len = trimmedFolderLen(configured, sizeof(s.view.folder));
+        if(len<sizeof(s.view.folder))
+            snprintf(s.view.folder,sizeof(s.view.folder),"%.*s",int(len),configured);
+    }
 }
 void CeBackupLeave() {
     State &s=state();std::lock_guard<std::mutex> hold(s.lock);s.open=false;

@@ -953,6 +953,16 @@ enum RoomId {
 };
 
 enum { kPortalCount = 7, kMaxObstacles = 192, kNativeBayCount = 6 };
+// Control fixtures (the Archive Pedestal's desk, the diorama lecterns, the turntable
+// stanchions): how far a post stands beyond its plinth's edge, its half-size, and the
+// height all of them stay under.
+constexpr float kStanchionReach = 0.14f;
+constexpr float kStanchionHalf = 0.20f;
+constexpr float kFixtureTop = 1.20f;
+constexpr float kDioramaLecternReach = 2.05f + 0.14f;
+constexpr float kPedestalDeskY = 33.65f;
+constexpr float kPedestalDeskHalfWidth = 1.30f;
+constexpr float kPedestalDeskHalfDepth = 0.30f;
 constexpr float kCinemaOffsetX = 29.0f;
 constexpr float kCinemaOffsetY = 10.0f;
 constexpr float kReturnArchY = -5.4f;
@@ -1138,6 +1148,78 @@ inline RoomGraph MakeRoomGraph() {
             const float x = (11.0f + 1.65f + float(n % 3) * 1.5f + float(n / 3) * 8.0f) + kCinemaOffsetX;
             PushObstacle(g, x - 0.55f, y - 0.52f, x + 0.55f, y + 0.52f, 0.0f, 1.20f, kRoomCinema);
         }
+    }
+
+    // ---- Control fixtures that stand proud of their plinths ----
+    // Each is solid to walk into and low enough (under kFixtureTop, well below eye
+    // height) that no sight line to an exhibit or along an aisle crosses it.
+    // Archive Pedestal: the south-facing brass control desk in front of the rotunda plinth.
+    PushObstacle(g, -kPedestalDeskHalfWidth, kPedestalDeskY - kPedestalDeskHalfDepth,
+                     kPedestalDeskHalfWidth, 34.0f, 0.0f, kFixtureTop, kRoomAtrium);
+    // Diorama lecterns: one on the aisle side of each of the four command tables.
+    for (unsigned ix = 0; ix < 2; ++ix)
+        for (unsigned iy = 0; iy < 2; ++iy) {
+            const float towardAisle = ix == 0 ? 1.0f : -1.0f;
+            const float lx = dioX[ix] + towardAisle * kDioramaLecternReach;
+            PushObstacle(g, lx - kStanchionHalf, dioY[iy] - kStanchionHalf,
+                            lx + kStanchionHalf, dioY[iy] + kStanchionHalf, 0.0f, kFixtureTop, kRoomAtrium);
+        }
+    // Turntable stanchions: the brass control post in front of every rotating plinth
+    // (plinth centre, plinth half-size, the side the post stands on, its room). The
+    // post stands kStanchionReach beyond the plinth's edge.
+    static const struct { float x, y, half; int dirX, dirY; RoomId room; } kStanchions[] = {
+        {   0.00f,  10.50f, 2.50f,  0, -1, kRoomCourtyard},
+        {  -5.80f,  -1.60f, 1.15f,  1,  0, kRoomCourtyard},
+        {   5.80f,  -1.60f, 1.15f, -1,  0, kRoomCourtyard},
+        { -10.20f,   0.50f, 1.40f,  1,  0, kRoomCourtyard},
+        {  10.20f,   0.50f, 1.40f, -1,  0, kRoomCourtyard},
+        {  -5.40f,  48.00f, 1.25f,  0, -1, kRoomAtrium},
+        {   5.40f,  48.00f, 1.25f,  0, -1, kRoomAtrium},
+        { -40.80f,  38.00f, 1.30f,  1,  0, kRoomForseti},
+        { -40.80f,  44.00f, 1.30f,  1,  0, kRoomForseti},
+        { -25.25f,  48.40f, 1.10f,  0, -1, kRoomForseti},
+        { -32.75f,  48.40f, 1.10f,  0, -1, kRoomForseti},
+        { -40.80f,  49.00f, 1.05f,  0, -1, kRoomForseti},
+        { -25.25f,  33.60f, 1.10f,  0,  1, kRoomForseti},
+        { -40.80f,  33.00f, 1.05f,  0,  1, kRoomForseti},
+        { -32.75f,  33.60f, 1.10f,  0,  1, kRoomForseti},
+        { -18.00f,  48.60f, 1.05f,  0, -1, kRoomForseti},
+        {  21.80f,  48.00f, 1.50f,  0, -1, kRoomMuspell},
+        {  27.00f,  48.00f, 1.50f,  0, -1, kRoomMuspell},
+        {  32.20f,  48.00f, 1.50f,  0, -1, kRoomMuspell},
+        {  37.40f,  48.00f, 1.50f,  0, -1, kRoomMuspell},
+        {  21.80f,  34.00f, 1.50f,  0,  1, kRoomMuspell},
+        {  27.00f,  34.00f, 1.50f,  0,  1, kRoomMuspell},
+        {  32.20f,  34.00f, 1.50f,  0,  1, kRoomMuspell},
+        {  37.40f,  34.00f, 1.50f,  0,  1, kRoomMuspell},
+        {  18.40f,  48.20f, 1.05f,  0, -1, kRoomMuspell},
+        {  41.20f,  38.00f, 1.25f, -1,  0, kRoomMuspell},
+        {  41.20f,  48.80f, 1.05f,  0, -1, kRoomMuspell},
+        {  41.20f,  44.00f, 1.25f, -1,  0, kRoomMuspell},
+        {  41.20f,  33.20f, 1.05f,  0,  1, kRoomMuspell},
+        { -15.60f,  55.00f, 1.35f,  1,  0, kRoomHangar},
+        { -15.60f,  60.00f, 1.35f,  1,  0, kRoomHangar},
+        { -15.60f,  65.00f, 1.35f,  1,  0, kRoomHangar},
+        { -15.60f,  70.00f, 1.35f,  1,  0, kRoomHangar},
+        { -15.60f,  75.00f, 1.35f,  1,  0, kRoomHangar},
+        {  -9.80f,  58.40f, 1.20f,  1,  0, kRoomHangar},
+        {  -9.80f,  62.20f, 1.20f,  1,  0, kRoomHangar},
+        {  -9.80f,  68.40f, 1.20f,  1,  0, kRoomHangar},
+        {  -9.80f,  72.80f, 1.20f,  1,  0, kRoomHangar},
+        {  13.00f,  58.20f, 4.20f, -1,  0, kRoomHangar},
+        {  13.00f,  62.70f, 4.20f, -1,  0, kRoomHangar},
+        {  13.00f,  67.20f, 4.20f, -1,  0, kRoomHangar},
+        {  13.00f,  71.70f, 4.20f, -1,  0, kRoomHangar},
+        {  -3.80f,  75.30f, 1.48f,  0, -1, kRoomHangar},
+        {   0.00f,  75.30f, 1.48f,  0, -1, kRoomHangar},
+        {   3.80f,  75.30f, 1.48f,  0, -1, kRoomHangar},
+    };
+    for (unsigned i = 0; i < sizeof(kStanchions) / sizeof(kStanchions[0]); ++i) {
+        const float reach = kStanchions[i].half + kStanchionReach;
+        const float sx = kStanchions[i].x + float(kStanchions[i].dirX) * reach;
+        const float sy = kStanchions[i].y + float(kStanchions[i].dirY) * reach;
+        PushObstacle(g, sx - kStanchionHalf, sy - kStanchionHalf, sx + kStanchionHalf, sy + kStanchionHalf,
+                     0.0f, kFixtureTop, kStanchions[i].room);
     }
 
     return g;

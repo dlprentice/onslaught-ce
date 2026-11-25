@@ -162,7 +162,7 @@ int main() {
 
     const float y0 = bank.slots[0].yawRad;
     StepRotation(&bank, 0.1f, false);
-    Need(Near(bank.slots[0].yawRad, y0 + kDefaultRateRadPerSec * 0.1f), "rotates at ~12 deg/s");
+    Need(Near(bank.slots[0].yawRad, y0 + kDefaultRateRadPerSec * 0.1f), "rotates at ~4.5 deg/s");
     const float yScale = bank.slots[42].yawRad;
     StepRotation(&bank, 0.2f, false);
     Need(Near(bank.slots[42].yawRad, yScale), "paused turntable holds angle");
@@ -538,7 +538,9 @@ int main() {
           "CreateStateBlock(D3DSBT_ALL" in cpp and "savedState->Apply();" in cpp and "savedState->Release();" in cpp)
     check("runtime invalidates LT cached state after state block restore",
           "LT.InvalidateAllStates();" in cpp)
-    restore_idx = cpp.find("LT.InvalidateAllStates();")
+    check("runtime invalidates LT cached state between stud draw and mesh draw",
+          cpp.count("LT.InvalidateAllStates();") >= 2)
+    restore_idx = cpp.rfind("LT.InvalidateAllStates();")
     apply_after = cpp.find("RENDERINFO.Apply();", restore_idx) if restore_idx >= 0 else -1
     restore_block = cpp[restore_idx:apply_after] if restore_idx >= 0 and apply_after > restore_idx else ""
     check("runtime marks RENDERINFO view/projection/world dirty after state block restore",
@@ -583,6 +585,113 @@ int main() {
     )
     check("canonical retail lore regression checks pass (no stale Vulcan/Flux/Blazer/XF-24/Plasma/SAM/Dominion labels)",
           all(term not in header_txt for term in banned_lore))
+    # Control fixtures are solid: every turntable stanchion, every diorama lectern and the Archive Pedestal's
+    # desk stands inside a low room-graph obstacle, placed from the fixtures' own positions, and no fixture
+    # blocks a sight line or seals an aisle. Mutants prove the check bites.
+    fixture_driver = r"""
+#include "ce_museum_exhibition.h"
+#include "ce_museum_turntable.h"
+#include "ce_museum_diorama.h"
+#include "ce_archive_pedestal.h"
+#include <cstdio>
+#include <cstdlib>
+namespace G = CeMuseumExhibition::Grand;
+namespace Ex = CeMuseumExhibition;
+static void Need(bool ok, const char *why) { if (!ok) { std::fprintf(stderr, "FAIL: %s\n", why); std::exit(2); } }
+static bool Open(const G::RoomGraph &g, float x, float y) { return G::WalkAt(g, Ex::Vec2{x, y}) != Ex::kWalkBlocked; }
+static int LowBoxAt(const G::RoomGraph &g, float x, float y) {
+    for (unsigned k = 0; k < g.obstacleCount; ++k) {
+        const G::SolidBox &b = g.obstacles[k];
+        if (x >= b.minX && x <= b.maxX && y >= b.minY && y <= b.maxY && b.maxZ <= G::kFixtureTop + 1e-4f &&
+            (b.maxX - b.minX) <= 2.0f * G::kPedestalDeskHalfWidth + 1e-3f) return int(k);
+    }
+    return -1;
+}
+int main() {
+    const G::RoomGraph g = G::MakeRoomGraph();
+    Need(g.obstacleCount < unsigned(G::kMaxObstacles) - 16u, "room graph keeps obstacle headroom");
+    Need(G::kFixtureTop < 1.5f, "fixtures stay well below eye height");
+    for (unsigned i = 0; i < CeMuseumTurntable::kManifestCount; ++i) {
+        float x, y, z;
+        CeMuseumTurntable::StudPosition(i, &x, &y, &z);
+        Need(LowBoxAt(g, x, y) >= 0, "every turntable stanchion is a solid, low obstacle");
+        Need(z <= G::kFixtureTop, "the stud sits within its stanchion's height");
+    }
+    for (unsigned i = 0; i < CeMuseumDiorama::kDioramaCount; ++i) {
+        float x, y, z;
+        CeMuseumDiorama::StudPosition(i, &x, &y, &z);
+        Need(LowBoxAt(g, x, y) >= 0, "every diorama lectern is a solid, low obstacle");
+    }
+    for (unsigned b = 0; b < unsigned(CeArchivePedestal::kBtnCount); ++b) {
+        const float bx = CeArchivePedestal::kPedestalLocalX + CeArchivePedestal::kButtons[b].offsetX;
+        Need(LowBoxAt(g, bx, CeArchivePedestal::kControlLocalY) >= 0, "the Archive Pedestal's desk is solid under each control");
+    }
+    Need(CeArchivePedestal::kControlLocalY == G::kPedestalDeskY, "the desk obstacle is where the control rail is");
+    // Sight lines at eye height pass over every fixture, and the visitor's stances stay open.
+    Need(G::SightClear(g, Ex::Vec3{0.0f, 21.0f, 1.7f}, Ex::Vec3{0.0f, 36.0f, 1.7f}), "entrance to rotunda sight line clear over the desk");
+    Need(G::SightClear(g, Ex::Vec3{0.0f, 30.0f, 1.7f}, Ex::Vec3{0.0f, 33.65f, 1.3f}), "the visitor can see the desk's controls");
+    Need(G::SightClear(g, Ex::Vec3{-6.0f, 32.2f, 1.7f}, Ex::Vec3{-9.21f, 32.2f, 1.3f}), "the visitor can see a diorama lectern's control from the aisle");
+    Need(G::SightClear(g, Ex::Vec3{-6.0f, 30.0f, 1.7f}, Ex::Vec3{-6.0f, 50.0f, 1.7f}), "the Atrium's west aisle sight line is clear past the lecterns");
+    Need(G::SightClear(g, Ex::Vec3{21.8f, 41.0f, 1.7f}, Ex::Vec3{21.8f, 48.0f, 1.7f}), "aisle to a Muspell plinth clear over its stanchion");
+    Need(Open(g, 0.0f, 31.6f), "the stance in front of the Archive Pedestal's desk is open");
+    Need(!Open(g, 0.0f, 33.65f), "the desk itself cannot be walked through");
+    Need(Open(g, -7.6f, 32.2f) && Open(g, 7.6f, 47.6f), "the stances beside the diorama lecterns are open");
+    Need(!Open(g, -9.21f, 32.2f), "a diorama lectern cannot be walked through");
+    Need(Open(g, 0.0f, 41.0f) && Open(g, -30.0f, 41.0f) && Open(g, 30.0f, 41.0f) &&
+         Open(g, 0.0f, 65.0f) && Open(g, -12.6f, 65.0f),
+         "the wing centre aisles and the Hangar cross-aisle stay open");
+    return 0;
+}
+"""
+    exhibition_h = (GAME / "ce_museum_exhibition.h").read_text()
+    fixture_mutants = [
+        ("no-stanchions", "for (unsigned i = 0; i < sizeof(kStanchions) / sizeof(kStanchions[0]); ++i) {",
+         "for (unsigned i = 0; i < 0u; ++i) {"),
+        ("stanchion-wrong-side", "const float sx = kStanchions[i].x + float(kStanchions[i].dirX) * reach;",
+         "const float sx = kStanchions[i].x - float(kStanchions[i].dirX) * reach;"),
+        ("no-lecterns", "const float lx = dioX[ix] + towardAisle * kDioramaLecternReach;",
+         "const float lx = dioX[ix] + towardAisle * 0.0f;"),
+        ("no-desk", "PushObstacle(g, -kPedestalDeskHalfWidth, kPedestalDeskY - kPedestalDeskHalfDepth,",
+         "if (false) PushObstacle(g, -kPedestalDeskHalfWidth, kPedestalDeskY - kPedestalDeskHalfDepth,"),
+        ("fixtures-block-sight", "constexpr float kFixtureTop = 1.20f;", "constexpr float kFixtureTop = 2.40f;"),
+    ]
+    with tempfile.TemporaryDirectory(dir=out) as ftmp:
+        fd = Path(ftmp)
+        (fd / "fixtures.cpp").write_text(fixture_driver)
+        ok, detail = run(["c++", "-std=c++14", "-O1", "-Wall", "-Wextra", "-Werror", "-I" + str(GAME),
+                          str(fd / "fixtures.cpp"), "-o", str(fd / "fixtures")])
+        check("control fixture driver builds", ok, detail)
+        if ok:
+            ok, detail = run([str(fd / "fixtures")])
+            check("stanchions, lecterns and the pedestal desk are solid, low and clear of sight lines and aisles", ok, detail)
+        for label, old_text, new_text in fixture_mutants:
+            if exhibition_h.count(old_text) != 1:
+                check("fixture mutant anchor " + label, False, "not found once: " + old_text)
+                continue
+            md = fd / label
+            md.mkdir()
+            (md / "ce_museum_exhibition.h").write_text(exhibition_h.replace(old_text, new_text))
+            built, detail = run(["c++", "-std=c++14", "-O1", "-I" + str(md), "-I" + str(GAME),
+                                 str(fd / "fixtures.cpp"), "-o", str(md / "fixtures")])
+            if not built:
+                check("fixture mutant " + label + " caught", False, detail)
+                continue
+            caught, _ = run([str(md / "fixtures")], 2)
+            check("fixture mutant " + label + " caught", caught)
+
+    # A quick-jump and an out-of-bounds return place the visitor for good: teleport plus the engine's pose reset.
+    visit_engine = (GAME / "ce_museum_visit_engine.cpp").read_text()
+    place = re.search(r"static void PlaceVisitor\(CBattleEngine \*engine, const FVector &position, float yaw\)\n\{(.*?)\n\}", visit_engine, re.S)
+    check("the visitor is placed by teleport and pose reset, so the heading holds on the next tick",
+          bool(place) and "engine->Teleport(position);" in place.group(1)
+          and "engine->TeleportOrientation(facing);" in place.group(1)
+          and "engine->CeResetPoseForRecall(yaw);" in place.group(1)
+          and place.group(1).index("engine->TeleportOrientation(facing);") < place.group(1).index("engine->CeResetPoseForRecall(yaw);")
+          and "PlaceVisitor(engine, dest, jumpYaw);" in visit_engine
+          and "PlaceVisitor(engine, gStartPosition, YawOfOrientation(gStartOrientation));" in visit_engine
+          and "MakeRotationF(jumpYaw" not in visit_engine
+          and "engine->GetOrientation() = gStartOrientation;" not in visit_engine)
+
     return 1 if failures else 0
 
 

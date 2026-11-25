@@ -8,6 +8,7 @@
 #ifdef CE_VERSION
 #include "common.h"
 #include "ce_extras.h"
+#include "ce_name_text.h"
 #include "../platform/common/ce_backup_preview_ui.h"
 #include "../platform/common/ce_career_restore_ui.h"
 #include <stdio.h>
@@ -115,13 +116,39 @@ Kind kind(int i, int *set) {
 }
 int count(){return !allowed?1:screen==S_BROWSE?baseRows()+view.choices:lineCount;}
 void plain(WCHAR*dst,int n,const char*s){PortCeExtrasWiden(dst,n,s);}
+void widenUtf8(WCHAR *dst, int n, const char *s) { CeDecodeName(dst, n, s, true); }
 // A set's folder name as the player reads it: its local date and time (a
 // same-second suffix is left off; the list's order still tells such sets apart).
 void setLabel(char *out, size_t cap, const char *s) {
   PortCeBackupWhen(out, cap, s, false);
 }
-// The leaf of a path, for showing a folder by its own name only.
-const char *leafOf(const char *path){const char*l=path;for(const char*c=path;*c;++c)if(*c=='/'||*c=='\\')l=c+1;return l;}
+// The leaf of a path, for showing a folder by its own name only (handling trailing separators and root paths).
+void leafOf(char *out, size_t cap, const char *path) {
+  if (!cap)
+    return;
+  out[0] = 0;
+  if (!path || !*path)
+    return;
+  size_t end = strlen(path);
+  while (end > 1 && (path[end - 1] == '/' || path[end - 1] == '\\')) {
+    if (end == 3 && path[1] == ':')
+      break;
+    --end;
+  }
+  if ((end == 1 && (path[0] == '/' || path[0] == '\\')) ||
+      (end == 3 && path[1] == ':' && (path[2] == '/' || path[2] == '\\'))) {
+    snprintf(out, cap, "%.*s", int(end), path);
+    return;
+  }
+  size_t start = end;
+  while (start > 0 && path[start - 1] != '/' && path[start - 1] != '\\')
+    --start;
+  if (start == end) {
+    snprintf(out, cap, "%c", path[0]);
+    return;
+  }
+  snprintf(out, cap, "%.*s", int(end - start), path + start);
+}
 // A manifest time ("2026-11-17T13:11:53Z") as the list shows times.
 void readableTime(char *out, size_t cap, const char *iso) {
   PortCeBackupWhen(out, cap, iso, false);
@@ -252,7 +279,9 @@ void buildDone(const char *source, const char *target) {
         made ? "It was not loaded." : "Look before trying again.");
   char set[64] = "", text[192] = "";
   if (flow.backup[0]) {
-    setLabel(set, sizeof(set), leafOf(flow.backup));
+    char leaf[256];
+    leafOf(leaf, sizeof(leaf), flow.backup);
+    setLabel(set, sizeof(set), leaf);
     snprintf(text, sizeof(text), "Backed up first as the set of %s.", set);
   }
   add("Your other careers", unsure ? "Kept" : "Unchanged",
@@ -339,9 +368,9 @@ void sync() {
     return;
   screen = next;
   workRows = false;
-  focus(next == S_CONFIRM || next == S_LOOKUP ? lineCount - 1
-        : next == S_BROWSE && view.careers   ? kRestoreRow
-                                              : 0);
+  focus(next == S_CONFIRM || next == S_LOOKUP || next == S_DONE ? lineCount - 1
+        : next == S_BROWSE && view.careers                      ? kRestoreRow
+                                                                 : 0);
 }
 void open() {
   if (reshow)
@@ -396,7 +425,7 @@ void lineRow(int index, SCeListRow *out) {
     return;
   const Line &l = lines[index];
   if (l.name) {
-    PortCeExtrasWidenName(out->mLeft, 80, l.left);
+    widenUtf8(out->mLeft, 80, l.left);
     PortCeExtrasInFont(out->mLeft);
   } else
     plain(out->mLeft, 80, l.left);
@@ -410,11 +439,14 @@ void lineHint(int index, WCHAR *help, WCHAR *extra, int n) {
   if (index < 0 || index >= lineCount)
     return;
   const Line &l = lines[index];
-  plain(help, n, l.help);
-  plain(extra, n, l.extra);
   if (l.hintName) {
+    widenUtf8(help, n, l.help);
+    widenUtf8(extra, n, l.extra);
     PortCeExtrasInFont(help);
     PortCeExtrasInFont(extra);
+  } else {
+    plain(help, n, l.help);
+    plain(extra, n, l.extra);
   }
 }
 bool lineSelect(int index) {
@@ -465,7 +497,7 @@ void row(int index, SCeListRow *out) {
     char leaf[201]{}, shown[201]{};
     if (CePreviewDisplaySetName(unsigned(set), leaf, sizeof(leaf)))
       setLabel(shown, sizeof(shown), leaf);
-    PortCeExtrasWidenName(out->mLeft, 80, shown);
+    widenUtf8(out->mLeft, 80, shown);
     PortCeExtrasInFont(out->mLeft);
     char word[24], line[96];
     const char *extra = "";
@@ -502,7 +534,7 @@ void row(int index, SCeListRow *out) {
     snprintf(detail, sizeof(detail), "%d", view.members);
     break;
   case K_CAREER:
-    PortCeExtrasWidenName(out->mLeft, 80, view.name);
+    widenUtf8(out->mLeft, 80, view.name);
     PortCeExtrasInFont(out->mLeft);
     if (view.careers > 1)
       snprintf(detail, sizeof(detail), "%d of %d", current + 1,

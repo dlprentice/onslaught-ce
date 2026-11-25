@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // port/game/ce_museum_art.cpp: Framed retail Goodies concept art canvases for the Concept
 // Art Gallery (75 plates) and Early Designs Vault (74 plates) — 149/149 (100%) simultaneous
-// salon hang. Uploads all 149 textures ONCE at RuntimeInit() with kMaxTexEdge = 256px
-// (D3DPOOL_MANAGED for D3D9 Reset safety), handles truncated retail filenames (goodie 95 &
-// goodie 103) via MatchesTruncatedCatalogPath, and batches ALL 149 brass frames, linen mats,
-// nameplates, and artwork quads into static D3DPOOL_MANAGED GPU VBs/IBs (CPU fallback intact).
+// salon hang. Uploads all 149 textures ONCE at RuntimeInit() with kMaxTexEdge = 512px in DXT1
+// (D3DPOOL_MANAGED for D3D9 Reset safety), crops baked black padding bars, handles truncated
+// retail filenames (goodie 95 & goodie 103) via MatchesTruncatedCatalogPath, and batches ALL 149
+// brass frames, linen mats, nameplates, and artwork quads into static D3DPOOL_MANAGED GPU VBs/IBs.
 #ifdef CE_VERSION
 #include "common.h"
 #include "ltshell.h"
@@ -12,6 +12,7 @@
 #include "d3dx9.h"
 #include "ce_asset_catalog.h"
 #include "ce_museum_art.h"
+#include "ce_museum_render_state.h"
 #include "ce_museum_world.h"
 #include "../platform/common/portlog.h"
 #include <cmath>
@@ -33,6 +34,8 @@ struct LoadedCanvas {
     IDirect3DTexture9 *texture;
     bool ownsTexture;
     unsigned srcW, srcH;
+    unsigned cropW, cropH;
+    float u0, v0, u1, v1;
     bool attempted;
     bool missing;
 };
@@ -71,16 +74,148 @@ struct UploadCtx {
     LoadedCanvas *slot;
 };
 
+// Inspects mip 0 of a newly uploaded D3DPOOL_MANAGED gallery texture (DXT1 or A8R8G8B8)
+// to trim solid-black power-of-two padding bars so frames and mats hug the artwork cleanly.
+void DetectCanvasContentBounds(IDirect3DTexture9 *tex, unsigned fallbackW, unsigned fallbackH, LoadedCanvas *slot) {
+    slot->cropW = fallbackW ? fallbackW : 1u;
+    slot->cropH = fallbackH ? fallbackH : 1u;
+    slot->u0 = 0.0f; slot->v0 = 0.0f; slot->u1 = 1.0f; slot->v1 = 1.0f;
+    if (!tex) return;
+
+    D3DSURFACE_DESC desc = {};
+    if (FAILED(tex->GetLevelDesc(0, &desc)) || desc.Width < 16u || desc.Height < 16u) return;
+    D3DLOCKED_RECT lr = {};
+    if (FAILED(tex->LockRect(0, &lr, NULL, D3DLOCK_READONLY)) || !lr.pBits || lr.Pitch <= 0) return;
+
+    const unsigned w = desc.Width, h = desc.Height;
+    const bool isDxt1 = (desc.Format == D3DFMT_DXT1);
+    const bool isDxt35 = (desc.Format == D3DFMT_DXT3 || desc.Format == D3DFMT_DXT5);
+    if ((isDxt1 || isDxt35) && (w % 4u) == 0u && (h % 4u) == 0u) {
+        const unsigned bw = w / 4u, bh = h / 4u;
+        const unsigned blkStride = isDxt1 ? 8u : 16u;
+        const unsigned colOff = isDxt1 ? 0u : 8u;
+        auto blockNearBlack = [&](unsigned bx, unsigned by) -> bool {
+            const uint8_t *blk = static_cast<const uint8_t *>(lr.pBits) + by * static_cast<unsigned>(lr.Pitch) + bx * blkStride + colOff;
+            const uint16_t c0 = static_cast<uint16_t>(blk[0] | (blk[1] << 8));
+            const uint16_t c1 = static_cast<uint16_t>(blk[2] | (blk[3] << 8));
+            const uint32_t bits = static_cast<uint32_t>(blk[4]) |
+                                  (static_cast<uint32_t>(blk[5]) << 8) |
+                                  (static_cast<uint32_t>(blk[6]) << 16) |
+                                  (static_cast<uint32_t>(blk[7]) << 24);
+            unsigned r[4], g[4], b[4];
+            r[0] = ((c0 >> 11) & 0x1fu) * 255u / 31u;
+            g[0] = ((c0 >> 5)  & 0x3fu) * 255u / 63u;
+            b[0] = ( c0        & 0x1fu) * 255u / 31u;
+            r[1] = ((c1 >> 11) & 0x1fu) * 255u / 31u;
+            g[1] = ((c1 >> 5)  & 0x3fu) * 255u / 63u;
+            b[1] = ( c1        & 0x1fu) * 255u / 31u;
+            if (!isDxt1 || c0 > c1) {
+                r[2] = (2u * r[0] + r[1] + 1u) / 3u; g[2] = (2u * g[0] + g[1] + 1u) / 3u; b[2] = (2u * b[0] + b[1] + 1u) / 3u;
+                r[3] = (r[0] + 2u * r[1] + 1u) / 3u; g[3] = (g[0] + 2u * g[1] + 1u) / 3u; b[3] = (b[0] + 2u * b[1] + 1u) / 3u;
+            } else {
+                r[2] = (r[0] + r[1]) / 2u; g[2] = (g[0] + g[1]) / 2u; b[2] = (b[0] + b[1]) / 2u;
+                r[3] = 0u; g[3] = 0u; b[3] = 0u;
+            }
+            for (unsigned p = 0u; p < 16u; ++p) {
+                const unsigned sel = (bits >> (p * 2u)) & 3u;
+                if (r[sel] > 12u || g[sel] > 12u || b[sel] > 12u) return false;
+            }
+            return true;
+        };
+        auto rowBlack = [&](unsigned by) -> bool {
+            unsigned lit = 0u;
+            for (unsigned bx = 0u; bx < bw; ++bx)
+                if (!blockNearBlack(bx, by) && ++lit > bw / 64u) return false;
+            return true;
+        };
+        auto colBlack = [&](unsigned bx) -> bool {
+            unsigned lit = 0u;
+            for (unsigned by = 0u; by < bh; ++by)
+                if (!blockNearBlack(bx, by) && ++lit > bh / 64u) return false;
+            return true;
+        };
+        unsigned bTop = 0u, bBot = bh, bLeft = 0u, bRight = bw;
+        while (bTop + 4u < bBot && rowBlack(bTop)) ++bTop;
+        while (bBot > bTop + 4u && rowBlack(bBot - 1u)) --bBot;
+        while (bLeft + 4u < bRight && colBlack(bLeft)) ++bLeft;
+        while (bRight > bLeft + 4u && colBlack(bRight - 1u)) --bRight;
+        tex->UnlockRect(0);
+        const unsigned cw = (bRight - bLeft) * 4u, ch = (bBot - bTop) * 4u;
+        if ((bTop > 0u || bBot < bh || bLeft > 0u || bRight < bw) && cw * 5u >= w * 2u && ch * 5u >= h * 2u) {
+            const float padU = (bLeft > 0u || bRight < bw) ? (1.0f / float(w)) : 0.0f;
+            const float padV = (bTop > 0u || bBot < bh) ? (1.0f / float(h)) : 0.0f;
+            slot->u0 = float(bLeft * 4u) / float(w) + (bLeft > 0u ? padU : 0.0f);
+            slot->u1 = float(bRight * 4u) / float(w) - (bRight < bw ? padU : 0.0f);
+            slot->v0 = float(bTop * 4u) / float(h) + (bTop > 0u ? padV : 0.0f);
+            slot->v1 = float(bBot * 4u) / float(h) - (bBot < bh ? padV : 0.0f);
+            slot->cropW = static_cast<unsigned>(float(fallbackW) * (slot->u1 - slot->u0) + 0.5f);
+            slot->cropH = static_cast<unsigned>(float(fallbackH) * (slot->v1 - slot->v0) + 0.5f);
+            if (!slot->cropW) slot->cropW = 1u;
+            if (!slot->cropH) slot->cropH = 1u;
+        }
+        return;
+    }
+    if (desc.Format == D3DFMT_A8R8G8B8 || desc.Format == D3DFMT_X8R8G8B8) {
+        auto pxBlack = [&](unsigned x, unsigned y) -> bool {
+            const uint32_t px = *reinterpret_cast<const uint32_t *>(
+                static_cast<const uint8_t *>(lr.pBits) + y * static_cast<unsigned>(lr.Pitch) + x * 4u);
+            return ((px >> 16) & 0xffu) <= 10u && ((px >> 8) & 0xffu) <= 10u && (px & 0xffu) <= 10u;
+        };
+        auto rowBlack = [&](unsigned y) -> bool {
+            unsigned lit = 0u;
+            for (unsigned x = 0u; x < w; ++x)
+                if (!pxBlack(x, y) && ++lit > w / 64u) return false;
+            return true;
+        };
+        auto colBlack = [&](unsigned x) -> bool {
+            unsigned lit = 0u;
+            for (unsigned y = 0u; y < h; ++y)
+                if (!pxBlack(x, y) && ++lit > h / 64u) return false;
+            return true;
+        };
+        unsigned top = 0u, bot = h, left = 0u, right = w;
+        while (top + 16u < bot && rowBlack(top)) ++top;
+        while (bot > top + 16u && rowBlack(bot - 1u)) --bot;
+        while (left + 16u < right && colBlack(left)) ++left;
+        while (right > left + 16u && colBlack(right - 1u)) --right;
+        tex->UnlockRect(0);
+        const unsigned cw = right - left, ch = bot - top;
+        if ((top > 0u || bot < h || left > 0u || right < w) && cw * 5u >= w * 2u && ch * 5u >= h * 2u) {
+            const float padU = 1.0f / float(w), padV = 1.0f / float(h);
+            slot->u0 = float(left) / float(w) + (left > 0u ? padU : 0.0f);
+            slot->u1 = float(right) / float(w) - (right < w ? padU : 0.0f);
+            slot->v0 = float(top) / float(h) + (top > 0u ? padV : 0.0f);
+            slot->v1 = float(bot) / float(h) - (bot < h ? padV : 0.0f);
+            slot->cropW = static_cast<unsigned>(float(fallbackW) * (slot->u1 - slot->u0) + 0.5f);
+            slot->cropH = static_cast<unsigned>(float(fallbackH) * (slot->v1 - slot->v0) + 0.5f);
+            if (!slot->cropW) slot->cropW = 1u;
+            if (!slot->cropH) slot->cropH = 1u;
+        }
+        return;
+    }
+    tex->UnlockRect(0);
+}
+
 int UploadCallback(const unsigned char *dds, size_t bytes, const CeAssetTextureHeader *h, void *context) {
     UploadCtx *ctx = static_cast<UploadCtx *>(context);
     if (!ctx || !ctx->device || !ctx->slot || !dds || !bytes || !h) return 0;
     const UploadSize sz = BoundedUpload(h->width, h->height, kMaxTexEdge);
     IDirect3DTexture9 *tex = NULL;
-    const HRESULT hr = D3DXCreateTextureFromFileInMemoryEx(
+    // Prefer compressed DXT1/BC1 at <= 512 px (~18.6 MiB total across all 149 plates);
+    // fall back to single-level A8R8G8B8 only if a device rejects compressed textures.
+    HRESULT hr = D3DXCreateTextureFromFileInMemoryEx(
         ctx->device, dds, static_cast<UINT>(bytes),
         static_cast<UINT>(sz.width), static_cast<UINT>(sz.height),
-        0, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED,
+        0, 0, D3DFMT_DXT1, D3DPOOL_MANAGED,
         D3DX_FILTER_TRIANGLE, D3DX_FILTER_BOX, 0, NULL, NULL, &tex);
+    if (FAILED(hr) || !tex) {
+        if (tex) { tex->Release(); tex = NULL; }
+        hr = D3DXCreateTextureFromFileInMemoryEx(
+            ctx->device, dds, static_cast<UINT>(bytes),
+            static_cast<UINT>(sz.width), static_cast<UINT>(sz.height),
+            1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED,
+            D3DX_FILTER_TRIANGLE, D3DX_FILTER_BOX, 0, NULL, NULL, &tex);
+    }
     if (FAILED(hr) || !tex) {
         if (tex) tex->Release();
         return 0;
@@ -89,6 +224,7 @@ int UploadCallback(const unsigned char *dds, size_t bytes, const CeAssetTextureH
     ctx->slot->ownsTexture = true;
     ctx->slot->srcW = h->width;
     ctx->slot->srcH = h->height;
+    DetectCanvasContentBounds(tex, h->width, h->height, ctx->slot);
     return 1;
 }
 
@@ -114,6 +250,12 @@ void ReleaseAllTextures() {
         gArt.slots[i].ownsTexture = false;
         gArt.slots[i].srcW = 0;
         gArt.slots[i].srcH = 0;
+        gArt.slots[i].cropW = 0;
+        gArt.slots[i].cropH = 0;
+        gArt.slots[i].u0 = 0.0f;
+        gArt.slots[i].v0 = 0.0f;
+        gArt.slots[i].u1 = 1.0f;
+        gArt.slots[i].v1 = 1.0f;
         gArt.slots[i].attempted = false;
         gArt.slots[i].missing = false;
     }
@@ -177,6 +319,12 @@ void EnsureAllCanvasesLoaded() {
                 gArt.slots[i].ownsTexture = false;
                 gArt.slots[i].srcW = gArt.slots[prev].srcW;
                 gArt.slots[i].srcH = gArt.slots[prev].srcH;
+                gArt.slots[i].cropW = gArt.slots[prev].cropW;
+                gArt.slots[i].cropH = gArt.slots[prev].cropH;
+                gArt.slots[i].u0 = gArt.slots[prev].u0;
+                gArt.slots[i].v0 = gArt.slots[prev].v0;
+                gArt.slots[i].u1 = gArt.slots[prev].u1;
+                gArt.slots[i].v1 = gArt.slots[prev].v1;
                 ++loaded;
                 shared = true;
                 break;
@@ -198,9 +346,16 @@ void EnsureAllCanvasesLoaded() {
             ++missing;
         }
     }
+    unsigned trimmed = 0;
+    for (unsigned i = 0; i < kManifestCount; ++i) {
+        if (gArt.slots[i].texture && (gArt.slots[i].u0 > 0.0f || gArt.slots[i].u1 < 1.0f ||
+                                      gArt.slots[i].v0 > 0.0f || gArt.slots[i].v1 < 1.0f)) {
+            ++trimmed;
+        }
+    }
     PortSessionLog(PORT_SESSION_GAME, false,
-                   "museum art: preloaded %u of %u gallery canvases (%u unavailable)",
-                   loaded, static_cast<unsigned>(kManifestCount), missing);
+                   "museum art: preloaded %u of %u gallery canvases (%u unavailable, %u trimmed)",
+                   loaded, static_cast<unsigned>(kManifestCount), missing, trimmed);
 }
 
 void BuildFrameGeometry(float floorZ, ArtFlatVertex *verts, uint16_t *indices,
@@ -225,8 +380,13 @@ void BuildFrameGeometry(float floorZ, ArtFlatVertex *verts, uint16_t *indices,
         const float wx = CeMuseumWorld::kEntranceX + sp.localX;
         const float wy = CeMuseumWorld::kEntranceY + sp.localY;
         const float wz = floorZ - sp.centreZ;
-        const float matW = sp.maxWidth * 0.5f + 0.10f;
-        const float matH = sp.maxHeight * 0.5f + 0.10f;
+        const unsigned effW = slot.cropW ? slot.cropW : slot.srcW;
+        const unsigned effH = slot.cropH ? slot.cropH : slot.srcH;
+        const QuadExtent ext = slot.texture
+            ? FitFrame(effW, effH, sp.maxWidth, sp.maxHeight)
+            : QuadExtent{sp.maxWidth * 0.5f, sp.maxHeight * 0.5f};
+        const float matW = ext.halfW + 0.10f;
+        const float matH = ext.halfH + 0.10f;
         const float frameW = matW + 0.055f;
         const float frameH = matH + 0.055f;
 
@@ -252,12 +412,18 @@ void BuildArtQuadGeometry(float floorZ, ArtTexVertex *verts) {
         const float cx = CeMuseumWorld::kEntranceX + sp.localX + sp.normalX * 0.060f;
         const float cy = CeMuseumWorld::kEntranceY + sp.localY + sp.normalY * 0.060f;
         const float wz = floorZ - sp.centreZ;
-        const QuadExtent ext = FitFrame(slot.srcW, slot.srcH, sp.maxWidth, sp.maxHeight);
+        const unsigned effW = slot.cropW ? slot.cropW : slot.srcW;
+        const unsigned effH = slot.cropH ? slot.cropH : slot.srcH;
+        const QuadExtent ext = FitFrame(effW, effH, sp.maxWidth, sp.maxHeight);
+        const float u0 = slot.texture ? slot.u0 : 0.0f;
+        const float v0 = slot.texture ? slot.v0 : 0.0f;
+        const float u1 = slot.texture ? slot.u1 : 1.0f;
+        const float v1 = slot.texture ? slot.v1 : 1.0f;
         ArtTexVertex *q = &verts[i * 4u];
-        q[0] = {cx - rx * ext.halfW, cy - ry * ext.halfW, wz - ext.halfH, 0xffffffff, 0.0f, 0.0f};
-        q[1] = {cx + rx * ext.halfW, cy + ry * ext.halfW, wz - ext.halfH, 0xffffffff, 1.0f, 0.0f};
-        q[2] = {cx - rx * ext.halfW, cy - ry * ext.halfW, wz + ext.halfH, 0xffeeece6, 0.0f, 1.0f};
-        q[3] = {cx + rx * ext.halfW, cy + ry * ext.halfW, wz + ext.halfH, 0xffeeece6, 1.0f, 1.0f};
+        q[0] = {cx - rx * ext.halfW, cy - ry * ext.halfW, wz - ext.halfH, 0xffffffff, u0, v0};
+        q[1] = {cx + rx * ext.halfW, cy + ry * ext.halfW, wz - ext.halfH, 0xffffffff, u1, v0};
+        q[2] = {cx - rx * ext.halfW, cy - ry * ext.halfW, wz + ext.halfH, 0xffeeece6, u0, v1};
+        q[3] = {cx + rx * ext.halfW, cy + ry * ext.halfW, wz + ext.halfH, 0xffeeece6, u1, v1};
     }
 }
 
@@ -484,12 +650,14 @@ void RuntimeDraw(float floorZ, bool ownStateBlock) {
             const float cx = CeMuseumWorld::kEntranceX + sp.localX + sp.normalX * 0.060f;
             const float cy = CeMuseumWorld::kEntranceY + sp.localY + sp.normalY * 0.060f;
             const float wz = floorZ - sp.centreZ;
-            const QuadExtent ext = FitFrame(slot.srcW, slot.srcH, sp.maxWidth, sp.maxHeight);
+            const unsigned effW = slot.cropW ? slot.cropW : slot.srcW;
+            const unsigned effH = slot.cropH ? slot.cropH : slot.srcH;
+            const QuadExtent ext = FitFrame(effW, effH, sp.maxWidth, sp.maxHeight);
             const ArtTexVertex q[4] = {
-                {cx - rx * ext.halfW, cy - ry * ext.halfW, wz - ext.halfH, 0xffffffff, 0.0f, 0.0f},
-                {cx + rx * ext.halfW, cy + ry * ext.halfW, wz - ext.halfH, 0xffffffff, 1.0f, 0.0f},
-                {cx - rx * ext.halfW, cy - ry * ext.halfW, wz + ext.halfH, 0xffeeece6, 0.0f, 1.0f},
-                {cx + rx * ext.halfW, cy + ry * ext.halfW, wz + ext.halfH, 0xffeeece6, 1.0f, 1.0f},
+                {cx - rx * ext.halfW, cy - ry * ext.halfW, wz - ext.halfH, 0xffffffff, slot.u0, slot.v0},
+                {cx + rx * ext.halfW, cy + ry * ext.halfW, wz - ext.halfH, 0xffffffff, slot.u1, slot.v0},
+                {cx - rx * ext.halfW, cy - ry * ext.halfW, wz + ext.halfH, 0xffeeece6, slot.u0, slot.v1},
+                {cx + rx * ext.halfW, cy + ry * ext.halfW, wz + ext.halfH, 0xffeeece6, slot.u1, slot.v1},
             };
             dev->SetTexture(0, slot.texture);
             dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, q, sizeof(ArtTexVertex));
@@ -499,6 +667,7 @@ void RuntimeDraw(float floorZ, bool ownStateBlock) {
     if (saved) {
         saved->Apply();
         saved->Release();
+        CeMuseumRestoreEngineRenderState();
     }
 }
 

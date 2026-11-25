@@ -35,7 +35,7 @@ std::uint32_t WithAlpha(std::uint32_t colour, std::uint32_t alphaByte)
 #ifdef CE_CMD_HUD_USE_D3D9
 std::uint32_t ScaleAlpha(std::uint32_t colour, float factor)
 {
-	if (factor <= 0.f) return colour & 0x00ffffffu;
+	if (!(factor > 0.f)) return colour & 0x00ffffffu;
 	if (factor > 1.f) factor = 1.f;
 	std::uint32_t a = static_cast<std::uint32_t>(float((colour >> 24) & 0xffu) * factor + 0.5f);
 	if (a > 255u) a = 255u;
@@ -44,7 +44,7 @@ std::uint32_t ScaleAlpha(std::uint32_t colour, float factor)
 
 std::uint32_t LerpColor(std::uint32_t c0, std::uint32_t c1, float t)
 {
-	if (t <= 0.f) return c0;
+	if (!(t > 0.f)) return c0;
 	if (t >= 1.f) return c1;
 	const auto ch = [t](std::uint32_t a, std::uint32_t b) -> std::uint32_t {
 		const float v = float(a) + (float(b) - float(a)) * t;
@@ -132,7 +132,7 @@ void EndUntextured2D()
 	LT.SRS(D3DRS_CULLMODE, D3DCULL_CCW);
 	LT.STS(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
 	LT.STS(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
-	LT.STS(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+	LT.SetModulate(0);
 	LT.STS(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
 	LT.STS(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
 	LT.STS(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
@@ -368,7 +368,8 @@ void DrawInnerGlassPill(const CeCmdHudDrawOps &draw, float x, float y, float w, 
 }
 
 // Draws text at a strictly FIXED font scale (stopping jarring per-card shrink-to-fit!)
-// and applies clean "..." truncation only when the string exceeds maxWidth at that fixed scale.
+// and applies clean "..." truncation only when the string exceeds maxWidth at that fixed scale,
+// preserving any trailing squad rank number (" 1", " 2") so cards never collapse to duplicates.
 void DrawFixedTextTruncated(const CeCmdHudDrawOps &draw, float x, float y, std::uint32_t colour,
                             const char *text, float maxWidth, float fixedScale)
 {
@@ -388,6 +389,43 @@ void DrawFixedTextTruncated(const CeCmdHudDrawOps &draw, float x, float y, std::
 		draw.text(x, y, colour, buf, maxWidth, false, fixedScale);
 		return;
 	}
+	const char *numSuffix = NULL;
+	std::size_t stemLen = len;
+	if (len >= 3)
+	{
+		std::size_t d = len;
+		while (d > 1 && buf[d - 1] >= '0' && buf[d - 1] <= '9') --d;
+		if (d < len && (len - d) <= 2 && buf[d - 1] == ' ')
+		{
+			numSuffix = text + (d - 1);
+			stemLen = d - 1;
+		}
+	}
+	if (numSuffix)
+	{
+		char suffixProbe[16];
+		std::snprintf(suffixProbe, sizeof(suffixProbe), "...%s", numSuffix);
+		if (draw.textWidth(suffixProbe, fixedScale) < maxWidth - 4.f)
+		{
+			std::size_t slen = stemLen;
+			buf[slen] = 0;
+			while (slen > 1)
+			{
+				--slen;
+				while (slen > 1 && buf[slen - 1] == ' ') --slen;
+				buf[slen] = 0;
+				char trial[108];
+				std::snprintf(trial, sizeof(trial), "%s...%s", buf, numSuffix);
+				if (draw.textWidth(trial, fixedScale) <= maxWidth + 0.5f)
+				{
+					draw.text(x, y, colour, trial, 0.f, false, fixedScale);
+					return;
+				}
+			}
+		}
+	}
+	std::snprintf(buf, sizeof(buf), "%s", text);
+	len = std::strlen(buf);
 	while (len > 1)
 	{
 		--len;
@@ -465,7 +503,7 @@ void CeCmdHudDrawBar(const CeCmdHudDrawOps &draw, const CeCmdHudLayout &layout,
 	// ---- Left/Center Dock: Placard Tray Header ----
 	const float hdrScale = u * 0.84f;
 	const float smallScale = u * 0.78f;
-	const float cardNameScale = u * 0.72f;	// uniform fixed card title scale (zero per-card shrink!)
+	const float cardNameScale = u * 0.65f;	// uniform fixed card title scale (fits "Broadsword 1" & "Sabre Tank 2" untruncated)
 	const float labelScale = u * 0.84f;
 	const float hdrH = draw.lineHeight(hdrScale);
 	const float hdrTextY = layout.trayHeaderRect.y + (layout.trayHeaderRect.h - hdrH) * 0.5f;
@@ -532,43 +570,21 @@ void CeCmdHudDrawBar(const CeCmdHudDrawOps &draw, const CeCmdHudLayout &layout,
 			DrawInnerGlassPill(draw, r.x, r.y, r.w, r.h, plCap, u, t, fill, stripe, 1.f, pl.selected || hovered);
 
 			const float stripeH = (2.f * u) > 2.f ? std::floor(2.f * u) : 2.f;
-			const float padX = std::floor(6.f * u);
-			const float nameY = r.y + stripeH + std::floor(3.f * u);
+			const float padX = std::floor(5.f * u);
 			const float lineH = draw.lineHeight(cardNameScale);
+			const float armourH = (5.f * u) > 4.f ? std::floor(5.f * u) : 4.f;
+			const float statusScale = u * 0.72f;
+			const float statusH = draw.lineHeight(statusScale);
+			const float bottomReserve = (pl.isBuilding && pl.buildPercent > 0) ? std::floor(6.f * u) : std::floor(2.f * u);
+			const float availH = r.h - stripeH - bottomReserve;
+			const float contentH = lineH + armourH + statusH;
+			const float rowGap = availH > contentH + 6.f * u
+				? std::floor((availH - contentH) / 3.f)
+				: std::floor(2.5f * u);
+			const float nameY = r.y + stripeH + (rowGap > 2.f ? rowGap : 2.f);
 
-			// Top-right badge: control group pill + count/tag
-			float rightEdge = r.x + r.w - padX;
-			if (pl.groupTag >= 0 && pl.groupTag <= 9)
-			{
-				char grp[4];
-				std::snprintf(grp, sizeof(grp), "%d", pl.groupTag);
-				const float pillW = std::floor(12.f * u);
-				const float pillH = std::floor(11.f * u);
-				const float pillX = rightEdge - pillW;
-				DrawInnerGlassPill(draw, pillX, nameY - 1.f, pillW, pillH, std::floor(3.f * u), u, t,
-				                   0xd82b2208, p.goldAccent, 1.f, true);
-				draw.text(pillX + pillW * 0.5f, nameY, p.textGold, grp, pillW - 2.f, true, u * 0.72f);
-				rightEdge = pillX - std::floor(3.f * u);
-			}
-
-			char badge[12] = "";
-			if (pl.kind == CE_PLACARD_STRUCTURE) std::snprintf(badge, sizeof(badge), "FAC");
-			else if (pl.kind == CE_PLACARD_UNIT) std::snprintf(badge, sizeof(badge), "UNIT");
-			else if (pl.count > 0) std::snprintf(badge, sizeof(badge), "x%d", pl.count);
-			if (badge[0])
-			{
-				const float badgeScale = u * 0.68f;
-				const float bw = draw.textWidth(badge, badgeScale);
-				const float bx = rightEdge - bw;
-				if (bx > r.x + padX + 24.f * u)
-				{
-					draw.text(bx, nameY + std::floor(0.5f * u), pl.kind == CE_PLACARD_STRUCTURE ? p.textGold : p.textCyan,
-					          badge, 0.f, false, badgeScale);
-					rightEdge = bx - std::floor(4.f * u);
-				}
-			}
-
-			const float nameRoom = rightEdge - (r.x + padX);
+			// Row 1: Full-width squad / unit / structure title (zero top-row badge crowding!)
+			const float nameRoom = r.w - 2.f * padX;
 			if (nameRoom > 12.f * u)
 			{
 				const std::uint32_t nameCol = pl.selected ? p.textBright :
@@ -578,23 +594,58 @@ void CeCmdHudDrawBar(const CeCmdHudDrawOps &draw, const CeCmdHudLayout &layout,
 			}
 
 			// Row 2: Live Armour Bar
-			const float barTop = nameY + lineH + std::floor(3.f * u);
-			const float armourH = (5.f * u) > 4.f ? std::floor(5.f * u) : 4.f;
+			const float barTop = nameY + lineH + (rowGap > 2.f ? rowGap : 2.f);
 			DrawArmourBar(draw, r.x + padX, barTop, r.w - 2.f * padX, armourH, pl.armourRatio, t, p);
 
-			// Row 3: Order / Build Status Badge (with optional build mini-progress strip)
-			const float statusY = barTop + armourH + std::floor(3.f * u);
-			const float statusRoom = r.w - 2.f * padX;
+			// Row 3: Order / Build Status on left + count/kind badge & control-group pill on right
+			const float statusY = barTop + armourH + (rowGap > 2.f ? rowGap : 2.f);
+			const float fullStatusW = r.w - 2.f * padX;
 			if (pl.isBuilding && pl.buildPercent > 0)
 			{
 				const float progH = (3.f * u) > 2.f ? std::floor(3.f * u) : 2.f;
 				const float progY = r.y + r.h - progH - std::floor(2.f * u);
-				SafeBox(draw, r.x + padX, progY, statusRoom, progH, p.armourTrack);
-				const float fillW = statusRoom * (float(pl.buildPercent) / 100.f);
+				SafeBox(draw, r.x + padX, progY, fullStatusW, progH, p.armourTrack);
+				const float fillW = fullStatusW * (float(pl.buildPercent) / 100.f);
 				if (fillW > 0.5f) SafeBox(draw, r.x + padX, progY, fillW, progH, p.cyanAccent);
 			}
+
+			float statusRight = r.x + r.w - padX;
+			char badge[12] = "";
+			if (pl.kind == CE_PLACARD_STRUCTURE) std::snprintf(badge, sizeof(badge), "FAC");
+			else if (pl.kind == CE_PLACARD_UNIT) std::snprintf(badge, sizeof(badge), "UNIT");
+			else if (pl.count > 0) std::snprintf(badge, sizeof(badge), "x%d", pl.count);
+			if (badge[0])
+			{
+				const float badgeScale = u * 0.68f;
+				const float bw = draw.textWidth(badge, badgeScale);
+				const float bx = statusRight - bw;
+				if (bx > r.x + padX + 20.f * u)
+				{
+					draw.text(bx, statusY + std::floor(0.5f * u), pl.kind == CE_PLACARD_STRUCTURE ? p.textGold : p.textCyan,
+					          badge, 0.f, false, badgeScale);
+					statusRight = bx - std::floor(4.f * u);
+				}
+			}
+			if (pl.groupTag >= 0 && pl.groupTag <= 9)
+			{
+				char grp[4];
+				std::snprintf(grp, sizeof(grp), "%d", pl.groupTag);
+				const float pillW = std::floor(12.f * u);
+				const float pillH = std::floor(11.f * u);
+				const float pillX = statusRight - pillW;
+				if (pillX > r.x + padX + 18.f * u)
+				{
+					DrawInnerGlassPill(draw, pillX, statusY - 1.f, pillW, pillH, std::floor(3.f * u), u, t,
+					                   0xd82b2208, p.goldAccent, 1.f, true);
+					draw.text(pillX + pillW * 0.5f, statusY, p.textGold, grp, pillW - 2.f, true, u * 0.70f);
+					statusRight = pillX - std::floor(3.f * u);
+				}
+			}
+
+			const float statusRoom = statusRight - (r.x + padX);
 			const char *orderText = pl.orderBadge[0] ? pl.orderBadge : (pl.kind == CE_PLACARD_STRUCTURE ? "IDLE" : "AI");
-			DrawFixedTextTruncated(draw, r.x + padX, statusY, BadgeColor(pl.orderTone, p), orderText, statusRoom, u * 0.72f);
+			if (statusRoom > 8.f * u)
+				DrawFixedTextTruncated(draw, r.x + padX, statusY, BadgeColor(pl.orderTone, p), orderText, statusRoom, statusScale);
 		}
 	}
 
@@ -686,7 +737,10 @@ void CeCmdHudDrawBar(const CeCmdHudDrawOps &draw, const CeCmdHudLayout &layout,
 		if (btn.hotkey[0])
 		{
 			const float kw = draw.textWidth(btn.hotkey, keyScale);
-			const std::uint32_t hkCol = inProgress ? p.textCyan : (btn.enabled ? (lit || hovered ? p.textGold : p.textCyan) : p.textDisabled);
+			// Keep disabled hotkeys in a distinct dim cyan/amber tint so "Follow BE" and "Spc"
+			// never blur together into a single grey phrase when no unit is selected.
+			const std::uint32_t dimHkCol = isForseti ? 0xff4eb0d0u : 0xffd89a62u;
+			const std::uint32_t hkCol = inProgress ? p.textCyan : (btn.enabled ? (lit || hovered ? p.textGold : p.textCyan) : dimHkCol);
 			const float keyY = br.y + std::floor((br.h - keyH) * 0.5f);
 			draw.text(br.x + br.w - btnPad - kw, keyY,
 			          hkCol, btn.hotkey, 0.f, false, keyScale);

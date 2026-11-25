@@ -18,7 +18,9 @@ const int bindingId=0x43454447;
 enum Prompt { Ready,Waiting,Conflict,Unsupported,SaveFailed };
 class DodgeKeyItem;
 DodgeKeyItem *owner=nullptr;
-void capture(WORD key,KeyEventType event);
+bool capture(WORD key,KeyEventType event);
+// The shell stores pKeyTrapper (void), while mouse.cpp casts LT.GetKeytrap() to bool (*)(WORD, int).
+pKeyTrapper captureTrap() { return (pKeyTrapper)(void (*)(void))capture; }
 bool reverseConflict=false;
 CeControlAction reverseOwner=CeControlAction::Dodge;
 
@@ -27,6 +29,7 @@ public:
     explicit DodgeKeyItem(CeControlAction which) : CMenuItem((EPCText)0,bindingId + static_cast<int>(which)), action(which) { refreshState(); }
     ~DodgeKeyItem() { end(); }
     WCHAR *GetText() {
+        syncOwner();
         if(reverseConflict && !LT.GetKeytrap())reverseConflict=false;
         char key[32]{},line[112]{};
         PortCeDodgeBindingName(PortCeActionKey(action),key,sizeof(key));
@@ -48,8 +51,10 @@ public:
         size_t i=0; for(;i+1<sizeof(label)/sizeof(*label) && line[i];++i) label[i]=(unsigned char)line[i]; label[i]=0;
         return label;
     }
-    int GetHeight() { return 14; }
+    int GetHeight() { return 14 + bottomGap; }
+    void setBottomGap(int gap) { bottomGap = gap; }
     void Render(float x,float y,BOOL selected) {
+        syncOwner();
         CMenuItem::Render(x,y,selected);
         if (!selected && owner != this && !(reverseConflict && reverseOwner == action)) return;
         char key[32]{},hint[94]{};
@@ -72,39 +77,54 @@ public:
     }
     void ReceiveButtonAction(CController *from_controller,int button,float val) {
         (void)from_controller; (void)val;
+        syncOwner();
         if (owner == this && button == BUTTON_FRONTEND_MENU_BACK) {
             end();
             prompt=Ready;
             CFrontEnd::PlaySound(FES_BACK);
         }
     }
-    bool TakesInput() { return owner==this; }
-    bool IsExpanded() { return owner==this; }
+    bool TakesInput() { syncOwner(); return owner==this; }
+    bool IsExpanded() { syncOwner(); return owner==this; }
     void Refresh() { end();prompt=Ready;refreshState(); }
     void begin() {
+        syncOwner();
         if(owner || LT.GetKeytrap() || !PortCeDodgeBindingAvailable())return;
         PortCeDodgeBindingReload();
-        reverseConflict=false;owner=this; down=0;prompt=Waiting;PLATFORM.SetKeytrap(capture);
+        reverseConflict=false;owner=this; down=0;prompt=Waiting;PLATFORM.SetKeytrap(captureTrap());
     }
     void end() {
-        if(owner!=this)return;
-        if(LT.GetKeytrap()==capture) PLATFORM.SetKeytrap(NULL);
+        if(owner!=this) { down=0; return; }
+        if(LT.GetKeytrap()==captureTrap()) PLATFORM.SetKeytrap(NULL);
         owner=nullptr; down=0;
     }
-    void key(WORD code,KeyEventType event) {
-        if(!PortCeDodgeBindingAvailable()) {end(); prompt=Ready;return;}
-        if(event==KEY_EVENT_DOWN) {if(!down)down=code;return;}
-        if(event!=KEY_EVENT_UP)return;
-        if(code==1) {end();prompt=Ready;CFrontEnd::PlaySound(FES_BACK);return;}
-        if(!down||code!=down)return;
+    bool key(WORD code,KeyEventType event) {
+        if(!PortCeDodgeBindingAvailable()) {end(); prompt=Ready;return false;}
+        if(event==KEY_EVENT_DOWN) {
+            if(code && code!=1) down=code;
+            else if(code==1) down=0;
+            return true;
+        }
+        if(event==KEY_EVENT_CHAR) return true;
+        if(event!=KEY_EVENT_UP) {
+            // mouse.cpp dispatches MOUSE_EVENT_UP (3) and MOUSE_EVENT_DOWN (4) through MOUSE_TRAP:
+            // swallow button downs so stray clicks do not act on other rows, but let button ups clear MOUSE_HELD.
+            return static_cast<int>(event) == 4;
+        }
+        if(code==1) {end();prompt=Ready;CFrontEnd::PlaySound(FES_BACK);return true;}
+        if(!down||code!=down)return true;
         down=0;
-        if(!PortCeDodgeBindingName(code,attempt,sizeof(attempt))) { prompt=Unsupported;return; }
+        if(!PortCeDodgeBindingName(code,attempt,sizeof(attempt))) { prompt=Unsupported;return true; }
         const char *used=PortCeActionConflict(action, code);
-        if(used){conflict=used; prompt=Conflict;return;}
-        if(!PortCeActionStore(action, code)){end();prompt=SaveFailed;return;}
+        if(used){conflict=used; prompt=Conflict;return true;}
+        if(!PortCeActionStore(action, code)){end();prompt=SaveFailed;return true;}
         end();prompt=Ready;CFrontEnd::PlaySound(FES_SELECT);
+        return true;
     }
 private:
+    void syncOwner() {
+        if(owner==this && LT.GetKeytrap()!=captureTrap()) { owner=nullptr; down=0; prompt=Ready; }
+    }
     void refreshState() { PortCeDodgeBindingReload();assist=PortCeActionEnabled(action); }
     CeControlAction action;
 	bool assist=true;
@@ -113,8 +133,9 @@ private:
     char attempt[32]{};
     const char *conflict="";
     WCHAR label[112]{};
+    int bottomGap=0;
 };
-void capture(WORD key,KeyEventType event) { if(owner)owner->key(key,event); }
+bool capture(WORD key,KeyEventType event) { return owner ? owner->key(key,event) : false; }
 }
 bool PortCeDodgeReserveFromControls(int key) {
 	if (!PortCeDodgeBindingAvailable()) return false;
@@ -127,9 +148,13 @@ bool PortCeDodgeReserveFromControls(int key) {
 }
 void PortCeDodgeControlsAdd(CMenuOptionsList *list) {
 	if (!list || !PortCeDodgeBindingAvailable()) return;
+	DodgeKeyItem *last = nullptr;
 	for (auto action : {CeControlAction::Dodge, CeControlAction::TakeUnit, CeControlAction::Commander})
-		if (action == CeControlAction::Dodge || PortCeActionEnabled(action))
-			list->AddItem(new ((EMemoryType)0x80) DodgeKeyItem(action));
+		if (action == CeControlAction::Dodge || PortCeActionEnabled(action)) {
+			last = new ((EMemoryType)0x80) DodgeKeyItem(action);
+			list->AddItem(last);
+		}
+	if (last) last->setBottomGap(6);
 }
 bool PortCeDodgeControlsSelect(CMenuItem *item) {
 	if (!item || item->mId < bindingId || item->mId > bindingId+2) return false;

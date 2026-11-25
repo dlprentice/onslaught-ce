@@ -98,6 +98,11 @@ inline float	CeReadTrackLength(float pitch)
 	return CeReadBottom(pitch) - kCeReadTop - 10.f;
 }
 
+inline bool	CeReadHasBar(const SCeReading *page)
+{
+	return page && (page->mCount > kCeReadRows);
+}
+
 inline float	CeReadBarLength(const SCeReading *page, float pitch)
 {
 	const float track = CeReadTrackLength(pitch);

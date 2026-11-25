@@ -21,6 +21,7 @@ bool gMirrorPass = false;
 float gMessageBoxX = 0, gMessageBoxY = 0, gMessageBoxWidth = 0, gMessageTextY = 0;
 CeHudScope::CeHudScope(int, float, float, float, float) : mPreviousScale(1), mPreviousX(0), mPreviousY(0), mPreviousActive(false) {}
 CeHudScope::~CeHudScope() {}
+float CeHudScaleFactor() { return 1.0f; }	// the host draws at the HUD's original size
 
 static unsigned long long ticks = 100000;
 static unsigned presents = 1;

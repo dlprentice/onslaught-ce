@@ -26,10 +26,16 @@
  * version at start. --update-only checks now without starting the game; --rollback makes the previous version
  * active again. The historical --apply entry point refuses with exit 2. Old 0.1.0-0.1.6 launchers remain unsafe to
  * invoke; this successor does not repair an older launcher's behavior. */
-#ifndef _WIN32
+#ifdef _WIN32
+#if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0600
+#undef _WIN32_WINNT
+#define _WIN32_WINNT 0x0600
+#endif
+#else
 #define _FILE_OFFSET_BITS 64	/* the updater's file sizes and identities */
 #endif
 #include <SDL3/SDL.h>
+#include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -59,6 +65,7 @@ static const char PUBLIC_KEY_HEX[] = "b6cf39b727c92cd8a1682c31f315a5d38427dce912
 #include <windows.h>
 #include <shlobj.h>
 #include <direct.h>
+#include <io.h>
 #include <sys/stat.h>
 #define PLATFORM "windows-i686"
 #define SEP "\\"
@@ -612,6 +619,56 @@ static int log_prepare_primary(const char *path, unsigned long *error)
 	return 1;
 }
 
+/* Set while an update restarts the launcher: the new launcher continues this log instead of rotating it away. */
+#define LOG_CONTINUE "BEA_CE_LOG_CONTINUE"
+
+static int sClosedLogValid, sClosedLogSlot = -1;
+static uint64_t sClosedLogDev, sClosedLogIno;
+static int sContinueTargetValid, sContinueTargetSlot = -1;
+static uint64_t sContinueTargetDev, sContinueTargetIno;
+
+static int log_stream_identity(FILE *f, uint64_t *dev, uint64_t *ino)
+{
+	if (!f) return 0;
+#ifdef _WIN32
+	int fd = _fileno(f);
+	if (fd < 0) return 0;
+	intptr_t osf = _get_osfhandle(fd);
+	if (osf == -1) return 0;
+	BY_HANDLE_FILE_INFORMATION info;
+	if (!GetFileInformationByHandle((HANDLE)osf, &info)) return 0;
+	*dev = (uint64_t)info.dwVolumeSerialNumber;
+	*ino = ((uint64_t)info.nFileIndexHigh << 32) | (uint64_t)info.nFileIndexLow;
+	return 1;
+#else
+	int fd = fileno(f);
+	struct stat st;
+	if (fd < 0 || fstat(fd, &st) != 0) return 0;
+	*dev = (uint64_t)st.st_dev;
+	*ino = (uint64_t)st.st_ino;
+	return 1;
+#endif
+}
+
+static void log_parse_continue_token(const char *val)
+{
+	sContinueTargetValid = 0;
+	sContinueTargetSlot = -1;
+	sContinueTargetDev = sContinueTargetIno = 0;
+	if (!val || !*val) return;
+	int slot = -1;
+	uint64_t dev = 0, ino = 0;
+	char extra = 0;
+	if (sscanf(val, "1:%d:%" SCNu64 ":%" SCNu64 "%c", &slot, &dev, &ino, &extra) == 3 &&
+		slot >= 0 && slot < CE_LOG_SLOT_COUNT)
+	{
+		sContinueTargetValid = 1;
+		sContinueTargetSlot = slot;
+		sContinueTargetDev = dev;
+		sContinueTargetIno = ino;
+	}
+}
+
 /* Starts this run's log: the last run's becomes onslaught-ce.old.log. `cont`: the launcher was restarted by an update
  * (BEA_CE_LOG_CONTINUE), so the log goes on in the same file and the run before it (perhaps the one being reported)
  * stays as onslaught-ce.old.log. */
@@ -620,14 +677,75 @@ static void log_open(int cont)
 	char log[PATHN], os[256], date[64], head[1024];
 	sLogBytes = 0; sLogFull = 0;
 	int appended = 0;
-	for (int slot = 0; slot < CE_LOG_SLOT_COUNT; ++slot)
+	int has_target = 0, target_slot = -1;
+	uint64_t target_dev = 0, target_ino = 0;
+	if (cont)
 	{
+		if (!sContinueTargetValid)
+			log_parse_continue_token(getenv(LOG_CONTINUE));
+		has_target = sContinueTargetValid;
+		target_slot = sContinueTargetSlot;
+		target_dev = sContinueTargetDev;
+		target_ino = sContinueTargetIno;
+		sContinueTargetValid = 0;
+	}
+	if (cont && has_target)
+	{
+		unsigned long error = 0;
+		int owned = log_acquire_lease(target_slot, &error);
+		if (owned < 0)
+		{
+			say("log lease failed slot=%s error=%lu; output continues on the terminal only", sLogNames[target_slot], error);
+			return;
+		}
+		if (owned > 0)
+		{
+			if (!log_path(log, sizeof log, sLogNames[target_slot])) error = log_invalid_file();
+			else
+			{
+				sLog = log_open_file(log, LOG_APPEND, &error);
+				if (sLog)
+				{
+					uint64_t cur_dev = 0, cur_ino = 0;
+					long at = ftell(sLog);
+					if (!log_stream_identity(sLog, &cur_dev, &cur_ino) || cur_dev != target_dev || cur_ino != target_ino)
+					{
+						error = log_invalid_file();
+						fclose(sLog);
+						sLog = NULL;
+					}
+					else if (at < 0)
+					{
+						error = log_native_error();
+						fclose(sLog);
+						sLog = NULL;
+					}
+					else
+					{
+						sLogBytes = (size_t)at;
+						sLogFull = sLogBytes >= LOG_CAP;
+						appended = 1;
+					}
+				}
+				else if (log_missing(error))
+					sLog = log_open_file(log, LOG_CREATE, &error);
+			}
+			if (!sLog)
+			{
+				say("log open/rotation refused slot=%s error=%lu; existing files were not truncated", sLogNames[target_slot], error);
+				log_release_lease();
+			}
+		}
+	}
+	for (int slot = 0; !sLog && slot < CE_LOG_SLOT_COUNT; ++slot)
+	{
+		if (cont && has_target && slot == target_slot) continue;
 		unsigned long error = 0;
 		int owned = log_acquire_lease(slot, &error);
 		if (!owned) continue;
 		if (owned < 0) { say("log lease failed slot=%s error=%lu; output continues on the terminal only", sLogNames[slot], error); return; }
 		if (!log_path(log, sizeof log, sLogNames[slot])) { error = log_invalid_file(); }
-		else if (cont && slot == 0)
+		else if (cont && !has_target && slot == 0)
 		{
 			sLog = log_open_file(log, LOG_APPEND, &error);
 			if (sLog)
@@ -666,13 +784,26 @@ static void log_open(int cont)
 
 static void log_close(void)
 {
+	sClosedLogValid = 0;
+	sClosedLogSlot = -1;
+	sClosedLogDev = sClosedLogIno = 0;
 	if (sLog)
 	{
 		log_release("not reported (the game did not reach its Direct3D device)");
 		if (sLog)
 		{
+			uint64_t dev = 0, ino = 0;
+			int slot = sLogSlot;
+			int have_id = slot >= 0 && slot < CE_LOG_SLOT_COUNT && log_stream_identity(sLog, &dev, &ino);
 			FILE *file = sLog; sLog = NULL;
 			if (fclose(file)) fprintf(stderr, "onslaught-ce: log close failed error=%lu\n", log_native_error());
+			else if (have_id)
+			{
+				sClosedLogValid = 1;
+				sClosedLogSlot = slot;
+				sClosedLogDev = dev;
+				sClosedLogIno = ino;
+			}
 		}
 	}
 	log_release_lease();
@@ -682,6 +813,13 @@ static void log_close(void)
 
 static void set_env(const char *name, const char *value)
 {
+	char cont_buf[96];
+	if (name && value && !strcmp(name, LOG_CONTINUE) && !strcmp(value, "1") && sClosedLogValid)
+	{
+		snprintf(cont_buf, sizeof cont_buf, "1:%d:%" PRIu64 ":%" PRIu64,
+			sClosedLogSlot, sClosedLogDev, sClosedLogIno);
+		value = cont_buf;
+	}
 #ifdef _WIN32
 	SetEnvironmentVariableA(name, value);
 	_putenv_s(name, value);
@@ -692,6 +830,8 @@ static void set_env(const char *name, const char *value)
 
 static void unset_env(const char *name)
 {
+	if (name && !strcmp(name, LOG_CONTINUE))
+		log_parse_continue_token(getenv(LOG_CONTINUE));
 #ifdef _WIN32
 	SetEnvironmentVariableA(name, NULL);
 	_putenv_s(name, "");
@@ -699,9 +839,6 @@ static void unset_env(const char *name)
 	unsetenv(name);
 #endif
 }
-
-/* Set while an update restarts the launcher: the new launcher continues this log instead of rotating it away. */
-#define LOG_CONTINUE "BEA_CE_LOG_CONTINUE"
 
 /* p names a regular file, whether or not it can be read. */
 static int file_exists(const char *p)
@@ -738,37 +875,152 @@ static void make_dirs(const char *path)
 #endif
 }
 
-static char *read_all(const char *p, size_t *n)
+static char *read_stream_bounded(intptr_t raw, size_t max_bytes, size_t *n)
 {
-	FILE *f = fopen(p, "rb");
-	if (!f) return NULL;
-	size_t cap = 1 << 16, len = 0;
+	size_t cap = 4096, len = 0;
+	if (cap > max_bytes + 1) cap = max_bytes + 1;
 	char *b = malloc(cap + 1);
-	for (size_t r; b && (r = fread(b + len, 1, cap - len, f)) > 0;)
-		if ((len += r) == cap)
+	int bad = !b;
+	while (!bad)
+	{
+		if (len == cap)
 		{
-			if (cap > (size_t)-1 / 2 - 1)
-			{
-				free(b);
-				b = NULL;
-				break;
-			}
+			if (cap >= max_bytes + 1) { bad = 1; break; }
 			size_t next_cap = cap * 2;
+			if (next_cap > max_bytes + 1 || next_cap < cap) next_cap = max_bytes + 1;
 			char *nb = realloc(b, next_cap + 1);
-			if (!nb)
-			{
-				free(b);
-				b = NULL;
-				break;
-			}
+			if (!nb) { bad = 1; break; }
 			b = nb;
 			cap = next_cap;
 		}
-	fclose(f);
-	if (!b) return NULL;
+		size_t want = cap - len;
+#ifdef _WIN32
+		DWORD got = 0;
+		if (!ReadFile((HANDLE)raw, b + len, (DWORD)want, &got, NULL)) { bad = 1; break; }
+		size_t r = (size_t)got;
+#else
+		ssize_t got = read((int)raw, b + len, want);
+		if (got < 0) { if (errno == EINTR) continue; bad = 1; break; }
+		size_t r = (size_t)got;
+#endif
+		if (r == 0) break;
+		len += r;
+		if (len > max_bytes) { bad = 1; break; }
+	}
+#ifdef _WIN32
+	if (!CloseHandle((HANDLE)raw)) bad = 1;
+#else
+	if (close((int)raw) != 0) bad = 1;
+#endif
+	if (bad) { free(b); return NULL; }
 	b[len] = 0;
 	if (n) *n = len;
 	return b;
+}
+
+static char *read_regular_bounded(const char *p, size_t max_bytes, size_t *n)
+{
+	if (n) *n = 0;
+	if (!p || !*p) return NULL;
+#ifdef _WIN32
+	HANDLE h = CreateFileA(p, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+		OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+	if (h == INVALID_HANDLE_VALUE) return NULL;
+	BY_HANDLE_FILE_INFORMATION info;
+	if (GetFileType(h) != FILE_TYPE_DISK || !GetFileInformationByHandle(h, &info) ||
+		(info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) ||
+		info.nFileSizeHigh || info.nFileSizeLow > max_bytes)
+	{
+		CloseHandle(h);
+		return NULL;
+	}
+	return read_stream_bounded((intptr_t)h, max_bytes, n);
+#else
+	int fd = open(p, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC, 0);
+	if (fd < 0) return NULL;
+	struct stat st;
+	if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0 || (uint64_t)st.st_size > (uint64_t)max_bytes)
+	{
+		close(fd);
+		return NULL;
+	}
+	return read_stream_bounded((intptr_t)fd, max_bytes, n);
+#endif
+}
+
+static char *read_all(const char *p, size_t *n)
+{
+	return read_regular_bounded(p, 4u * 1024u * 1024u, n);
+}
+
+static char *read_ini_bounded(const char *ini_path, size_t *n)
+{
+	if (n) *n = 0;
+	char parent[4200], name[256];
+	if (!ini_path || !*ini_path || (size_t)snprintf(parent, sizeof parent, "%s", ini_path) >= sizeof parent) return NULL;
+	char *slash = strrchr(parent, '/');
+#ifdef _WIN32
+	char *backslash = strrchr(parent, '\\');
+	if (backslash && (!slash || backslash > slash)) slash = backslash;
+#endif
+	const char *base = slash ? slash + 1 : parent;
+	if (!*base || !strcmp(base, ".") || !strcmp(base, "..") ||
+		(size_t)snprintf(name, sizeof name, "%s", base) >= sizeof name) return NULL;
+#ifdef _WIN32
+	if (strchr(name, ':')) return NULL;
+#endif
+	if (!slash)
+	{
+#ifdef _WIN32
+		DWORD cwd_len = GetCurrentDirectoryA(sizeof parent, parent);
+		if (!cwd_len || cwd_len >= sizeof parent) return NULL;
+#else
+		if (!getcwd(parent, sizeof parent)) return NULL;
+#endif
+	}
+	else if (slash == parent) slash[1] = 0;
+#ifdef _WIN32
+	else if (slash == parent + 2 && parent[1] == ':') slash[1] = 0;
+#endif
+	else *slash = 0;
+	CeSettingsDir dir;
+	if (!ce_settings_dir_open_ex(parent, 0, &dir, NULL)) return NULL;
+#ifdef _WIN32
+	HANDLE raw = INVALID_HANDLE_VALUE;
+	char full[4500];
+	if ((size_t)snprintf(full, sizeof full, "%s\\%s", dir.path, name) < sizeof full)
+	{
+		HANDLE in = CreateFileA(full, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+			OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+		if (in != INVALID_HANDLE_VALUE)
+		{
+			BY_HANDLE_FILE_INFORMATION info;
+			if (GetFileType(in) == FILE_TYPE_DISK && GetFileInformationByHandle(in, &info) &&
+				!(info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) &&
+				!info.nFileSizeHigh && info.nFileSizeLow <= CE_INI_MAX_BYTES)
+				raw = in;
+			else
+				CloseHandle(in);
+		}
+	}
+	ce_settings_dir_close(&dir);
+	if (raw == INVALID_HANDLE_VALUE) return NULL;
+	return read_stream_bounded((intptr_t)raw, CE_INI_MAX_BYTES, n);
+#else
+	int raw = -1;
+	int input = openat(dir.fd, name, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC);
+	if (input >= 0)
+	{
+		struct stat st;
+		if (fstat(input, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0 || (uint64_t)st.st_size > CE_INI_MAX_BYTES)
+			close(input);
+		else
+			raw = input;
+	}
+	ce_settings_dir_close(&dir);
+	if (raw < 0) return NULL;
+	return read_stream_bounded((intptr_t)raw, CE_INI_MAX_BYTES, n);
+#endif
 }
 
 static int sha256_file(const char *p, uint8_t out[32])
@@ -800,8 +1052,9 @@ static int hex_to(const char *h, uint8_t *out, size_t n)
 /* ce.ini: key=value lines in the user folder (optional UTF-8 BOM, optional spaces or tabs before key, around '=', and after value). */
 static int ini_get(const char *key, char *out, size_t n)
 {
-	if (!key || !*key) return 0;
-	char *t = read_all(sIni, NULL);
+	if (out && n) out[0] = 0;
+	if (!key || !*key || !out || !n || !*sIni) return 0;
+	char *t = read_ini_bounded(sIni, NULL);
 	if (!t) return 0;
 	char *start = t;
 	if ((unsigned char)start[0] == 0xEF && (unsigned char)start[1] == 0xBB && (unsigned char)start[2] == 0xBF)
@@ -822,8 +1075,12 @@ static int ini_get(const char *key, char *out, size_t n)
 				size_t m = strcspn(e, "\r\n");
 				while (m > 0 && (*e == ' ' || *e == '\t')) { e++; m--; }
 				while (m > 0 && (e[m - 1] == ' ' || e[m - 1] == '\t')) m--;
-				snprintf(out, n, "%.*s", (int)m, e);
-				found = 1;
+				if (m < n)
+				{
+					memcpy(out, e, m);
+					out[m] = 0;
+					found = 1;
+				}
 				break;
 			}
 		}
@@ -1311,8 +1568,11 @@ static void json_start_files(FILE *f, const char *dir, const char *rel, int *fir
 		{
 			continue;
 		}
+		if (*total >= START_CAP) continue;
+		size_t max_file = START_CAP - *total;
+		if (max_file > (1u << 20)) max_file = (1u << 20);
 		size_t n = 0;
-		char *data = read_all(path, &n);
+		char *data = read_regular_bounded(path, max_file, &n);
 		if (!data) continue;
 		if (n <= (1u << 20) && *total + n <= START_CAP)
 		{

@@ -106,6 +106,18 @@
  		return Localization_GetStringById(0xe9);
  	return NULL;
  }
+--- a/Controller.h
++++ b/Controller.h
+@@ -162,6 +162,9 @@
+ };
+ 
+ extern SControlBinding CONTROL_BINDINGS[];				// 008892d8
++#ifdef CE_VERSION
++extern "C" int PortCeSoloControlsActive(void) __attribute__((weak));
++#endif
+ 
+ class CController
+ {
 --- a/Controller.cpp
 +++ b/Controller.cpp
 @@ -35,6 +35,9 @@
@@ -129,6 +141,18 @@
  	DoMappings() ;
  }
  
+@@ -733,7 +740,11 @@
+ 				UnsetButton(mapping->mId);
+ 			}
+ 
++#ifdef CE_VERSION
++			if ((GAME.IsMultiplayer() && !(PortCeSoloControlsActive && PortCeSoloControlsActive())) || input_num != 0)
++#else
+ 			if (GAME.IsMultiplayer() || input_num != 0)
++#endif
+ 				break;
+ 			input_num = 1;
+ 		}
 --- a/game.cpp
 +++ b/game.cpp
 @@ -277,6 +277,9 @@

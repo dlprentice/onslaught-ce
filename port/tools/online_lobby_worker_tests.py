@@ -1564,19 +1564,22 @@ class WorkerdIntegrationTests(unittest.TestCase):
         self.assertIn(m_rid, ids)  # 'starting' room MUST NOT be pruned at lobby heartbeat timeout!
         self.assertNotIn(r_stale["room_id"], ids)
 
-        # Touch r_match via /signal, /turn, and /update(in_match) so it survives well past initial 2.6s match TTL!
+        # Touch r_match via /signal, /turn, and /update(in_match) so it survives well past initial 2.6s match TTL,
+        # while keeping r_alive heartbeating inside its 1.1s lobby heartbeat window!
         self.assertEqual(200, srv.api(
             "POST", f"/ce-lobby/v1/rooms/{m_rid}/signal", token=h_match["session_token"],
             body={"match_id": m_mid, "from_seat": 0, "to_seat": 1, "kind": "offer", "sdp": "v=0\r\na=ice-ufrag:hb"},
         )[0])
-        time.sleep(1.3)
-        self.assertEqual(200, srv.api("GET", f"/ce-lobby/v1/rooms/{r_alive['room_id']}?since=0", token=h_alive["session_token"])[0])
+        for _ in range(2):
+            time.sleep(0.65)
+            self.assertEqual(200, srv.api("GET", f"/ce-lobby/v1/rooms/{r_alive['room_id']}?since=0", token=h_alive["session_token"])[0])
         self.assertEqual(200, srv.api("POST", f"/ce-lobby/v1/rooms/{m_rid}/turn", token=g_match["session_token"],
                                       body={"match_id": m_mid, "guest_seat": 1})[0])
         self.assertEqual(200, srv.api("POST", f"/ce-lobby/v1/rooms/{m_rid}/update", token=h_match["session_token"],
                                       body={"state": "in_match"})[0])
-        time.sleep(1.5)
-        self.assertEqual(200, srv.api("GET", f"/ce-lobby/v1/rooms/{r_alive['room_id']}?since=0", token=h_alive["session_token"])[0])
+        for _ in range(2):
+            time.sleep(0.75)
+            self.assertEqual(200, srv.api("GET", f"/ce-lobby/v1/rooms/{r_alive['room_id']}?since=0", token=h_alive["session_token"])[0])
         code, _, listing2 = srv.api("GET", "/ce-lobby/v1/lobbies", token=h_alive["session_token"])
         self.assertEqual(200, code)
         self.assertIn(m_rid, [r["room_id"] for r in listing2["rooms"]])
@@ -1707,6 +1710,174 @@ class WorkerdIntegrationTests(unittest.TestCase):
         all_teams = [s["team"] for s in full_bal["seats"]]
         self.assertEqual(2, all_teams.count(0))
         self.assertEqual(2, all_teams.count(1))
+
+    def test_expired_room_direct_poll_code_reuse_ownership_and_finish_match_id(self):
+        # 1. Direct GameRoom access by room_id after state-specific TTL expiry MUST return terminal 404
+        #    (even before LobbyDirectory has pruned!) and MUST NOT revive last_heartbeat_ms.
+        srv = self.make_server(heartbeat_timeout_ms=700, starting_timeout_ms=1100, match_timeout_ms=1500)
+        _, h_lob = srv.auth_player("ExpLobbyHost")
+        _, h_st = srv.auth_player("ExpStartHost")
+        _, g_st = srv.auth_player("ExpStartGuest")
+        _, h_im = srv.auth_player("ExpMatchHost")
+        _, g_im = srv.auth_player("ExpMatchGuest")
+
+        r_lob = srv.api(
+            "POST", "/ce-lobby/v1/lobbies", token=h_lob["session_token"],
+            body={"name": "ExpireLobby", "mode": "coop_skirmish", "map": 850, "max_seats": 2},
+        )[2]
+        r_st = srv.api(
+            "POST", "/ce-lobby/v1/lobbies", token=h_st["session_token"],
+            body={"name": "ExpireStarting", "mode": "coop_defence", "map": 856, "max_seats": 2},
+        )[2]
+        self.assertEqual(200, srv.api("POST", f"/ce-lobby/v1/rooms/{r_st['room_id']}/join", token=g_st["session_token"], body={})[0])
+        self.assertEqual(200, srv.api("POST", f"/ce-lobby/v1/rooms/{r_st['room_id']}/update", token=g_st["session_token"], body={"ready": True})[0])
+        st_mid = srv.api("POST", f"/ce-lobby/v1/rooms/{r_st['room_id']}/start", token=h_st["session_token"], body={})[2]["start_ticket"]["match_id"]
+
+        r_im = srv.api(
+            "POST", "/ce-lobby/v1/lobbies", token=h_im["session_token"],
+            body={"name": "ExpireInMatch", "mode": "coop_defence", "map": 856, "max_seats": 2},
+        )[2]
+        self.assertEqual(200, srv.api("POST", f"/ce-lobby/v1/rooms/{r_im['room_id']}/join", token=g_im["session_token"], body={})[0])
+        self.assertEqual(200, srv.api("POST", f"/ce-lobby/v1/rooms/{r_im['room_id']}/update", token=g_im["session_token"], body={"ready": True})[0])
+        im_mid = srv.api("POST", f"/ce-lobby/v1/rooms/{r_im['room_id']}/start", token=h_im["session_token"], body={})[2]["start_ticket"]["match_id"]
+        self.assertEqual(200, srv.api("POST", f"/ce-lobby/v1/rooms/{r_im['room_id']}/update", token=h_im["session_token"], body={"state": "in_match"})[0])
+
+        # Sleep past all three TTLs WITHOUT touching /lobbies first.
+        time.sleep(1.75)
+
+        # Direct poll by room_id on expired lobby room -> 404 twice in a row (never revives!) and evicted from resolve.
+        code, _, err = srv.api("GET", f"/ce-lobby/v1/rooms/{r_lob['room_id']}", token=h_lob["session_token"])
+        self.assertEqual(404, code)
+        self.assertEqual("room_not_found", err["error"])
+        self.assertEqual(404, srv.api("GET", f"/ce-lobby/v1/rooms/{r_lob['room_id']}", token=h_lob["session_token"])[0])
+        self.assertEqual(404, srv.api("POST", "/ce-lobby/v1/lobbies/resolve", token=h_lob["session_token"], body={"code": r_lob["code"]})[0])
+
+        # Direct signaling / TURN / poll on expired starting room -> all 404 (zero upstream TURN calls!).
+        calls_before = srv.provider_calls()
+        self.assertEqual(404, srv.api(
+            "POST", f"/ce-lobby/v1/rooms/{r_st['room_id']}/signal", token=h_st["session_token"],
+            body={"match_id": st_mid, "from_seat": 0, "to_seat": 1, "kind": "offer", "sdp": "v=0"},
+        )[0])
+        self.assertEqual(404, srv.api(
+            "GET", f"/ce-lobby/v1/rooms/{r_st['room_id']}/signal?match_id={st_mid}&since=0", token=g_st["session_token"],
+        )[0])
+        self.assertEqual(404, srv.api(
+            "POST", f"/ce-lobby/v1/rooms/{r_st['room_id']}/turn", token=h_st["session_token"],
+            body={"match_id": st_mid, "guest_seat": 1},
+        )[0])
+        self.assertEqual(calls_before, srv.provider_calls())
+        self.assertEqual(404, srv.api("GET", f"/ce-lobby/v1/rooms/{r_st['room_id']}", token=h_st["session_token"])[0])
+
+        # Direct finish / chat / update / leave on expired in_match room -> all 404.
+        self.assertEqual(404, srv.api("POST", f"/ce-lobby/v1/rooms/{r_im['room_id']}/finish", token=h_im["session_token"], body={"match_id": im_mid})[0])
+        self.assertEqual(404, srv.api("POST", f"/ce-lobby/v1/rooms/{r_im['room_id']}/chat", token=h_im["session_token"], body={"text": "late"})[0])
+        self.assertEqual(404, srv.api("POST", f"/ce-lobby/v1/rooms/{r_im['room_id']}/update", token=h_im["session_token"], body={"rtt_ms": 20})[0])
+        self.assertEqual(404, srv.api("POST", f"/ce-lobby/v1/rooms/{r_im['room_id']}/leave", token=h_im["session_token"], body={})[0])
+        srv.stop()
+
+        # 2. Code-reuse ownership: if Room 1's directory code was reused by Room 2 while a stale/resumed Room 1
+        #    attempts pollRoom (touchHeartbeat) or updateRoom (upsertRoomSummary), Room 1 MUST get 404 (never 200
+        #    or 503 UNIQUE collision!) and Room 2 MUST retain ownership of the code.
+        srv2 = self.make_server(heartbeat_timeout_ms=30000)
+        _, h1 = srv2.auth_player("OldOwnerHost")
+        _, h2 = srv2.auth_player("NewOwnerHost")
+        _, g2 = srv2.auth_player("NewOwnerGuest")
+
+        r1 = srv2.api(
+            "POST", "/ce-lobby/v1/lobbies", token=h1["session_token"],
+            body={"name": "OldOwnerRoom", "mode": "versus_2v2", "map": 851, "max_seats": 2},
+        )[2]
+        r2 = srv2.api(
+            "POST", "/ce-lobby/v1/lobbies", token=h2["session_token"],
+            body={"name": "NewOwnerRoom", "mode": "versus_2v2", "map": 851, "max_seats": 2},
+        )[2]
+        rid1, code1 = r1["room_id"], r1["code"]
+        rid2 = r2["room_id"]
+
+        def reassign_code_and_resurrect_r1() -> None:
+            fresh_ms = int(time.time() * 1000) + 25000
+            dir_root = srv2.state_dir / "ce-online-lobby-dir-test-v1"
+            for db_path in sorted(dir_root.glob("*.sqlite")):
+                if db_path.name == "metadata.sqlite":
+                    continue
+                with sqlite3.connect(str(db_path)) as conn:
+                    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                    if "rooms" in tables:
+                        conn.execute("DELETE FROM rooms WHERE room_id = ?", (rid1,))
+                        conn.execute(
+                            "UPDATE rooms SET code = ?, last_heartbeat_ms = ? WHERE room_id = ?",
+                            (code1, fresh_ms, rid2),
+                        )
+                        conn.commit()
+            room_root = srv2.state_dir / "ce-online-lobby-room-test-v1"
+            for db_path in sorted(room_root.glob("*.sqlite")):
+                if db_path.name == "metadata.sqlite":
+                    continue
+                with sqlite3.connect(str(db_path)) as conn:
+                    rows = conn.execute("SELECT value FROM room_kv WHERE name = 'room'").fetchall()
+                    for (val,) in rows:
+                        doc = json.loads(val)
+                        if doc["room_id"] == rid2:
+                            doc["code"] = code1
+                            doc["last_heartbeat_ms"] = fresh_ms
+                            conn.execute("UPDATE room_kv SET value = ? WHERE name = 'room'", (json.dumps(doc),))
+                            conn.commit()
+                        elif doc["room_id"] == rid1:
+                            doc["state"] = "lobby"
+                            doc["last_heartbeat_ms"] = fresh_ms
+                            conn.execute("UPDATE room_kv SET value = ? WHERE name = 'room'", (json.dumps(doc),))
+                            conn.commit()
+
+        srv2.stop()
+        reassign_code_and_resurrect_r1()
+        srv2.start()
+
+        # Stale Room 1 pollRoom -> touchHeartbeat sees Room 2 owns code1 -> 404 (not 200!).
+        self.assertEqual(404, srv2.api("GET", f"/ce-lobby/v1/rooms/{rid1}", token=h1["session_token"])[0])
+
+        # Re-resurrect Room 1 and try updateRoom -> upsertRoomSummary sees Room 2 owns code1 -> 404 (never 503 UNIQUE!).
+        srv2.stop()
+        reassign_code_and_resurrect_r1()
+        srv2.start()
+        code, _, hijack_err = srv2.api(
+            "POST", f"/ce-lobby/v1/rooms/{rid1}/update", token=h1["session_token"],
+            body={"name": "HijackedName"},
+        )
+        self.assertEqual(404, code)
+        self.assertEqual("room_not_found", hijack_err["error"])
+
+        # Room 2 still owns code1 cleanly!
+        code, _, resolved = srv2.api("POST", "/ce-lobby/v1/lobbies/resolve", token=g2["session_token"], body={"code": code1})
+        self.assertEqual(200, code)
+        self.assertEqual(rid2, resolved["room_id"])
+        code, _, r2_state = srv2.api("GET", f"/ce-lobby/v1/rooms/{rid2}", token=h2["session_token"])
+        self.assertEqual(200, code)
+        self.assertEqual("NewOwnerRoom", r2_state["name"])
+
+        # 3. Scoped /finish match_id: idempotent in lobby (preserving ready!), 409 match_mismatch on newer match!
+        self.assertEqual(200, srv2.api("POST", f"/ce-lobby/v1/rooms/{rid2}/join", token=g2["session_token"], body={})[0])
+        self.assertEqual(200, srv2.api("POST", f"/ce-lobby/v1/rooms/{rid2}/update", token=g2["session_token"], body={"ready": True})[0])
+        mid1 = srv2.api("POST", f"/ce-lobby/v1/rooms/{rid2}/start", token=h2["session_token"], body={})[2]["start_ticket"]["match_id"]
+        code, _, fin1 = srv2.api("POST", f"/ce-lobby/v1/rooms/{rid2}/finish", token=h2["session_token"], body={"match_id": mid1})
+        self.assertEqual(200, code)
+        self.assertEqual("lobby", fin1["state"])
+
+        # Guest readies up for Match #2; delayed idempotent retry of Match #1's /finish must NOT clear ready!
+        self.assertEqual(200, srv2.api("POST", f"/ce-lobby/v1/rooms/{rid2}/update", token=g2["session_token"], body={"ready": True})[0])
+        code, _, fin1_dup = srv2.api("POST", f"/ce-lobby/v1/rooms/{rid2}/finish", token=h2["session_token"], body={"match_id": mid1})
+        self.assertEqual(200, code)
+        self.assertIs(True, fin1_dup["seats"][1]["ready"])
+
+        # Start Match #2; stale /finish for mid1 MUST get 409 match_mismatch and leave Match #2 running!
+        mid2 = srv2.api("POST", f"/ce-lobby/v1/rooms/{rid2}/start", token=h2["session_token"], body={})[2]["start_ticket"]["match_id"]
+        self.assertNotEqual(mid1, mid2)
+        code, _, mismatch = srv2.api("POST", f"/ce-lobby/v1/rooms/{rid2}/finish", token=h2["session_token"], body={"match_id": mid1})
+        self.assertEqual(409, code)
+        self.assertEqual("match_mismatch", mismatch["error"])
+        code, _, still_m2 = srv2.api("GET", f"/ce-lobby/v1/rooms/{rid2}", token=h2["session_token"])
+        self.assertEqual(200, code)
+        self.assertEqual("starting", still_m2["state"])
+        self.assertEqual(mid2, still_m2["start_ticket"]["match_id"])
 
 
 def main() -> int:

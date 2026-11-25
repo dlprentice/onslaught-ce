@@ -86,8 +86,11 @@ def pieces(patched, with_patch):
     joy = re.search(r'enum EJoyButtonPushType\s*\{.*?\};', controller_h, re.S).group(0)
     action_lines = [l for l in controller_h.splitlines() if re.match(r'#define BUTTON_\w+\s', l)]
     axis_lines = [l for l in controller_h.splitlines() if re.match(r'#define ANALOGUE_(?:X1|Y1|X2|Y2|POV_X|POV_Y|ACT_AS_DIGITAL_THRESHOLD)\s', l)]
-    structs = controller_h[controller_h.index('struct SControlInput'):controller_h.index('class CController\n')]
-    constructors = controller[controller.index('SControlBinding::SControlBinding(bool'):controller.index('HRESULT InitMouse()')]
+    # the binding structs and constructors as patched: patch 0369 adds SControlBinding::PlayerInput, which DoMappings reads
+    patched_h = patched['Controller.h']
+    structs = patched_h[patched_h.index('struct SControlInput'):patched_h.index('class CController\n')]
+    controller_c = patched['Controller.cpp']
+    constructors = controller_c[controller_c.index('SControlBinding::SControlBinding(bool'):controller_c.index('HRESULT InitMouse()')]
     rows = []
     for name in ('BUTTON_MECH_STRAFE_LEFT', 'BUTTON_MECH_STRAFE_RIGHT', 'BUTTON_MECH_FORWARD', 'BUTTON_MECH_BACKWARD', 'BUTTON_MECH_LANDING_JETS', 'BUTTON_MECH_MORPH'):
         found = [l.strip() for l in pc.splitlines() if re.match(r'SControlBinding\(1, ' + name + r',', l.strip())]
@@ -160,8 +163,8 @@ def main():
     parent = ROOT / 'local-data/port/ce-dodge-assist-tests'
     parent.mkdir(parents=True, exist_ok=True)
     out = Path(tempfile.mkdtemp(prefix='run-', dir=parent))
-    patched = build.patched_text(['Controller.cpp'], network=False)
-    base = build.patched_text(['Controller.cpp'], skip=(PATCH,), network=False)
+    patched = build.patched_text(['Controller.cpp', 'Controller.h'], network=False)
+    base = build.patched_text(['Controller.cpp', 'Controller.h'], skip=(PATCH,), network=False)
     patched_files = pieces(patched, True)
     base_files = pieces(base, False)
     driver = ROOT / 'port/tools/ce_dodge_assist_driver.cpp'

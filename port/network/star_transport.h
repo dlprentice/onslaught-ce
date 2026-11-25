@@ -250,6 +250,16 @@ private:
     static constexpr uint8_t kChannelAux = 2;
     static constexpr size_t kChannelCount = 3;
 
+    struct ChatRateWindow {
+        static constexpr size_t kMaxBurst = 6;
+        static constexpr uint64_t kWindowMs = 10000;
+        std::array<uint64_t, kMaxBurst> timestamps{};
+        size_t count = 0;
+        size_t head = 0;
+        void Reset() noexcept { timestamps.fill(0); count = 0; head = 0; }
+        bool Allow(uint64_t now_ms) noexcept;
+    };
+
     struct PeerSlot {
         uint16_t expected_seat = 0;
         uint16_t sim_slot = 0;
@@ -262,6 +272,7 @@ private:
         uint8_t key[32]{};
         uint32_t send_seq[kChannelCount]{};
         ReplayWindow recv_replay[kChannelCount]{};
+        ChatRateWindow chat_rate{};
         uint32_t rtt_ms = 0;
         CeStarRoute route = CeStarRoute::Unknown;
         uint64_t last_rx_ms = 0;
@@ -307,6 +318,9 @@ private:
                        uint8_t out_key[32]) const noexcept;
     void SendGuestHello(uint64_t now_ms);
     void CleanupPendingPeer(_ENetPeer* peer) noexcept;
+#if defined(CE_NETWORK_ICE)
+    bool TryRetryGuestOverRelay() noexcept;
+#endif
 
     CeStarConfig config_;
     _ENetHost* host_ = nullptr;
@@ -315,6 +329,7 @@ private:
     bool guest_connect_started_ = false;
     bool guest_hello_sent_ = false;
     bool host_lost_ = false;
+    bool critical_overflow_ = false;
     CeStarError last_error_ = CeStarError::Ok;
     uint32_t rejected_packets_ = 0;
     uint32_t chat_send_seq_ = 0;
@@ -325,11 +340,14 @@ private:
     // Host uses slots_[1..max_guests] (slot 0 unused on Host). Guest uses slots_[0] for Host link.
     std::vector<PeerSlot> slots_;
     std::vector<PendingPeer> pending_peers_;
+    std::array<ChatRateWindow, CE_STAR_MAX_WIRE_SLOTS> guest_chat_rates_{};
     std::array<std::array<uint8_t, 16>, 64> seen_hello_nonces_{};
     size_t seen_hello_count_ = 0;
     size_t seen_hello_next_ = 0;
 
     std::deque<CeStarEvent> events_;
+    std::deque<CeStarEvent> chat_events_;
+    std::deque<CeStarEvent> aux_events_;
     std::vector<CeStarPingEntry> last_ping_report_;
 };
 

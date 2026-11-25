@@ -213,4 +213,92 @@ inline bool CeMuseumScaleNote(char *out, unsigned size, unsigned factor)
 	return true;
 }
 
+// One rule for every Museum caption bar (a hall's title at the top, an exhibit's plaque at the bottom).
+//
+// The bar is the HUD's objective bar: a bracket cap is drawn centred on each end and reaches half the bar's height inward, so text needs that
+// much room at each side before it touches a bracket. A fully open bar is the widest line plus kCeMuseumCaptionPad; while it opens, never
+// narrower than the text plus the two caps. The HUD scale enlarges everything drawn in a caption's scope, so the width allowed is counted
+// in the caption's own units: at most kCeMuseumCaptionViewShare of the view after scaling, which keeps a title clear of the facade sign
+// behind it and a plaque inside the screen at every HUD size. Text wider than the room left is first wrapped onto a second line (the caller
+// splits at CeMuseumCaptionSplit), then squeezed horizontally, never below kCeMuseumCaptionMinSqueeze.
+static const float kCeMuseumCaptionPad = 70.0f;
+static const float kCeMuseumCaptionViewShare = 0.60f;
+static const float kCeMuseumCaptionMinSqueeze = 0.72f;
+
+inline float CeMuseumCaptionCapInset(float barHeight)
+{
+	return barHeight > 0.0f ? barHeight * 0.5f : 0.0f;
+}
+
+struct CeMuseumCaptionFit
+{
+	float most;			// the widest the bar may ever be, in the caption's own units
+	float fullWidth;	// the bar when fully open
+	float barWidth;		// the bar at this opening
+	float textRoom;		// the width its text may fill
+	float scaleX;		// horizontal squeeze for the text (1: none)
+	bool overflow;		// the widest line does not fit textRoom unsqueezed: wrap it if it can be wrapped
+};
+
+// widest: the widest text line, unscaled. minWidth: a width the bar keeps even for short text (0: none). open: 0.45 (first visible) to 1.
+inline CeMuseumCaptionFit CeMuseumCaptionLayout(float widest, float barHeight, float viewWidth, float hudScale, float open, float minWidth)
+{
+	CeMuseumCaptionFit fit = {0.0f, 0.0f, 0.0f, 0.0f, 1.0f, false};
+	if (!(widest >= 0.0f) || !(viewWidth > 0.0f))
+		return fit;
+	const float scale = hudScale > 0.01f ? hudScale : 1.0f;
+	const float inset = CeMuseumCaptionCapInset(barHeight);
+	fit.most = viewWidth * kCeMuseumCaptionViewShare / scale;
+	float full = widest + kCeMuseumCaptionPad;
+	if (full < minWidth)
+		full = minWidth;
+	if (full > fit.most)
+		full = fit.most;
+	float room = full - 2.0f * inset;
+	if (room < 1.0f)
+		room = 1.0f;
+	fit.fullWidth = full;
+	fit.textRoom = room;
+	fit.overflow = widest > room;
+	if (fit.overflow && widest > 0.0f)
+	{
+		fit.scaleX = room / widest;
+		if (fit.scaleX < kCeMuseumCaptionMinSqueeze)
+			fit.scaleX = kCeMuseumCaptionMinSqueeze;
+	}
+	const float t = open >= 1.0f ? 1.0f : (open <= 0.45f ? 0.0f : (open - 0.45f) / 0.55f);
+	float closed = widest * fit.scaleX + 2.0f * inset;
+	if (closed > full)
+		closed = full;
+	fit.barWidth = closed + (full - closed) * t;
+	return fit;
+}
+
+// Where to break a line in two: the index of the space nearest its middle (the first line ends before it, the second starts after it),
+// or -1 when the line has no space to break at or is too short to be worth breaking.
+template <typename Char>
+inline int CeMuseumCaptionSplit(const Char *text)
+{
+	if (!text)
+		return -1;
+	int length = 0;
+	while (text[length])
+		++length;
+	if (length < 12)
+		return -1;
+	int best = -1, bestAway = length;
+	for (int i = 1; i < length - 1; ++i)
+	{
+		if (text[i] != Char(' '))
+			continue;
+		const int away = i * 2 > length ? i * 2 - length : length - i * 2;
+		if (away < bestAway)
+		{
+			bestAway = away;
+			best = i;
+		}
+	}
+	return best;
+}
+
 #endif

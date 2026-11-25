@@ -22,9 +22,9 @@ Checked:
 - mutants: a consumer's default, a table default, a key, a value, the lookup's fallback, the lookup's choice of reader, a reader's
   rule for a repeated line, four rules of the launcher-style reader, a row with no consumer and a consumer with no row must each be
   caught, and the test must say what each breaks;
-- the known limit (port/PARITY.md, CE Settings), as it stands: for a ce.ini the game's readers refuse (over 1 MiB, a symbolic link,
-  or in a linked folder) the page shows the launcher rows' defaults while the launcher's own reader follows the lines; the same
-  lines in an ordinary file show what the launcher does; and in a ce.ini whose earlier line holds a NUL byte, the page's write of a
+- refused files and NUL bytes: for a ce.ini the game's readers refuse (over 1 MiB, a symbolic link, or in a linked folder) both the
+  page and the launcher's own bounded reader refuse the file and take the defaults; the same lines in an ordinary file show what the
+  launcher does; and in a ce.ini whose earlier line holds a NUL byte, the page's write of a
   launcher row is made after that byte, where the launcher (a C string) never reads, so the launcher and the page's next look both
   still take the default.
 
@@ -88,13 +88,19 @@ def lookup_text(frontend):
 
 
 def launcher_reader(texts):
-    """read_all and ini_get as they stand in the launcher's source (the reader of the two lines it owns)."""
+    """The bounded INI reader and ini_get as they stand in the launcher's source (the reader of the two lines it owns)."""
     text = texts["port/updater/ce_launch.c"]
-    read_all = re.search(r"^static char \*read_all\(const char \*p, size_t \*n\)\n\{.*?^\}\n", text, re.S | re.M)
-    ini_get = re.search(r"^static int ini_get\(const char \*key, char \*out, size_t n\)\n\{.*?^\}\n", text, re.S | re.M)
-    if not read_all or not ini_get:
-        raise Fail("ce_launch.c's read_all or ini_get is not where the test expects")
-    return read_all.group(0) + "\n" + ini_get.group(0)
+    patterns = (
+        r"^static char \*read_stream_bounded\(intptr_t raw, size_t max_bytes, size_t \*n\)\n\{.*?^\}\n",
+        r"^static char \*read_regular_bounded\(const char \*p, size_t max_bytes, size_t \*n\)\n\{.*?^\}\n",
+        r"^static char \*read_all\(const char \*p, size_t \*n\)\n\{.*?^\}\n",
+        r"^static char \*read_ini_bounded\(const char \*ini_path, size_t \*n\)\n\{.*?^\}\n",
+        r"^static int ini_get\(const char \*key, char \*out, size_t n\)\n\{.*?^\}\n",
+    )
+    parts = [re.search(pattern, text, re.S | re.M) for pattern in patterns]
+    if not all(parts):
+        raise Fail("ce_launch.c's read_all, read_ini_bounded, or ini_get is not where the test expects")
+    return "\n".join(part.group(0) for part in parts)
 
 
 def build_launcher(folder, texts, reads):
@@ -102,8 +108,11 @@ def build_launcher(folder, texts, reads):
     (folder / "launcher_read.inc").write_text(launcher_reader(texts))
     (folder / "launcher_off0.inc").write_text(reads["update_check"][1])
     (folder / "launcher_on1.inc").write_text(reads["record_sessions"][1])
+    (folder / "c-sdl/SDL3").mkdir(parents=True, exist_ok=True)
+    (folder / "c-sdl/SDL3/SDL.h").write_text("static inline int SDL_OpenURL(const char *u) { (void)u; return 0; }\n")
     binary = folder / "launcher"
-    command = ["gcc", "-std=gnu11", "-O0", "-g", "-Wall", "-Wextra", "-Wno-unused-parameter", "-I", str(folder),
+    command = ["gcc", "-std=gnu11", "-D_GNU_SOURCE", "-O0", "-g", "-Wall", "-Wextra", "-Wno-unused-function", "-Wno-unused-parameter",
+               "-I", str(folder / "c-sdl"), "-I", str(folder), "-I", str(PORT / "updater"),
                str(PORT / "tools/launcher_ini_driver.c"), "-o", str(binary)]
     done = subprocess.run(command, capture_output=True, text=True, timeout=120)
     if done.returncode:
@@ -428,9 +437,9 @@ class SettingsAgree(unittest.TestCase):
         self.assertGreaterEqual(count, 300, "too few ce.ini files were compared")
         self.assertTrue(all(row["key"] in dict((k, 1) for k, _, _ in CONSUMERS) for row in rows))
 
-    def test_a_file_the_game_refuses_shows_the_defaults_while_the_launcher_reads_it(self):
-        """The launcher opens ce.ini its own way (fopen, no size limit, links followed), so where the game's readers refuse the
-        file the two launcher rows show their defaults (checking on, recording off) while the launcher acts on the lines."""
+    def test_a_file_the_game_refuses_is_refused_by_the_launcher_too(self):
+        """Both the game's readers and the launcher's bounded INI reader refuse files over 1 MiB, symbolic links, and linked
+        parent folders, so both show and act on the safe defaults (checking on, recording off)."""
         reads = literal_reads(self.texts)
         binary, launcher = build(self.out, self.texts, reads, "refused")
         rows = {row["key"]: row for row in compiled_table(binary)}
@@ -461,7 +470,7 @@ class SettingsAgree(unittest.TestCase):
         for name, folder in refused.items():
             with self.subTest(file=name):
                 self.assertEqual(shown(folder), {"update_check": "1", "record_sessions": "0"}, "the page shows the defaults")
-                self.assertEqual(launcher_says(folder), {"off0": "1", "on1": "1"}, "the launcher turns checking off and records")
+                self.assertEqual(launcher_says(folder), {"off0": "0", "on1": "0"}, "the launcher refuses the unsafe file and keeps the defaults")
 
     def test_a_write_after_a_nul_byte_is_not_seen_by_the_launcher(self):
         """A ce.ini whose earlier line holds a NUL byte (a corrupt file): the page's write of a launcher row is made, by the setter that

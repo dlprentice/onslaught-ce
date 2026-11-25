@@ -38,7 +38,7 @@ enum {
 	kOidSquad = 28,                     // matches OID_CSquad in src/oids.h
 	kAllegianceForseti = 0,             // matches kForsetiAllegiance
 	kAllegianceMuspell = 1,             // matches kMuspellAllegiance
-	kSkyCubeIndex = 16,                 // sunlit coastal sky cube packed in 700_res_PC.aya
+	kSkyCubeIndex = 16,                 // starry moonlit coastal sky cube packed in 700_res_PC.aya
 	kWaterSetIndex = 0,                 // coastal ocean water set
 	kCaptureNodeCount = 5,
 };
@@ -211,6 +211,35 @@ inline const char *OptionalTextureName(unsigned index) {
 		"meshtex\\F_Ventura_Gun_Texture_512.tga",
 	};
 	return index < kOptionalTextureCount ? kTextures[index] : nullptr;
+}
+
+// Standalone retail meshes this theater's units can put on screen but that
+// 700_res_PC.aya does not pack. A mesh the engine cannot find is drawn as its
+// missing-mesh marker (default.msh, a green "?" cube), so each of these is
+// loaded from its own data/resources/meshes/m_<name>.aya before the level
+// starts. Every one is optional: a file an install lacks is skipped and logged,
+// never a refusal. `texture` names the one texture the level archive lacks too
+// (nullptr when the archive already holds all the mesh needs).
+//   m_rocket.msh                 every rocket round and every escape pod (the
+//                                engine names this mesh itself, in Rocket.cpp
+//                                and EscapePod.cpp): the floating "?" cube
+//   fa_wildcard_t_destroyed.msh  a downed Tara Wildcat
+//   m_innerwreckage.msh          inner hull wreckage
+//   fa_f24.msh                   the base air fighter the Wildcats derive from
+struct SupportMeshSpec {
+	const char *mesh;
+	const char *texture;
+};
+
+constexpr unsigned kSupportMeshCount = 4u;
+inline const SupportMeshSpec &SupportMesh(unsigned index) {
+	static const SupportMeshSpec kMeshes[kSupportMeshCount] = {
+		{"m_rocket.msh",                "meshtex\\m_rocket.TGA"},
+		{"fa_wildcard_t_destroyed.msh", nullptr},
+		{"m_innerwreckage.msh",         "meshtex\\BOSSfenrir-FRONT.tga"},
+		{"fa_f24.msh",                  nullptr},
+	};
+	return kMeshes[index < kSupportMeshCount ? index : 0u];
 }
 
 inline int AsciiLower(int c) {
@@ -593,9 +622,11 @@ inline uint8_t ComputeCellLight(int x, int y, float sunX, float sunY, float sunZ
 	float ndotl = nx * lx + ny * ly + nz * lz;
 	if (ndotl < 0.0f) ndotl = 0.0f;
 	if (ndotl > 1.0f) ndotl = 1.0f;
-	const int shade = static_cast<int>(18.0f + ndotl * 44.0f + 0.5f);
+	// Grade terrain lightmap to cool moonlit night [14..30] so the battlefield
+	// harmonizes with the starry moon skybox (kSkyCubeIndex 16) and glowing Citadel.
+	const int shade = static_cast<int>(14.0f + ndotl * 16.0f + 0.5f);
 	if (shade < 14) return 14u;
-	if (shade > 62) return 62u;
+	if (shade > 32) return 32u;
 	return static_cast<uint8_t>(shade);
 }
 

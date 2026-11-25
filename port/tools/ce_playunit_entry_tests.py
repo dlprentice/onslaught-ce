@@ -377,7 +377,7 @@ enum { KEY_ON=1000, KEY_ONCE, KEY_RELEASE, MOUSE_BUTTON_ON,
        MOUSE_BUTTON_ONCE, MOUSE_BUTTON_RELEASE, VK_F1=112, VK_F12=123 };
 enum { BUTTON_MECH_MORPH=1, BUTTON_MECH_CHANGE_ZOOM_IN, BUTTON_MECH_CHANGE_ZOOM_OUT };
 struct SControlInput { int mPad, mType, mKey, mVKey; };
-struct SControlBinding { int mId; SControlInput mInput[4]; };
+struct SControlBinding { int mId; SControlInput mInput[2]; };
 SControlBinding CONTROL_BINDINGS[5];
 bool gFootDrive, gVehicleDrive, gOnFoot, takeFree, gUnitViewMade;
 struct { bool valid, firstPerson; } gUnitViewRig = { false, false };

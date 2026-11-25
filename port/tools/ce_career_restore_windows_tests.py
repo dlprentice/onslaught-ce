@@ -1111,6 +1111,69 @@ class WindowsCareerCustodyTests(unittest.TestCase):
         self.assertEqual(int(kv5["STATUS"]), REFUSED, raw5)
         self.assertFalse(list((d5 / "external").iterdir()))
 
+    def test_15_absent_savegames_directories_and_deferred_creation(self) -> None:
+        # 1. Absent game\savegames with populated user\savegames succeeds across backup, take, suggest, and restore.
+        d1, w1 = self.new_profile("no-game-savegames")
+        shutil.rmtree(d1 / "game/savegames")
+        rc_b, kv_b, raw_b = self.call(w1, "backup")
+        self.assertEqual(rc_b, 0, raw_b)
+        self.assertEqual(int(kv_b["STATUS"]), COMPLETE, raw_b)
+        self.assertFalse((d1 / "game/savegames").exists())
+        rc_r, kv_r, raw_r = self.call(w1, "restore")
+        self.assertEqual(rc_r, 0, raw_r)
+        self.assertEqual(int(kv_r["STATUS"]), COMPLETE, raw_r)
+        self.assertEqual((d1 / "user/savegames/Amber restored.bes").read_bytes(), self.previous)
+        self.assertFalse((d1 / "game/savegames").exists())
+
+        # 2. Absent user\savegames with populated game\savegames:
+        #    suggest, backup, take, and refused/cancelled restores MUST NOT create user\savegames;
+        #    authorized restore creates user\savegames after backup + gates pass.
+        d2, w2 = self.new_profile("no-user-savegames", with_options=False)
+        shutil.rmtree(d2 / "user/savegames")
+        rc_s2, kv_s2, raw_s2 = self.call(w2, "suggest")
+        self.assertEqual(rc_s2, 0, raw_s2)
+        self.assertEqual(int(kv_s2["STATUS"]), COMPLETE, raw_s2)
+        self.assertEqual(kv_s2["TARGET"], "Amber restored.bes")
+        self.assertFalse((d2 / "user/savegames").exists())
+
+        rc_b2, kv_b2, raw_b2 = self.call(w2, "backup")
+        self.assertEqual(rc_b2, 0, raw_b2)
+        self.assertEqual(int(kv_b2["STATUS"]), COMPLETE, raw_b2)
+        self.assertFalse((d2 / "user/savegames").exists())
+
+        rc_deny, kv_deny, raw_deny = self.call(w2, "restore", "no-permit")
+        self.assertEqual(rc_deny, 0, raw_deny)
+        self.assertEqual(int(kv_deny["STATUS"]), REFUSED, raw_deny)
+        self.assertFalse((d2 / "user/savegames").exists())
+
+        rc_cancel, kv_cancel, raw_cancel = self.call(w2, "restore", "cancel")
+        self.assertEqual(rc_cancel, 0, raw_cancel)
+        self.assertEqual(int(kv_cancel["STATUS"]), CANCELLED, raw_cancel)
+        self.assertFalse((d2 / "user/savegames").exists())
+
+        rc_ok, kv_ok, raw_ok = self.call(w2, "restore", "target=Amber restored.bes")
+        self.assertEqual(rc_ok, 0, raw_ok)
+        self.assertEqual(int(kv_ok["STATUS"]), COMPLETE, raw_ok)
+        self.assertEqual((d2 / "user/savegames/Amber restored.bes").read_bytes(), self.previous)
+
+        # 3. Both user\savegames and game\savegames absent (zero existing files): mandatory backup fails closed
+        #    and leaves user\savegames absent.
+        d3, w3 = self.new_profile("both-savegames-absent", with_options=False)
+        shutil.rmtree(d3 / "user/savegames")
+        shutil.rmtree(d3 / "game/savegames")
+        rc_r3, kv_r3, raw_r3 = self.call(w3, "restore", "target=Amber.bes")
+        self.assertEqual(rc_r3, 0, raw_r3)
+        self.assertEqual(int(kv_r3["STATUS"]), REFUSED, raw_r3)
+        self.assertFalse((d3 / "user/savegames").exists())
+
+        # 4. Regular file at user\savegames is refused.
+        d4, w4 = self.new_profile("file-at-savegames")
+        shutil.rmtree(d4 / "user/savegames")
+        (d4 / "user/savegames").write_bytes(b"not a directory")
+        rc_r4, kv_r4, raw_r4 = self.call(w4, "restore")
+        self.assertEqual(rc_r4, 0, raw_r4)
+        self.assertEqual(int(kv_r4["STATUS"]), REFUSED, raw_r4)
+
 
 if __name__ == "__main__":
     os.umask(0o077)

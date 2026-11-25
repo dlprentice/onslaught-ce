@@ -9,6 +9,7 @@ enum { CE_CHAT_OK = 0, CE_CHAT_CLOSED, CE_CHAT_INVALID, CE_CHAT_TOO_LARGE,
 typedef struct CE_ChatLine {
     uint32_t size;
     int local_transport_accepted;
+    int has_sender_label;
     uint8_t utf8[CE_CHAT_TEXT_BYTES + 1];
 } CE_ChatLine;
 typedef struct CE_ChatView {

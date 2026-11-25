@@ -26,8 +26,11 @@ extern "C"
 #include <libavutil/mem.h>
 }
 
+#include <limits.h>
 #include <math.h>
+#include <mutex>
 #include <stdarg.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <new>
@@ -69,10 +72,13 @@ typedef void *(__stdcall *BINKSNDSYSOPEN)(U32 param);
 unsigned long long PortClockFrames();		// port/platform/common/clock.cpp
 bool PortClockStandsBetweenPresents();	// likewise: the shim clock, standing still between Presents
 
+#define BINK_OWN_STATE 1
+
 namespace
 {
 const U32 kSurface565 = 10;		// BinkCopyToBuffer's formats: 565, or else 32-bit BGRA (BINKSURFACE32A, 5)
 
+std::mutex gSoundMutex;
 IDirectSound8 *gSound = NULL;		// BinkSetSoundSystem's parameter: the game's IDirectSound
 U32 gTrack = 0;						// BinkSetSoundTrack's choice; 0 = the first audio stream
 bool gTrackSet = false;
@@ -158,7 +164,7 @@ double Clock(Video *v)
 	}
 	else
 		wall = Seconds(v->start);
-	if (v->sound)
+	if (v->sound && v->soundBlock && v->soundRate)
 	{
 		DWORD play = 0, status = 0;
 		v->sound->GetStatus(&status);
@@ -219,16 +225,42 @@ bool DecodeAudio(Video *v, int stream, std::vector<short> &pcm, int *rate, int *
 	}
 	*rate = ctx->sample_rate;
 	*channels = ctx->ch_layout.nb_channels;
+	if (*rate <= 0 || *channels < 1 || *channels > 2)
+	{
+		avcodec_free_context(&ctx);
+		return false;
+	}
 	AVPacket *pkt = av_packet_alloc();
 	AVFrame *fr = av_frame_alloc();
+	if (!pkt || !fr)
+	{
+		av_frame_free(&fr);
+		av_packet_free(&pkt);
+		avcodec_free_context(&ctx);
+		return false;
+	}
 	v->mem.pos = 0;
 	avformat_seek_file(v->fmt, -1, INT64_MIN, 0, INT64_MAX, 0);
+	const size_t maxSamples = 0x0FFFFFFFu / sizeof(short);
+	bool overflowed = false;
 	auto drain = [&]() {
 		while (avcodec_receive_frame(ctx, fr) == 0)
 		{
 			int ch = fr->ch_layout.nb_channels, n = fr->nb_samples;
+			if (ch != *channels || n <= 0)
+			{
+				av_frame_unref(fr);
+				continue;
+			}
+			size_t add = (size_t)n * (size_t)ch;
+			if (add > maxSamples - pcm.size())
+			{
+				overflowed = true;
+				av_frame_unref(fr);
+				break;
+			}
 			size_t base = pcm.size();
-			pcm.resize(base + (size_t)n * ch);
+			pcm.resize(base + add);
 			for (int i = 0; i < n; i++)
 				for (int c = 0; c < ch; c++)
 				{
@@ -241,29 +273,51 @@ bool DecodeAudio(Video *v, int stream, std::vector<short> &pcm, int *rate, int *
 						s = ((const short *)fr->extended_data[c])[i] / 32768.0f;
 					else
 						s = ((const short *)fr->extended_data[0])[i * ch + c] / 32768.0f;
-					s = s > 1.0f ? 1.0f : s < -1.0f ? -1.0f : s;
+					s = !(s > -1.0f) ? (s < -1.0f ? -1.0f : 0.0f) : s > 1.0f ? 1.0f : s;
 					pcm[base + (size_t)i * ch + c] = (short)(s * 32767.0f);
 				}
 			av_frame_unref(fr);
 		}
 	};
-	while (av_read_frame(v->fmt, pkt) >= 0)
+	while (!overflowed && av_read_frame(v->fmt, pkt) >= 0)
 	{
 		if (pkt->stream_index == stream && avcodec_send_packet(ctx, pkt) == 0)
 			drain();
 		av_packet_unref(pkt);
 	}
-	avcodec_send_packet(ctx, NULL);
-	drain();
+	if (!overflowed)
+	{
+		avcodec_send_packet(ctx, NULL);
+		drain();
+	}
 	av_frame_free(&fr);
 	av_packet_free(&pkt);
 	avcodec_free_context(&ctx);
-	return !pcm.empty();
+	return !overflowed && !pcm.empty();
 }
 
 void MakeSound(Video *v)
 {
-	if (!gSound)
+	IDirectSound8 *sound = NULL;
+	U32 wantedTrack = 0;
+	bool trackSet = false;
+	#ifdef BINK_OWN_STATE
+	{
+		std::lock_guard<std::mutex> lock(gSoundMutex);
+		sound = gSound;
+		if (sound)
+			sound->AddRef();
+		wantedTrack = gTrack;
+		trackSet = gTrackSet;
+	}
+	#else
+	sound = gSound;
+	if (sound)
+		sound->AddRef();
+	wantedTrack = gTrack;
+	trackSet = gTrackSet;
+	#endif
+	if (!sound)
 	{
 		PortSessionLog(PORT_SESSION_FILM, false, "film=%u no DirectSound device (sound disabled or unavailable)", v->sessionId);
 		return;
@@ -272,57 +326,93 @@ void MakeSound(Video *v)
 	for (unsigned i = 0; i < v->fmt->nb_streams; i++)
 		if (v->fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO)
 		{
-			if ((U32)audioStreams == (gTrackSet ? gTrack : 0) || stream < 0)
+			if ((U32)audioStreams == (trackSet ? wantedTrack : 0) || stream < 0)
 				stream = (int)i;
 			audioStreams++;
 		}
 	if (stream < 0)
 	{
+		sound->Release();
 		PortSessionLog(PORT_SESSION_FILM, false, "film=%u asset=%s has no audio track", v->sessionId, v->sessionAsset);
 		return;
 	}
 	std::vector<short> pcm;
 	int rate = 0, channels = 0;
-	if (!DecodeAudio(v, stream, pcm, &rate, &channels) || channels < 1 || channels > 2)
+	const size_t maxSamples = 0x0FFFFFFFu / sizeof(short);
+	if (!DecodeAudio(v, stream, pcm, &rate, &channels) || rate <= 0 || channels < 1 || channels > 2 ||
+		pcm.empty() || pcm.size() > maxSamples || (pcm.size() % (size_t)channels) != 0 ||
+		(uint64_t)(unsigned)rate * (uint64_t)(unsigned)(2 * channels) > 0xFFFFFFFFull)
 	{
+		sound->Release();
 		PortSessionLog(PORT_SESSION_FILM, true, "film=%u sound decode/format failed rate=%d channels=%d", v->sessionId, rate, channels);
 		return;
 	}
+	DWORD pcmBytes = (DWORD)(pcm.size() * sizeof(short));
 	WAVEFORMATEX wfx;
 	memset(&wfx, 0, sizeof(wfx));
 	wfx.wFormatTag = WAVE_FORMAT_PCM;
 	wfx.nChannels = (WORD)channels;
-	wfx.nSamplesPerSec = rate;
+	wfx.nSamplesPerSec = (DWORD)rate;
 	wfx.wBitsPerSample = 16;
 	wfx.nBlockAlign = (WORD)(2 * channels);
-	wfx.nAvgBytesPerSec = rate * wfx.nBlockAlign;
+	wfx.nAvgBytesPerSec = (DWORD)rate * wfx.nBlockAlign;
 	DSBUFFERDESC d;
 	memset(&d, 0, sizeof(d));
 	d.dwSize = sizeof(d);
 	d.dwFlags = DSBCAPS_CTRLVOLUME | DSBCAPS_GETCURRENTPOSITION2 | DSBCAPS_LOCSOFTWARE;
-	d.dwBufferBytes = (DWORD)(pcm.size() * 2);
+	d.dwBufferBytes = pcmBytes;
 	d.lpwfxFormat = &wfx;
 	IDirectSoundBuffer *b = NULL;
-	HRESULT create = gSound->CreateSoundBuffer(&d, &b, NULL);
+	HRESULT create = sound->CreateSoundBuffer(&d, &b, NULL);
+	sound->Release();
 	if (FAILED(create) || !b)
 	{
+		if (b)
+			b->Release();
 		PortSessionLog(PORT_SESSION_FILM, true, "film=%u sound buffer failed result=%08lx", v->sessionId, (unsigned long)create);
 		return;
 	}
-	void *p1, *p2;
-	DWORD n1, n2;
+	void *p1 = NULL, *p2 = NULL;
+	DWORD n1 = 0, n2 = 0;
 	HRESULT fill = b->Lock(0, 0, &p1, &n1, &p2, &n2, DSBLOCK_ENTIREBUFFER);
 	if (SUCCEEDED(fill))
 	{
-		memcpy(p1, pcm.data(), n1);
-		b->Unlock(p1, n1, p2, n2);
+		if ((n1 && !p1) || (n2 && !p2) || (uint64_t)n1 + (uint64_t)n2 < (uint64_t)pcmBytes)
+		{
+			b->Unlock(p1, n1, p2, n2);
+			fill = E_FAIL;
+		}
+		else
+		{
+			const unsigned char *src = (const unsigned char *)pcm.data();
+			DWORD copy1 = n1 < pcmBytes ? n1 : pcmBytes;
+			if (copy1)
+				memcpy(p1, src, copy1);
+			if (n1 > copy1)
+				memset((unsigned char *)p1 + copy1, 0, n1 - copy1);
+			DWORD rem = pcmBytes - copy1;
+			DWORD copy2 = n2 < rem ? n2 : rem;
+			if (copy2)
+				memcpy(p2, src + copy1, copy2);
+			if (n2 > copy2)
+				memset((unsigned char *)p2 + copy2, 0, n2 - copy2);
+			HRESULT unlk = b->Unlock(p1, n1, p2, n2);
+			if (FAILED(unlk))
+				fill = unlk;
+		}
+	}
+	if (FAILED(fill))
+	{
+		b->Release();
+		PortSessionLog(PORT_SESSION_FILM, true, "film=%u sound buffer fill failed result=%08lx", v->sessionId, (unsigned long)fill);
+		return;
 	}
 	v->sound = b;
 	if (PortSessionEnabled() && !PortAudioMediaRole(b, PORT_SESSION_FILM))
 		PortSessionLog(PORT_SESSION_FILM, true, "film=%u media role assignment refused", v->sessionId);
-	v->soundRate = rate;
+	v->soundRate = (DWORD)rate;
 	v->soundBlock = wfx.nBlockAlign;
-	PortSessionLog(PORT_SESSION_FILM, FAILED(fill), "film=%u sound buffer created fill_result=%08lx rate=%d channels=%d bits=16 decoded_bytes=%lu",
+	PortSessionLog(PORT_SESSION_FILM, false, "film=%u sound buffer created fill_result=%08lx rate=%d channels=%d bits=16 decoded_bytes=%lu",
 		v->sessionId, (unsigned long)fill, rate, channels, (unsigned long)d.dwBufferBytes);
 }
 
@@ -435,13 +525,18 @@ void __stdcall RADSetMemory(RADMEMALLOC, RADMEMFREE) {}
 void *__stdcall BinkOpenDirectSound(U32 param)
 {
 	IDirectSound8 *next = (IDirectSound8 *)(uintptr_t)param;
-	if (next == gSound)
-		return (void *)1;
-	if (next)
-		next->AddRef();
-	if (gSound)
-		gSound->Release();
-	gSound = next;
+	IDirectSound8 *old = NULL;
+	{
+		std::lock_guard<std::mutex> lock(gSoundMutex);
+		if (next == gSound)
+			return (void *)1;
+		if (next)
+			next->AddRef();
+		old = gSound;
+		gSound = next;
+	}
+	if (old)
+		old->Release();
 	return (void *)1;
 }
 
@@ -454,6 +549,7 @@ S32 __stdcall BinkSetSoundSystem(BINKSNDSYSOPEN open, U32 param)
 
 void __stdcall BinkSetSoundTrack(U32 total, U32 *tracks)
 {
+	std::lock_guard<std::mutex> lock(gSoundMutex);
 	gTrackSet = total > 0 && tracks;
 	gTrack = gTrackSet ? tracks[0] : 0;
 }
@@ -461,7 +557,12 @@ void __stdcall BinkSetSoundTrack(U32 total, U32 *tracks)
 HBINK __stdcall BinkOpen(const char *name, U32 flags)
 {
 	(void)flags;	// every file is read whole (BINKPRELOADALL's effect) and the sound track is always taken
-	Video *v = new (malloc(sizeof(Video))) Video;
+	if (!name || !name[0])
+		return NULL;
+	void *raw = malloc(sizeof(Video));
+	if (!raw)
+		return NULL;
+	Video *v = new (raw) Video;
 	if (PortSessionEnabled())
 	{
 		v->sessionId = __atomic_add_fetch(&gFilmSerial, 1u, __ATOMIC_RELAXED);
@@ -482,8 +583,21 @@ HBINK __stdcall BinkOpen(const char *name, U32 flags)
 	v->mem.pos = 0;
 	const int iosize = 65536;
 	unsigned char *iobuf = (unsigned char *)av_malloc(iosize);
-	AVIOContext *io = avio_alloc_context(iobuf, iosize, 0, &v->mem, ReadMem, NULL, SeekMem);
-	v->fmt = avformat_alloc_context();
+	AVIOContext *io = iobuf ? avio_alloc_context(iobuf, iosize, 0, &v->mem, ReadMem, NULL, SeekMem) : NULL;
+	v->fmt = io ? avformat_alloc_context() : NULL;
+	if (!v->fmt)
+	{
+		PortSessionLog(PORT_SESSION_FILM, true, "film=%u context alloc failed", v->sessionId);
+		if (io)
+		{
+			av_freep(&io->buffer);
+			avio_context_free(&io);
+		}
+		else
+			av_free(iobuf);
+		Free(v);
+		return NULL;
+	}
 	v->fmt->pb = io;
 	if (avformat_open_input(&v->fmt, NULL, av_find_input_format("bink"), NULL) < 0 ||
 		avformat_find_stream_info(v->fmt, NULL) < 0)
@@ -505,6 +619,12 @@ HBINK __stdcall BinkOpen(const char *name, U32 flags)
 		return NULL;
 	}
 	AVStream *st = v->fmt->streams[v->videoStream];
+	if (st->codecpar->width <= 0 || st->codecpar->height <= 0)
+	{
+		PortSessionLog(PORT_SESSION_FILM, true, "film=%u invalid video dimensions", v->sessionId);
+		Free(v);
+		return NULL;
+	}
 	const AVCodec *codec = avcodec_find_decoder(st->codecpar->codec_id);
 	v->dec = codec ? avcodec_alloc_context3(codec) : NULL;
 	if (!v->dec || avcodec_parameters_to_context(v->dec, st->codecpar) < 0 || avcodec_open2(v->dec, codec, NULL) < 0)
@@ -517,21 +637,39 @@ HBINK __stdcall BinkOpen(const char *name, U32 flags)
 	if (r.num > 0 && r.den > 0)
 		v->fps = (double)r.num / r.den;
 	AVPacket *pkt = av_packet_alloc();
+	if (!pkt)
+	{
+		PortSessionLog(PORT_SESSION_FILM, true, "film=%u packet alloc failed", v->sessionId);
+		Free(v);
+		return NULL;
+	}
+	bool pktAllocFailed = false;
 	while (av_read_frame(v->fmt, pkt) >= 0)
 	{
 		if (pkt->stream_index == v->videoStream)
 		{
 			v->packets.push_back(pkt);
 			pkt = av_packet_alloc();
+			if (!pkt)
+			{
+				pktAllocFailed = true;
+				break;
+			}
 		}
 		else
 			av_packet_unref(pkt);
 	}
 	av_packet_free(&pkt);
 	v->frame = av_frame_alloc();
+	if (pktAllocFailed || !v->frame || v->packets.empty())
+	{
+		PortSessionLog(PORT_SESSION_FILM, true, "film=%u empty or unallocated video frames=%zu", v->sessionId, v->packets.size());
+		Free(v);
+		return NULL;
+	}
 	MakeSound(v);
-	v->pub.Width = st->codecpar->width;
-	v->pub.Height = st->codecpar->height;
+	v->pub.Width = (U32)st->codecpar->width;
+	v->pub.Height = (U32)st->codecpar->height;
 	v->pub.Frames = (U32)v->packets.size();
 	v->pub.FrameNum = 1;
 	PortSessionLog(PORT_SESSION_FILM, false, "film=%u opened size=%lux%lu frames=%lu sound=%d", v->sessionId,
@@ -599,16 +737,35 @@ S32 __stdcall BinkDoFrame(HBINK bink)
 	Video *v = (Video *)bink;
 	if (!v)
 		return 0;
-	if (!v->started)
+	if (!v->started || v->pub.FrameNum == 1)
 	{
+		bool firstStart = !v->started;
 		v->started = true;
 		QueryPerformanceCounter(&v->start);
+		#ifdef BINK_OWN_STATE
+		if (v->paused)
+			v->pausedAt = v->start;
+		#endif
 		if (v->sound)
 		{
+			if (!firstStart)
+				v->sound->Stop();
 			v->sound->SetCurrentPosition(0);
-			HRESULT played = v->sound->Play(0, 0, 0);
-			PortSessionLog(PORT_SESSION_FILM, FAILED(played), "film=%u first audio play result=%08lx", v->sessionId, (unsigned long)played);
-			if (SUCCEEDED(played)) PortSessionMediaActive(PORT_SESSION_FILM, v, true);
+			bool deferWhilePaused = false;
+			#ifdef BINK_OWN_STATE
+			if (v->paused)
+			{
+				v->pausedPlaying = true;
+				deferWhilePaused = true;
+			}
+			#endif
+			if (!deferWhilePaused)
+			{
+				HRESULT played = v->sound->Play(0, 0, 0);
+				if (firstStart)
+					PortSessionLog(PORT_SESSION_FILM, FAILED(played), "film=%u first audio play result=%08lx", v->sessionId, (unsigned long)played);
+				if (SUCCEEDED(played)) PortSessionMediaActive(PORT_SESSION_FILM, v, true);
+			}
 		}
 	}
 	if (DecodeFrame(v, v->pub.FrameNum))
@@ -629,13 +786,15 @@ S32 __stdcall BinkWait(HBINK bink)
 	// The frame waiting to be shown is the one decoded last (FrameNum has moved past it); it is due (n - 1) / fps
 	// after the start.
 	Video *v = (Video *)bink;
-	if (!v || !v->started)
+	if (!v || !v->started || !v->pub.Frames || !(v->fps > 0.0))
 		return 0;
 	// Under the shim clock time stands still until the next Present, which the game makes only once a frame is due: every
 	// frame is due, one per Present, as retail plays its films under the shim.
 	if (PortClockStandsBetweenPresents())
 		return 0;
 	U32 waiting = v->pub.FrameNum > 1 ? v->pub.FrameNum - 1 : v->pub.Frames;
+	if (!waiting)
+		return 0;
 	return Clock(v) < (waiting - 1) / v->fps ? 1 : 0;
 }
 
@@ -652,39 +811,74 @@ S32 __stdcall BinkCopyToBuffer(HBINK bink, void *dest, S32 pitch, U32 height, U3
 				(unsigned long)(v->pub.FrameNum > 1 ? v->pub.FrameNum - 1 : v->pub.Frames), (unsigned long)play,
 				(unsigned long)flags);
 	}
-	if (!v || !v->decoded || !v->frame->data[0])
+	if (!v || !dest || !v->decoded || !v->frame || !v->frame->data[0] || !v->frame->data[1] || !v->frame->data[2])
 		return 0;
 	const AVFrame *f = v->frame;
+	if (f->width <= 0 || f->height <= 0 || v->pub.Width == 0 || v->pub.Height == 0 || y >= height)
+		return 0;
 	U32 surface = flags & 0xf;
+	size_t bpp = (surface == kSurface565) ? 2u : 4u;
 	const unsigned char *alpha = (f->format == AV_PIX_FMT_YUVA420P) ? f->data[3] : NULL;
-	U32 w = v->pub.Width, h = v->pub.Height < height ? v->pub.Height : height;
+	U32 w = v->pub.Width < (U32)f->width ? v->pub.Width : (U32)f->width;
+	U32 availH = height - y;
+	U32 srcH = v->pub.Height < (U32)f->height ? v->pub.Height : (U32)f->height;
+	U32 h = srcH < availH ? srcH : availH;
+	if (w == 0 || h == 0)
+		return 0;
+	uint64_t absPitch = pitch < 0 ? (uint64_t)(-(int64_t)pitch) : (uint64_t)pitch;
+	if ((uint64_t)x > (uint64_t)PTRDIFF_MAX / bpp || (uint64_t)w > ((uint64_t)PTRDIFF_MAX / bpp) - (uint64_t)x)
+		return 0;
+	uint64_t rowEndBytes = ((uint64_t)x + (uint64_t)w) * (uint64_t)bpp;
+	if (absPitch < rowEndBytes || absPitch > (uint64_t)PTRDIFF_MAX)
+		return 0;
+	int64_t dstOff0 = (int64_t)y * (int64_t)pitch;
+	int64_t dstOffLast = ((int64_t)y + (int64_t)(h - 1)) * (int64_t)pitch;
+	if (dstOff0 < PTRDIFF_MIN || dstOff0 > (int64_t)PTRDIFF_MAX - (int64_t)rowEndBytes ||
+		dstOffLast < PTRDIFF_MIN || dstOffLast > (int64_t)PTRDIFF_MAX - (int64_t)rowEndBytes)
+		return 0;
+	auto validPlane = [&](int stride, U32 rows, U32 minRowBytes) -> bool {
+		uint64_t absStride = stride < 0 ? (uint64_t)(-(int64_t)stride) : (uint64_t)stride;
+		if (absStride < minRowBytes || absStride > (uint64_t)PTRDIFF_MAX)
+			return false;
+		int64_t last = (int64_t)(rows - 1) * (int64_t)stride;
+		return last >= PTRDIFF_MIN && last <= (int64_t)PTRDIFF_MAX - (int64_t)minRowBytes;
+	};
+	U32 chromaRows = (h - 1) / 2 + 1, chromaCols = (w + 1) / 2;
+	if (!validPlane(f->linesize[0], h, w) || !validPlane(f->linesize[1], chromaRows, chromaCols) ||
+		!validPlane(f->linesize[2], chromaRows, chromaCols) || (alpha && !validPlane(f->linesize[3], h, w)))
+		return 0;
+	const ptrdiff_t sY = (ptrdiff_t)f->linesize[0], sU = (ptrdiff_t)f->linesize[1];
+	const ptrdiff_t sV = (ptrdiff_t)f->linesize[2], sA = alpha ? (ptrdiff_t)f->linesize[3] : 0;
+	const ptrdiff_t dstPitch = (ptrdiff_t)pitch;
+	const ptrdiff_t xByteOff = (ptrdiff_t)x * (ptrdiff_t)bpp;
 	for (U32 row = 0; row < h; row++)
 	{
-		const unsigned char *Y = f->data[0] + row * f->linesize[0];
-		const unsigned char *U = f->data[1] + (row / 2) * f->linesize[1];
-		const unsigned char *V = f->data[2] + (row / 2) * f->linesize[2];
-		const unsigned char *A = alpha ? alpha + row * f->linesize[3] : NULL;
-		unsigned char *out = (unsigned char *)dest + (row + y) * pitch;
+		const ptrdiff_t r = (ptrdiff_t)row, rc = (ptrdiff_t)(row / 2);
+		const unsigned char *Y = f->data[0] + r * sY;
+		const unsigned char *U = f->data[1] + rc * sU;
+		const unsigned char *V = f->data[2] + rc * sV;
+		const unsigned char *A = alpha ? alpha + r * sA : NULL;
+		unsigned char *out = (unsigned char *)dest + ((ptrdiff_t)y + r) * dstPitch + xByteOff;
 		for (U32 col = 0; col < w; col++)
 		{
 			int yy = Y[col], u = U[col / 2], vv = V[col / 2];
-			int r = gTables.y[yy] + gTables.rv[vv];
-			int g = gTables.y[yy] + gTables.gu[u] + gTables.gv[vv];
-			int b = gTables.y[yy] + gTables.bu[u];
-			r = Clamp(r);
-			g = Clamp(g);
-			b = Clamp(b);
+			int r8 = gTables.y[yy] + gTables.rv[vv];
+			int g8 = gTables.y[yy] + gTables.gu[u] + gTables.gv[vv];
+			int b8 = gTables.y[yy] + gTables.bu[u];
+			r8 = Clamp(r8);
+			g8 = Clamp(g8);
+			b8 = Clamp(b8);
 			if (surface == kSurface565)
 			{
-				unsigned short p = (unsigned short)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
-				memcpy(out + (x + col) * 2, &p, 2);
+				unsigned short p = (unsigned short)(((r8 >> 3) << 11) | ((g8 >> 2) << 5) | (b8 >> 3));
+				memcpy(out + (ptrdiff_t)col * 2, &p, 2);
 			}
 			else
 			{
-				unsigned char *p = out + (x + col) * 4;
-				p[0] = (unsigned char)b;
-				p[1] = (unsigned char)g;
-				p[2] = (unsigned char)r;
+				unsigned char *p = out + (ptrdiff_t)col * 4;
+				p[0] = (unsigned char)b8;
+				p[1] = (unsigned char)g8;
+				p[2] = (unsigned char)r8;
 				p[3] = A ? A[col] : 0;	// retail writes 0 where a video has no alpha plane
 			}
 		}

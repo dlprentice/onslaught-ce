@@ -36,6 +36,7 @@ bool PortGameHasFile(const char *rel)
 }
 
 void PortPathsNamesOnly() {}	// the two functions above read the environment at each call
+extern "C" unsigned long long SDL_GetTicks(void) { return 0; }	// ce.cpp's settings cache clock, bypassed here
 
 int main(int argc, char **argv)
 {

@@ -5,9 +5,13 @@
 // decoded: the Video is built by hand. Exit 2 on the first failed check.
 #include BINK_SOURCE
 
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <thread>
+#include <vector>
 
 // ---- the clock and the port functions bink.cpp calls
 static double gNow = 100.0;
@@ -149,6 +153,285 @@ int main(int argc, char **argv)
 		Need(PortBinkPause(&v->pub, 0) == 0 && b.plays == 2, "twice: a second resume changes nothing");
 		Video idle;
 		Need(PortBinkPause(&idle.pub, 1) == 0, "twice: a film not started is not held");
+	}
+	if (run("loop-restart"))
+	{
+		// A 2-frame film at 25 fps (40 ms/frame): BinkNextFrame wrapping FrameNum 2 -> 1 must keep pacing frame 2
+		// until frame 1 of cycle 2 is decoded in BinkDoFrame, which then restarts both wall clock and sound!
+		FakeBuffer b(0.08);
+		Video *v = new Video;
+		v->pub.Frames = 2;
+		v->pub.FrameNum = 1;
+		v->fps = 25.0;
+		v->sound = &b;
+		v->soundRate = 44100;
+		v->soundBlock = 4;
+
+		BinkDoFrame(&v->pub); // frame 1 of cycle 1
+		Need(v->started && b.playing && b.plays == 1, "loop-restart: cycle 1 started sound");
+		BinkNextFrame(&v->pub); // FrameNum = 2, frame 1 due at 0.0 s
+		Need(BinkWait(&v->pub) == 0, "loop-restart: frame 1 due immediately");
+
+		Pass(&b, 0.01); // 10 ms into cycle 1; frame 2 is due at 40 ms
+		BinkDoFrame(&v->pub); // decode frame 2
+		BinkNextFrame(&v->pub); // FrameNum wraps to 1! Frame 2 is now waiting (due at 40 ms).
+		Need(v->pub.FrameNum == 1, "loop-restart: BinkNextFrame wrapped FrameNum to 1");
+		Need(b.plays == 1 && b.stops == 0, "loop-restart: BinkNextFrame wrap did NOT restart sound early");
+		Need(BinkWait(&v->pub) == 1, "loop-restart: BinkWait still paces last frame (40 ms) before cycle 2 starts");
+
+		Pass(&b, 0.09); // total 100 ms: one-shot sound ended at 80 ms, frame 2 is now past due
+		Need(!b.playing && b.cursor == 0, "loop-restart: cycle 1 one-shot sound finished");
+		Need(BinkWait(&v->pub) == 0, "loop-restart: last frame of cycle 1 is now due");
+
+		// Decoding frame 1 of cycle 2 must restart wall clock AND rewind/replay sound!
+		BinkDoFrame(&v->pub);
+		Need(Near(Clock(v), 0.0), "loop-restart: cycle 2 BinkDoFrame restarted clock to 0", Clock(v));
+		Need(b.playing && b.plays == 2 && b.stops == 1 && b.cursor == 0, "loop-restart: cycle 2 restarted sound from 0");
+		BinkNextFrame(&v->pub); // FrameNum = 2
+		BinkDoFrame(&v->pub);
+		BinkNextFrame(&v->pub); // FrameNum = 1 (waiting = 2, due at 40 ms of cycle 2)
+		Pass(&b, 0.01);
+		Need(BinkWait(&v->pub) == 1, "loop-restart: cycle 2 frame 2 waits until 40 ms of cycle 2 (not 0 ms!)");
+		v->sound = nullptr;
+		delete v;
+	}
+	if (run("zero-frames"))
+	{
+		Video v;
+		v.started = true;
+		v.pub.Frames = 0;
+		v.pub.FrameNum = 1;
+		v.fps = 25.0;
+		Need(BinkWait(&v.pub) == 0, "zero-frames: BinkWait returns 0 without unsigned underflow");
+		BinkNextFrame(&v.pub);
+		Need(v.pub.FrameNum == 1, "zero-frames: BinkNextFrame is a no-op when Frames == 0");
+		Need(BinkOpen(nullptr, 0) == nullptr && BinkOpen("", 0) == nullptr, "zero-frames: BinkOpen rejects empty/null path");
+	}
+	if (run("copy-bounds"))
+	{
+		Video v;
+		v.pub.Width = 4;
+		v.pub.Height = 4;
+		v.decoded = 1;
+		v.frame = av_frame_alloc();
+		Need(v.frame != nullptr, "copy-bounds: av_frame_alloc");
+		v.frame->format = AV_PIX_FMT_YUV420P;
+		v.frame->width = 4;
+		v.frame->height = 4;
+		Need(av_frame_get_buffer(v.frame, 16) == 0, "copy-bounds: av_frame_get_buffer");
+		for (int r = 0; r < 4; ++r)
+			std::memset(v.frame->data[0] + r * v.frame->linesize[0], 200, 4);
+		for (int r = 0; r < 2; ++r)
+		{
+			std::memset(v.frame->data[1] + r * v.frame->linesize[1], 128, 2);
+			std::memset(v.frame->data[2] + r * v.frame->linesize[2], 128, 2);
+		}
+
+		// Canary-guarded 4x4 BGRA destination buffer: y = 2, height = 4 must copy ONLY 2 rows (4 - 2), never 4!
+		std::vector<unsigned char> guard(64 + 4 * 16 + 64, 0xA5);
+		unsigned char *dest = guard.data() + 64;
+		BinkCopyToBuffer(&v.pub, dest, 16, 4, 0, 2, 0);
+		for (int i = 0; i < 64; ++i)
+		{
+			Need(guard[i] == 0xA5, "copy-bounds: leading canary intact");
+			Need(guard[64 + 4 * 16 + i] == 0xA5, "copy-bounds: trailing canary intact (height - y respected!)");
+		}
+		for (int i = 0; i < 2 * 16; ++i)
+			Need(dest[i] == 0xA5, "copy-bounds: rows above y=2 untouched");
+		Need(dest[2 * 16] != 0xA5 && dest[3 * 16] != 0xA5, "copy-bounds: rows 2..3 written");
+
+		// Reject dest == NULL, y >= height, and (x + w) * 4 > abs(pitch).
+		std::fill(guard.begin(), guard.end(), 0x5A);
+		BinkCopyToBuffer(&v.pub, nullptr, 16, 4, 0, 0, 0);
+		BinkCopyToBuffer(&v.pub, dest, 16, 4, 0, 4, 0);
+		BinkCopyToBuffer(&v.pub, dest, 16, 4, 1, 0, 0); // (1 + 4) * 4 = 20 > pitch 16
+		for (unsigned char c : guard)
+			Need(c == 0x5A, "copy-bounds: out-of-bounds x/y/pitch rejected without writing");
+
+		// Negative destination pitch (bottom-up surface) and negative source linesize must work via signed ptrdiff_t!
+		std::fill(guard.begin(), guard.end(), 0x3C);
+		unsigned char *bottomRow = dest + 3 * 16;
+		BinkCopyToBuffer(&v.pub, bottomRow, -16, 4, 0, 0, 0);
+		for (int i = 0; i < 64; ++i)
+			Need(guard[i] == 0x3C && guard[64 + 4 * 16 + i] == 0x3C, "copy-bounds: negative pitch keeps canaries intact");
+		Need(dest[0] != 0x3C && dest[3 * 16] != 0x3C, "copy-bounds: negative pitch wrote all 4 rows in bounds");
+
+		av_frame_free(&v.frame);
+	}
+	if (run("make-sound-safety"))
+	{
+		struct SplitLockBuffer : IDirectSoundBuffer
+		{
+			std::vector<unsigned char> ring;
+			int refs = 1;
+			bool failLock = false, shortLock = false, failUnlock = false;
+			explicit SplitLockBuffer(DWORD n) : ring(n, 0) {}
+			HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, void **) override { return E_NOINTERFACE; }
+			ULONG STDMETHODCALLTYPE AddRef() override { return (ULONG)++refs; }
+			ULONG STDMETHODCALLTYPE Release() override { int r = --refs; if (r == 0) delete this; return (ULONG)r; }
+			HRESULT STDMETHODCALLTYPE GetCaps(LPDSBCAPS c) override { c->dwBufferBytes = (DWORD)ring.size(); return DS_OK; }
+			HRESULT STDMETHODCALLTYPE GetCurrentPosition(LPDWORD p, LPDWORD w) override { if (p) *p = 0; if (w) *w = 0; return DS_OK; }
+			HRESULT STDMETHODCALLTYPE GetFormat(LPWAVEFORMATEX, DWORD, LPDWORD) override { return DS_OK; }
+			HRESULT STDMETHODCALLTYPE GetVolume(LPLONG v) override { *v = 0; return DS_OK; }
+			HRESULT STDMETHODCALLTYPE GetPan(LPLONG p) override { *p = 0; return DS_OK; }
+			HRESULT STDMETHODCALLTYPE GetFrequency(LPDWORD f) override { *f = 44100; return DS_OK; }
+			HRESULT STDMETHODCALLTYPE GetStatus(LPDWORD s) override { *s = 0; return DS_OK; }
+			HRESULT STDMETHODCALLTYPE Initialize(LPDIRECTSOUND, LPCDSBUFFERDESC) override { return DS_OK; }
+			HRESULT STDMETHODCALLTYPE Lock(DWORD, DWORD bytes, LPVOID *p1, LPDWORD n1, LPVOID *p2, LPDWORD n2, DWORD flags) override
+			{
+				if (failLock) { if (p1) *p1 = nullptr; if (n1) *n1 = 0; if (p2) *p2 = nullptr; if (n2) *n2 = 0; return DSERR_GENERIC; }
+				if (flags & DSBLOCK_ENTIREBUFFER) bytes = (DWORD)ring.size();
+				DWORD first = bytes > 4 ? 4 : bytes;
+				DWORD second = shortLock ? 0 : (bytes - first);
+				*p1 = ring.data(); *n1 = first;
+				if (p2) *p2 = second ? ring.data() + first : nullptr;
+				if (n2) *n2 = second;
+				return DS_OK;
+			}
+			HRESULT STDMETHODCALLTYPE Play(DWORD, DWORD, DWORD) override { return DS_OK; }
+			HRESULT STDMETHODCALLTYPE SetCurrentPosition(DWORD) override { return DS_OK; }
+			HRESULT STDMETHODCALLTYPE SetFormat(LPCWAVEFORMATEX) override { return DS_OK; }
+			HRESULT STDMETHODCALLTYPE SetVolume(LONG) override { return DS_OK; }
+			HRESULT STDMETHODCALLTYPE SetPan(LONG) override { return DS_OK; }
+			HRESULT STDMETHODCALLTYPE SetFrequency(DWORD) override { return DS_OK; }
+			HRESULT STDMETHODCALLTYPE Stop() override { return DS_OK; }
+			HRESULT STDMETHODCALLTYPE Unlock(LPVOID, DWORD, LPVOID, DWORD) override { return failUnlock ? DSERR_GENERIC : DS_OK; }
+			HRESULT STDMETHODCALLTYPE Restore() override { return DS_OK; }
+		};
+		struct MockDS8 : IDirectSound8
+		{
+			std::atomic<int> refs{1};
+			int mode = 0; // 0=ok split lock, 1=failLock, 2=shortLock, 3=failUnlock
+			int liveBuffers = 0;
+			SplitLockBuffer *lastCreated = nullptr;
+			HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, void **) override { return E_NOINTERFACE; }
+			ULONG STDMETHODCALLTYPE AddRef() override { return (ULONG)++refs; }
+			ULONG STDMETHODCALLTYPE Release() override { return (ULONG)--refs; }
+			HRESULT STDMETHODCALLTYPE CreateSoundBuffer(LPCDSBUFFERDESC d, LPDIRECTSOUNDBUFFER *out, IUnknown *) override
+			{
+				auto *b = new SplitLockBuffer(d->dwBufferBytes);
+				b->failLock = (mode == 1);
+				b->shortLock = (mode == 2);
+				b->failUnlock = (mode == 3);
+				lastCreated = b;
+				*out = b;
+				return DS_OK;
+			}
+			HRESULT STDMETHODCALLTYPE GetCaps(LPDSCAPS) override { return DS_OK; }
+			HRESULT STDMETHODCALLTYPE DuplicateSoundBuffer(LPDIRECTSOUNDBUFFER, LPDIRECTSOUNDBUFFER *) override { return DSERR_UNSUPPORTED; }
+			HRESULT STDMETHODCALLTYPE SetCooperativeLevel(HWND, DWORD) override { return DS_OK; }
+			HRESULT STDMETHODCALLTYPE Compact() override { return DS_OK; }
+			HRESULT STDMETHODCALLTYPE GetSpeakerConfig(LPDWORD) override { return DS_OK; }
+			HRESULT STDMETHODCALLTYPE SetSpeakerConfig(DWORD) override { return DS_OK; }
+			HRESULT STDMETHODCALLTYPE Initialize(LPCGUID) override { return DS_OK; }
+			HRESULT STDMETHODCALLTYPE VerifyCertification(LPDWORD) override { return DS_OK; }
+		};
+
+		// Build a minimal 4-frame stereo 16-bit 44100 Hz WAV in memory so real FFmpeg DecodeAudio + MakeSound run end to end!
+		auto makeWavVideo = [](uint32_t sampleRate) -> Video * {
+			std::vector<unsigned char> wav(44 + 16, 0);
+			auto put32 = [&](size_t off, uint32_t val) { std::memcpy(&wav[off], &val, 4); };
+			auto put16 = [&](size_t off, uint16_t val) { std::memcpy(&wav[off], &val, 2); };
+			std::memcpy(&wav[0], "RIFF", 4); put32(4, 36 + 16); std::memcpy(&wav[8], "WAVEfmt ", 8);
+			put32(16, 16); put16(20, 1); put16(22, 2); put32(24, sampleRate);
+			put32(28, sampleRate * 4); put16(32, 4); put16(34, 16);
+			std::memcpy(&wav[36], "data", 4); put32(40, 16);
+			const short samples[8] = {1000, -1000, 2000, -2000, 3000, -3000, 4000, -4000};
+			std::memcpy(&wav[44], samples, 16);
+
+			Video *v = new (std::malloc(sizeof(Video))) Video;
+			v->file = wav;
+			v->mem.data = v->file.data();
+			v->mem.size = (int64_t)v->file.size();
+			v->mem.pos = 0;
+			unsigned char *iobuf = (unsigned char *)av_malloc(4096);
+			AVIOContext *io = avio_alloc_context(iobuf, 4096, 0, &v->mem, ReadMem, nullptr, SeekMem);
+			v->fmt = avformat_alloc_context();
+			v->fmt->pb = io;
+			if (avformat_open_input(&v->fmt, nullptr, av_find_input_format("wav"), nullptr) < 0 ||
+				avformat_find_stream_info(v->fmt, nullptr) < 0)
+			{
+				if (!v->fmt) { av_freep(&io->buffer); avio_context_free(&io); }
+				Free(v);
+				return nullptr;
+			}
+			return v;
+		};
+
+		MockDS8 ds;
+		BinkOpenDirectSound((U32)(uintptr_t)&ds);
+		Need(ds.refs.load() == 2, "make-sound-safety: BinkOpenDirectSound AddRefs device");
+
+		// 1) Split 2-region Lock succeeds and copies all 16 PCM bytes across p1 (4B) + p2 (12B).
+		ds.mode = 0;
+		Video *vOk = makeWavVideo(44100);
+		Need(vOk != nullptr, "make-sound-safety: in-memory WAV opened");
+		MakeSound(vOk);
+		Need(vOk->sound != nullptr && ds.lastCreated != nullptr, "make-sound-safety: split Lock succeeded");
+		short gotFirst = 0, gotLast = 0;
+		std::memcpy(&gotFirst, ds.lastCreated->ring.data(), 2);
+		std::memcpy(&gotLast, ds.lastCreated->ring.data() + 14, 2);
+		Need(gotFirst != 0 && gotLast != 0, "make-sound-safety: both Lock regions populated");
+		Free(vOk);
+
+		// 2) Lock failure, short Lock, and Unlock failure must each Release the created buffer and leave v->sound == NULL.
+		for (int failMode : {1, 2, 3})
+		{
+			ds.mode = failMode;
+			Video *vf = makeWavVideo(44100);
+			Need(vf != nullptr, "make-sound-safety: WAV opened for failure mode");
+			MakeSound(vf);
+			Need(vf->sound == nullptr, "make-sound-safety: failed Lock/Unlock leaves v->sound NULL");
+			Free(vf);
+		}
+
+		BinkOpenDirectSound(0);
+		Need(ds.refs.load() == 1, "make-sound-safety: device refcount balanced back to 1");
+	}
+	if (run("dsound-thread-safety"))
+	{
+		struct ThreadDS8 : IDirectSound8
+		{
+			std::atomic<int> refs{1};
+			HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, void **) override { return E_NOINTERFACE; }
+			ULONG STDMETHODCALLTYPE AddRef() override { int r = ++refs; Need(r >= 1, "AddRef positive"); return (ULONG)r; }
+			ULONG STDMETHODCALLTYPE Release() override { int r = --refs; Need(r >= 1, "Release never drops below caller's ref"); return (ULONG)r; }
+			HRESULT STDMETHODCALLTYPE CreateSoundBuffer(LPCDSBUFFERDESC, LPDIRECTSOUNDBUFFER *, IUnknown *) override { return DSERR_GENERIC; }
+			HRESULT STDMETHODCALLTYPE GetCaps(LPDSCAPS) override { return DS_OK; }
+			HRESULT STDMETHODCALLTYPE DuplicateSoundBuffer(LPDIRECTSOUNDBUFFER, LPDIRECTSOUNDBUFFER *) override { return DSERR_UNSUPPORTED; }
+			HRESULT STDMETHODCALLTYPE SetCooperativeLevel(HWND, DWORD) override { return DS_OK; }
+			HRESULT STDMETHODCALLTYPE Compact() override { return DS_OK; }
+			HRESULT STDMETHODCALLTYPE GetSpeakerConfig(LPDWORD) override { return DS_OK; }
+			HRESULT STDMETHODCALLTYPE SetSpeakerConfig(DWORD) override { return DS_OK; }
+			HRESULT STDMETHODCALLTYPE Initialize(LPCGUID) override { return DS_OK; }
+			HRESULT STDMETHODCALLTYPE VerifyCertification(LPDWORD) override { return DS_OK; }
+		};
+		ThreadDS8 a, b;
+		std::atomic<bool> stop{false};
+		std::thread swapper([&] {
+			for (int i = 0; i < 2000; ++i)
+			{
+				BinkOpenDirectSound((U32)(uintptr_t)((i & 1) ? &a : &b));
+				U32 tr = (U32)(i & 1);
+				BinkSetSoundTrack(1, &tr);
+			}
+			stop.store(true);
+		});
+		std::thread reader([&] {
+			AVFormatContext *emptyFmt = avformat_alloc_context();
+			while (!stop.load())
+			{
+				Video v;
+				v.fmt = emptyFmt;
+				MakeSound(&v);
+				v.fmt = nullptr;
+			}
+			avformat_free_context(emptyFmt);
+		});
+		swapper.join();
+		reader.join();
+		BinkOpenDirectSound(0);
+		Need(a.refs.load() == 1 && b.refs.load() == 1, "dsound-thread-safety: concurrent swaps and MakeSound preserve exact refcounts");
 	}
 	std::printf("bink pause checks passed\n");
 	return 0;

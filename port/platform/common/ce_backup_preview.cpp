@@ -27,11 +27,36 @@ State &state() {
   static State *s = new State;
   return *s;
 }
-// The storage interface takes a folder without a trailing separator.
+// The storage interface takes a folder without a trailing separator, except
+// for filesystem roots (POSIX "/" and Windows drive roots like "E:\\").
 std::string trimmed(std::string path) {
+#ifdef _WIN32
+  const bool driveRoot =
+      path.size() >= 3 &&
+      ((path[0] >= 'A' && path[0] <= 'Z') ||
+       (path[0] >= 'a' && path[0] <= 'z')) &&
+      path[1] == ':' && (path[2] == '\\' || path[2] == '/');
+  const size_t minLen = driveRoot ? 3 : 1;
+  while (path.size() > minLen && (path.back() == '/' || path.back() == '\\'))
+    path.pop_back();
+#else
   while (path.size() > 1 && path.back() == '/')
     path.pop_back();
+#endif
   return path;
+}
+std::string joinChild(const std::string &dir, const std::string &leaf) {
+  if (dir.empty())
+    return leaf;
+#ifdef _WIN32
+  if (dir.back() == '/' || dir.back() == '\\')
+    return dir + leaf;
+  return dir + "\\" + leaf;
+#else
+  if (dir.back() == '/')
+    return dir + leaf;
+  return dir + "/" + leaf;
+#endif
 }
 // Read-only: binds the identity just verified to the set's folder and files.
 // Empty when they cannot be bound (always so where restoring is unsupported).
@@ -129,7 +154,7 @@ void SDLCALL chosen(void *opaque, const char *const *files, int) {
     message(s, CePreviewState::Error, "Choose a shorter backup folder path.");
     return;
   }
-  s.pick = files[0];
+  s.pick = trimmed(files[0]);
   start(s, false);
 }
 } // namespace
@@ -143,18 +168,13 @@ void CePreviewOpen(const char *user, const char *game, const char *root) {
   s.pick.clear();
   s.view = {};
   s.view.generation = s.page;
-  s.user = user ? user : "";
-  s.game = game ? game : "";
+  s.user = trimmed(user ? user : "");
+  s.game = trimmed(game ? game : "");
   const char *b = SDL_GetBasePath();
-  s.package = b ? b : "";
-  // Keep a Windows drive root absolute if the program is installed there.
-  while (s.package.size() > 1 &&
-         (s.package.back() == '/' || s.package.back() == '\\') &&
-         !(s.package.size() == 3 && s.package[1] == ':'))
-    s.package.pop_back();
+  s.package = trimmed(b ? b : "");
   message(s, CePreviewState::Idle,
           "Choose the folder containing the backup manifest.");
-  s.base = root ? root : "";
+  s.base = trimmed(root ? root : "");
   if (s.base.empty())
     return;
   auto token = s.page, action = ++s.action;
@@ -176,7 +196,7 @@ void CePreviewOpen(const char *user, const char *game, const char *root) {
           std::string error;
           CePreviewState::Holds row;
           row.verified =
-              CePreviewRead(path + "/" + list[i], u, gam, pkg, set, error);
+              CePreviewRead(joinChild(path, list[i]), u, gam, pkg, set, error);
           if (row.verified) {
             row.careers = int(set.careers.size());
             row.options = set.members > row.careers;
@@ -212,7 +232,7 @@ void CePreviewSelectSet(unsigned index) {
   if (!s.active || s.view.phase == CePreviewState::Picking ||
       s.view.phase == CePreviewState::Working || index >= s.view.choices.size())
     return;
-  s.pick = s.base + "/" + s.view.choices[index];
+  s.pick = joinChild(s.base, s.view.choices[index]);
   start(s, false);
 }
 void CePreviewLeave() {

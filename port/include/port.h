@@ -249,6 +249,8 @@ wchar_t *port_wcscat(wchar_t *d, const wchar_t *s);
 int port_wcscmp(const wchar_t *a, const wchar_t *b);
 int port_wcsicmp(const wchar_t *a, const wchar_t *b);
 wchar_t *port_wcsstr(const wchar_t *h, const wchar_t *n);
+wchar_t *port_wcschr(const wchar_t *s, wchar_t c);
+wchar_t *port_wcsrchr(const wchar_t *s, wchar_t c);
 int port_swprintf(wchar_t *d, const wchar_t *fmt, ...);	// MSVC's legacy form: no count, %s is a wide string
 #define wcslen port_wcslen
 #define wcscpy port_wcscpy
@@ -258,6 +260,8 @@ int port_swprintf(wchar_t *d, const wchar_t *fmt, ...);	// MSVC's legacy form: n
 #define _wcsicmp port_wcsicmp
 #define wcsicmp port_wcsicmp
 #define wcsstr port_wcsstr
+#define wcschr port_wcschr
+#define wcsrchr port_wcsrchr
 #define swprintf port_swprintf
 // <float.h>'s MSVC floating-point control (ltshell.cpp masks every x87 exception at start-up).
 #define _MCW_EM 0x0008001f

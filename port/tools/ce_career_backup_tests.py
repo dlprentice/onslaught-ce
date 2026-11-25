@@ -191,6 +191,63 @@ int main() {
         self.name="Pilöt.bes";newname=self.saves/self.name;self.original.rename(newname);self.original=newname
         self.verify(self.run_case(ok=True))
 
+    def test_trailing_slash_trimmed_and_posix_backslash_preserved_through_backup_controller(self):
+        slash_dest = self.parent / "CopiesSlash"
+        slash_dest.mkdir()
+        bslash_neighbor = self.parent / "CopiesBackslash"
+        bslash_neighbor.mkdir()
+        bslash_dest = self.parent / "CopiesBackslash\\"
+        bslash_dest.mkdir()
+        code = r"""
+#include "ce_career_backup.h"
+#include <SDL3/SDL.h>
+#include <chrono>
+#include <cstdio>
+#include <cstring>
+#include <thread>
+extern "C" SDL_Window *SDL_GetKeyboardFocus(){return nullptr;}
+extern "C" void SDL_ShowOpenFolderDialog(SDL_DialogFileCallback,void *,SDL_Window *,const char *,bool){}
+int main(int argc, char **argv) {
+    if (argc != 8) return 2;
+    FILE *f = fopen(argv[6], "rb");
+    if (!f) return 3;
+    unsigned char bytes[10004] = {};
+    if (fread(bytes, 1, sizeof(bytes), f) != sizeof(bytes)) { fclose(f); return 4; }
+    fclose(f);
+    CeBackupEnter(argv[3]);
+    CeBackupStatus st{};
+    CeBackupPoll(&st);
+    if (std::strcmp(st.folder, argv[4]) != 0) return 5;
+    if (!CeBackupStart(argv[1], argv[2], argv[5], bytes, sizeof(bytes))) return 6;
+    for (int i = 0; i < 2000; ++i) {
+        CeBackupPoll(&st);
+        if (st.state != CE_BACKUP_WORKING) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    CeBackupLeave();
+    const CeBackupState want = !std::strcmp(argv[7], "ok") ? CE_BACKUP_OK : CE_BACKUP_ERROR;
+    return st.state == want ? 0 : 7;
+}
+"""
+        src = self.parent / "controller_trim_check.cpp"
+        src.write_text(code)
+        binary = self.p / "controller-trim-check"
+        subprocess.run(["g++", "-std=c++17", "-pthread", "-O1", "-Wall", "-Wextra", "-Werror",
+                        "-I" + str(ROOT / "port/platform/common"),
+                        str(src),
+                        str(ROOT / "port/platform/common/ce_career_backup.cpp"),
+                        str(ROOT / "port/platform/linux/ce_backup_store.cpp"),
+                        "-o", str(binary)], check=True)
+        subprocess.run([str(binary), str(self.u), str(self.g), str(slash_dest) + "///",
+                        str(slash_dest), self.name, str(self.capture), "ok"], check=True, timeout=10)
+        sets = list(slash_dest.glob("onslaught-backup-*"))
+        self.assertEqual(len(sets), 1)
+        # POSIX backslash is preserved (never silently redirected into sibling CopiesBackslash).
+        subprocess.run([str(binary), str(self.u), str(self.g), str(bslash_dest) + "//",
+                        str(bslash_dest), self.name, str(self.capture), "error"], check=True, timeout=10)
+        self.assertEqual(list(bslash_neighbor.iterdir()), [])
+        self.assertEqual(list(bslash_dest.iterdir()), [])
+
 
 if __name__ == "__main__":
     unittest.main()

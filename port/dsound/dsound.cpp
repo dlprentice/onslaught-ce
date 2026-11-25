@@ -23,6 +23,7 @@
 #include <dsound.h>
 
 #include <SDL3/SDL.h>
+#include <limits.h>
 #include <math.h>
 #include <new>
 #include <stdio.h>
@@ -33,6 +34,16 @@
 #include <errno.h>
 #include "../platform/common/portlog.h"
 
+#ifndef DSOUND_OBJECT_MALLOC
+#define DSOUND_OBJECT_MALLOC malloc
+#endif
+#ifndef DSOUND_BACKING_CALLOC
+#define DSOUND_BACKING_CALLOC calloc
+#endif
+#ifndef DSOUND_SCRATCH_MALLOC
+#define DSOUND_SCRATCH_MALLOC malloc
+#endif
+
 unsigned long long PortClockFrames();		// port/platform/common/clock.cpp
 bool PortClockVirtual();
 unsigned long long PortClockPeekNs();
@@ -40,11 +51,32 @@ void PortAudioGuardCheck();			// port/platform/common/audioguard.cpp
 
 namespace
 {
-template <class T, class... A> T *Make(A... a) { return new (malloc(sizeof(T))) T(a...); }
+template <class T, class... A> T *Make(A... a)
+{
+	void *mem = DSOUND_OBJECT_MALLOC(sizeof(T));
+	return mem ? new (mem) T(a...) : NULL;
+}
 template <class T> void Destroy(T *p)
 {
+	if (!p)
+		return;
 	p->~T();
 	free(p);
+}
+
+bool Finite3D(float x) { return isfinite(x); }
+bool FiniteVec3D(const D3DVECTOR &v) { return isfinite(v.x) && isfinite(v.y) && isfinite(v.z); }
+
+bool ValidPcmFormat(const WAVEFORMATEX *w)
+{
+	if (!w || w->wFormatTag != WAVE_FORMAT_PCM)
+		return false;
+	if ((w->nChannels != 1 && w->nChannels != 2) || (w->wBitsPerSample != 8 && w->wBitsPerSample != 16))
+		return false;
+	if (w->nSamplesPerSec == 0)
+		return false;
+	WORD frameBytes = (WORD)(w->nChannels * (w->wBitsPerSample / 8));
+	return w->nBlockAlign == frameBytes;
 }
 
 bool SameGuid(REFIID a, const GUID &b) { return memcmp(&a, &b, sizeof(GUID)) == 0; }
@@ -164,7 +196,13 @@ void CallLog(const char *fmt, ...)
 	SDL_UnlockMutex(gCallLock);
 }
 inline unsigned long P(const void *p) { return (unsigned long)(uintptr_t)p; }
-inline int F(float f) { return (int)(f * 1000.0f + (f < 0 ? -0.5f : 0.5f)); }
+inline int F(float f)
+{
+	if (!isfinite(f))
+		return 0;
+	double scaled = (double)f * 1000.0 + (f < 0 ? -0.5 : 0.5);
+	return scaled <= (double)INT_MIN ? INT_MIN : scaled >= (double)INT_MAX ? INT_MAX : (int)scaled;
+}
 
 // ---- buffers
 
@@ -211,7 +249,7 @@ struct Buffer final : public IDirectSoundBuffer8
 	Listener *listener = NULL;
 	float lastGain[2] = {0, 0};	// the previous mix's gains, ramped to avoid clicks
 
-	Buffer(LPCDSBUFFERDESC d, Data *shared)
+	Buffer(LPCDSBUFFERDESC d, Data *shared, bool adopt = false)
 	{
 		flags = d->dwFlags;
 		memset(&format, 0, sizeof(format));
@@ -232,16 +270,21 @@ struct Buffer final : public IDirectSoundBuffer8
 		if (shared)
 		{
 			data = shared;
-			data->refs++;
+			if (!adopt)
+				__atomic_add_fetch(&data->refs, 1, __ATOMIC_ACQ_REL);
 		}
 		else
 		{
-			data = (Data *)malloc(sizeof(Data));
-			data->refs = 1;
-			// rounded up to whole frames, as Wine's DirectSound does (retail's log: a 242,509-byte voice locks as 242,510)
-			data->bytes = (flags & DSBCAPS_PRIMARYBUFFER) ? 0
-						  : (d->dwBufferBytes + Align() - 1) / Align() * Align();
-			data->bytesPtr = data->bytes ? (unsigned char *)calloc(1, data->bytes) : NULL;
+			data = (Data *)DSOUND_OBJECT_MALLOC(sizeof(Data));
+			if (data)
+			{
+				data->refs = 1;
+				// rounded up to whole frames, as Wine's DirectSound does (retail's log: a 242,509-byte voice locks as 242,510)
+				DWORD align = Align();
+				DWORD rounded = (flags & DSBCAPS_PRIMARYBUFFER) ? 0 : (d->dwBufferBytes + align - 1) / align * align;
+				data->bytesPtr = rounded ? (unsigned char *)DSOUND_BACKING_CALLOC(1, rounded) : NULL;
+				data->bytes = (rounded && !data->bytesPtr) ? 0 : rounded;
+			}
 		}
 		if (gSessionAudio)
 		{
@@ -253,16 +296,55 @@ struct Buffer final : public IDirectSoundBuffer8
 			SDL_UnlockMutex(gMixer.lock);
 		}
 	}
+	static HRESULT CreateTransactional(LPCDSBUFFERDESC d, Data *shared, Buffer **out)
+	{
+		*out = NULL;
+		Data *useData = shared;
+		bool adopt = false;
+		if (!shared)
+		{
+			DWORD align = 4;
+			if (d->lpwfxFormat && d->lpwfxFormat->nBlockAlign)
+				align = d->lpwfxFormat->nBlockAlign;
+			DWORD bytes = (d->dwFlags & DSBCAPS_PRIMARYBUFFER) ? 0
+						  : (d->dwBufferBytes + align - 1) / align * align;
+			unsigned char *backing = bytes ? (unsigned char *)DSOUND_BACKING_CALLOC(1, bytes) : NULL;
+			if (bytes && !backing)
+				return DSERR_OUTOFMEMORY;
+			useData = (Data *)DSOUND_OBJECT_MALLOC(sizeof(Data));
+			if (!useData)
+			{
+				free(backing);
+				return DSERR_OUTOFMEMORY;
+			}
+			useData->refs = 1;
+			useData->bytes = bytes;
+			useData->bytesPtr = backing;
+			adopt = true;
+		}
+		void *mem = DSOUND_OBJECT_MALLOC(sizeof(Buffer));
+		if (!mem)
+		{
+			if (adopt)
+			{
+				free(useData->bytesPtr);
+				free(useData);
+			}
+			return DSERR_OUTOFMEMORY;
+		}
+		*out = new (mem) Buffer(d, useData, adopt);
+		return DS_OK;
+	}
 	~Buffer();
 
-	DWORD Bytes() const { return data->bytes; }
+	DWORD Bytes() const { return (data && (!data->bytes || data->bytesPtr)) ? data->bytes : 0; }
 	DWORD Align() const { return format.nBlockAlign ? format.nBlockAlign : 1; }
 	DWORD Frames() const { return format.nBlockAlign ? Bytes() / format.nBlockAlign : 0; }
 
 	// Sample c of frame f, as a float in [-1, 1).
 	float Sample(DWORD f, int c) const
 	{
-		const unsigned char *p = data->bytesPtr + f * format.nBlockAlign;
+		const unsigned char *p = data->bytesPtr + (size_t)f * (size_t)format.nBlockAlign;
 		if (format.wBitsPerSample == 8)
 			return ((int)p[c] - 128) * (1.0f / 128.0f);
 		return (Sint16)(p[2 * c] | p[2 * c + 1] << 8) * (1.0f / 32768.0f);
@@ -410,8 +492,18 @@ struct Buffer final : public IDirectSoundBuffer8
 	HRESULT STDMETHODCALLTYPE Lock(DWORD off, DWORD n, LPVOID *p1, LPDWORD n1, LPVOID *p2, LPDWORD n2, DWORD lockFlags) override
 	{
 		gMixer.CatchUp();
+		if (p1)
+			*p1 = NULL;
+		if (n1)
+			*n1 = 0;
+		if (p2)
+			*p2 = NULL;
+		if (n2)
+			*n2 = 0;
+		if (!p1 || !n1)
+			return DSERR_INVALIDPARAM;
 		DWORD bytes = Bytes();
-		if (!bytes)
+		if (!bytes || !data || !data->bytesPtr)
 		{
 			CallLog("Lock obj=%08lX offset=%lu bytes=%lu flags=%lx got=0/0 hr=%lx", P(this), (unsigned long)off, (unsigned long)n,
 					(unsigned long)lockFlags, (unsigned long)DSERR_INVALIDCALL);
@@ -512,8 +604,14 @@ struct Buffer final : public IDirectSoundBuffer8
 	HRESULT STDMETHODCALLTYPE SetFormat(LPCWAVEFORMATEX f) override
 	{
 		// The primary buffer's format: the mix stays at 44.1 kHz stereo and SDL converts for the device.
+		if (!(flags & DSBCAPS_PRIMARYBUFFER))
+			return DSERR_INVALIDCALL;
+		if (!ValidPcmFormat(f))
+			return DSERR_INVALIDPARAM;
+		SDL_LockMutex(gMixer.lock);
 		memcpy(&format, f, sizeof(PCMWAVEFORMAT));
 		frequency = format.nSamplesPerSec;
+		SDL_UnlockMutex(gMixer.lock);
 		return DS_OK;
 	}
 	HRESULT STDMETHODCALLTYPE SetVolume(LONG v) override
@@ -629,18 +727,25 @@ struct Buffer3D final : public IDirectSound3DBuffer
 	HRESULT STDMETHODCALLTYPE QueryInterface(REFIID r, LPVOID *o) override { return owner->QueryInterface(r, o); }
 	ULONG STDMETHODCALLTYPE AddRef() override { return owner->AddRef(); }
 	ULONG STDMETHODCALLTYPE Release() override { return owner->ReleaseQuiet(); }
-	HRESULT STDMETHODCALLTYPE GetAllParameters(LPDS3DBUFFER o) override { *o = p.pending; return DS_OK; }
-	HRESULT STDMETHODCALLTYPE GetConeAngles(LPDWORD a, LPDWORD b) override { *a = p.pending.dwInsideConeAngle; *b = p.pending.dwOutsideConeAngle; return DS_OK; }
-	HRESULT STDMETHODCALLTYPE GetConeOrientation(D3DVECTOR *v) override { *v = p.pending.vConeOrientation; return DS_OK; }
-	HRESULT STDMETHODCALLTYPE GetConeOutsideVolume(LPLONG v) override { *v = p.pending.lConeOutsideVolume; return DS_OK; }
-	HRESULT STDMETHODCALLTYPE GetMaxDistance(D3DVALUE *v) override { *v = p.pending.flMaxDistance; return DS_OK; }
-	HRESULT STDMETHODCALLTYPE GetMinDistance(D3DVALUE *v) override { *v = p.pending.flMinDistance; return DS_OK; }
-	HRESULT STDMETHODCALLTYPE GetMode(LPDWORD m) override { *m = p.pending.dwMode; return DS_OK; }
-	HRESULT STDMETHODCALLTYPE GetPosition(D3DVECTOR *v) override { *v = p.pending.vPosition; return DS_OK; }
-	HRESULT STDMETHODCALLTYPE GetVelocity(D3DVECTOR *v) override { *v = p.pending.vVelocity; return DS_OK; }
+	HRESULT STDMETHODCALLTYPE GetAllParameters(LPDS3DBUFFER o) override { if (!o) return DSERR_INVALIDPARAM; *o = p.pending; return DS_OK; }
+	HRESULT STDMETHODCALLTYPE GetConeAngles(LPDWORD a, LPDWORD b) override { if (!a || !b) return DSERR_INVALIDPARAM; *a = p.pending.dwInsideConeAngle; *b = p.pending.dwOutsideConeAngle; return DS_OK; }
+	HRESULT STDMETHODCALLTYPE GetConeOrientation(D3DVECTOR *v) override { if (!v) return DSERR_INVALIDPARAM; *v = p.pending.vConeOrientation; return DS_OK; }
+	HRESULT STDMETHODCALLTYPE GetConeOutsideVolume(LPLONG v) override { if (!v) return DSERR_INVALIDPARAM; *v = p.pending.lConeOutsideVolume; return DS_OK; }
+	HRESULT STDMETHODCALLTYPE GetMaxDistance(D3DVALUE *v) override { if (!v) return DSERR_INVALIDPARAM; *v = p.pending.flMaxDistance; return DS_OK; }
+	HRESULT STDMETHODCALLTYPE GetMinDistance(D3DVALUE *v) override { if (!v) return DSERR_INVALIDPARAM; *v = p.pending.flMinDistance; return DS_OK; }
+	HRESULT STDMETHODCALLTYPE GetMode(LPDWORD m) override { if (!m) return DSERR_INVALIDPARAM; *m = p.pending.dwMode; return DS_OK; }
+	HRESULT STDMETHODCALLTYPE GetPosition(D3DVECTOR *v) override { if (!v) return DSERR_INVALIDPARAM; *v = p.pending.vPosition; return DS_OK; }
+	HRESULT STDMETHODCALLTYPE GetVelocity(D3DVECTOR *v) override { if (!v) return DSERR_INVALIDPARAM; *v = p.pending.vVelocity; return DS_OK; }
 	HRESULT STDMETHODCALLTYPE SetAllParameters(LPCDS3DBUFFER n, DWORD a) override
 	{
 		gMixer.CatchUp();
+		if (!n || !FiniteVec3D(n->vPosition) || !FiniteVec3D(n->vVelocity) || !FiniteVec3D(n->vConeOrientation) ||
+			!Finite3D(n->flMinDistance) || !Finite3D(n->flMaxDistance) || n->flMinDistance <= 0.0f ||
+			n->flMaxDistance <= 0.0f || n->flMaxDistance < n->flMinDistance ||
+			n->dwInsideConeAngle > 360 || n->dwOutsideConeAngle > 360 || n->dwInsideConeAngle > n->dwOutsideConeAngle ||
+			n->lConeOutsideVolume < DSBVOLUME_MIN || n->lConeOutsideVolume > DSBVOLUME_MAX ||
+			(n->dwMode != DS3DMODE_NORMAL && n->dwMode != DS3DMODE_HEADRELATIVE && n->dwMode != DS3DMODE_DISABLE))
+			return DSERR_INVALIDPARAM;
 		CallLog("port.3D.SetAllParameters obj=%08lX pos=%d,%d,%d vel=%d,%d,%d cone=%lu,%lu orient=%d,%d,%d outvol=%ld min=%d max=%d mode=%lu "
 				"apply=%lu hr=0", P(this), F(n->vPosition.x), F(n->vPosition.y), F(n->vPosition.z), F(n->vVelocity.x),
 				F(n->vVelocity.y), F(n->vVelocity.z), (unsigned long)n->dwInsideConeAngle, (unsigned long)n->dwOutsideConeAngle,
@@ -652,38 +757,54 @@ struct Buffer3D final : public IDirectSound3DBuffer
 	}
 	HRESULT STDMETHODCALLTYPE SetConeAngles(DWORD i, DWORD o, DWORD a) override
 	{
+		if (i > 360 || o > 360 || i > o)
+			return DSERR_INVALIDPARAM;
 		return Change(a, [&](DS3DBUFFER &d) { d.dwInsideConeAngle = i; d.dwOutsideConeAngle = o; });
 	}
 	HRESULT STDMETHODCALLTYPE SetConeOrientation(D3DVALUE x, D3DVALUE y, D3DVALUE z, DWORD a) override
 	{
+		if (!Finite3D(x) || !Finite3D(y) || !Finite3D(z))
+			return DSERR_INVALIDPARAM;
 		return Change(a, [&](DS3DBUFFER &d) { d.vConeOrientation.x = x; d.vConeOrientation.y = y; d.vConeOrientation.z = z; });
 	}
 	HRESULT STDMETHODCALLTYPE SetConeOutsideVolume(LONG v, DWORD a) override
 	{
+		if (v < DSBVOLUME_MIN || v > DSBVOLUME_MAX)
+			return DSERR_INVALIDPARAM;
 		return Change(a, [&](DS3DBUFFER &d) { d.lConeOutsideVolume = v; });
 	}
 	HRESULT STDMETHODCALLTYPE SetMaxDistance(D3DVALUE v, DWORD a) override
 	{
+		if (!Finite3D(v) || v <= 0.0f)
+			return DSERR_INVALIDPARAM;
 		CallLog("3D.SetMaxDistance obj=%08lX d=%d apply=%lu hr=0", P(this), F(v), (unsigned long)a);
 		return Change(a, [&](DS3DBUFFER &d) { d.flMaxDistance = v; });
 	}
 	HRESULT STDMETHODCALLTYPE SetMinDistance(D3DVALUE v, DWORD a) override
 	{
+		if (!Finite3D(v) || v <= 0.0f)
+			return DSERR_INVALIDPARAM;
 		CallLog("3D.SetMinDistance obj=%08lX d=%d apply=%lu hr=0", P(this), F(v), (unsigned long)a);
 		return Change(a, [&](DS3DBUFFER &d) { d.flMinDistance = v; });
 	}
 	HRESULT STDMETHODCALLTYPE SetMode(DWORD m, DWORD a) override
 	{
+		if (m != DS3DMODE_NORMAL && m != DS3DMODE_HEADRELATIVE && m != DS3DMODE_DISABLE)
+			return DSERR_INVALIDPARAM;
 		CallLog("port.3D.SetMode obj=%08lX mode=%lu apply=%lu hr=0", P(this), (unsigned long)m, (unsigned long)a);
 		return Change(a, [&](DS3DBUFFER &d) { d.dwMode = m; });
 	}
 	HRESULT STDMETHODCALLTYPE SetPosition(D3DVALUE x, D3DVALUE y, D3DVALUE z, DWORD a) override
 	{
+		if (!Finite3D(x) || !Finite3D(y) || !Finite3D(z))
+			return DSERR_INVALIDPARAM;
 		CallLog("3D.SetPosition obj=%08lX x=%d y=%d z=%d apply=%lu hr=0", P(this), F(x), F(y), F(z), (unsigned long)a);
 		return Change(a, [&](DS3DBUFFER &d) { d.vPosition.x = x; d.vPosition.y = y; d.vPosition.z = z; });
 	}
 	HRESULT STDMETHODCALLTYPE SetVelocity(D3DVALUE x, D3DVALUE y, D3DVALUE z, DWORD a) override
 	{
+		if (!Finite3D(x) || !Finite3D(y) || !Finite3D(z))
+			return DSERR_INVALIDPARAM;
 		CallLog("3D.SetVelocity obj=%08lX x=%d y=%d z=%d apply=%lu hr=0", P(this), F(x), F(y), F(z), (unsigned long)a);
 		return Change(a, [&](DS3DBUFFER &d) { d.vVelocity.x = x; d.vVelocity.y = y; d.vVelocity.z = z; });
 	}
@@ -730,16 +851,21 @@ struct Listener final : public IDirectSound3DListener
 	HRESULT STDMETHODCALLTYPE QueryInterface(REFIID r, LPVOID *o) override { return owner->QueryInterface(r, o); }
 	ULONG STDMETHODCALLTYPE AddRef() override { return owner->AddRef(); }
 	ULONG STDMETHODCALLTYPE Release() override { return owner->ReleaseQuiet(); }
-	HRESULT STDMETHODCALLTYPE GetAllParameters(LPDS3DLISTENER o) override { *o = pending; return DS_OK; }
-	HRESULT STDMETHODCALLTYPE GetDistanceFactor(D3DVALUE *v) override { *v = pending.flDistanceFactor; return DS_OK; }
-	HRESULT STDMETHODCALLTYPE GetDopplerFactor(D3DVALUE *v) override { *v = pending.flDopplerFactor; return DS_OK; }
-	HRESULT STDMETHODCALLTYPE GetOrientation(D3DVECTOR *f, D3DVECTOR *t) override { *f = pending.vOrientFront; *t = pending.vOrientTop; return DS_OK; }
-	HRESULT STDMETHODCALLTYPE GetPosition(D3DVECTOR *v) override { *v = pending.vPosition; return DS_OK; }
-	HRESULT STDMETHODCALLTYPE GetRolloffFactor(D3DVALUE *v) override { *v = pending.flRolloffFactor; return DS_OK; }
-	HRESULT STDMETHODCALLTYPE GetVelocity(D3DVECTOR *v) override { *v = pending.vVelocity; return DS_OK; }
+	HRESULT STDMETHODCALLTYPE GetAllParameters(LPDS3DLISTENER o) override { if (!o) return DSERR_INVALIDPARAM; *o = pending; return DS_OK; }
+	HRESULT STDMETHODCALLTYPE GetDistanceFactor(D3DVALUE *v) override { if (!v) return DSERR_INVALIDPARAM; *v = pending.flDistanceFactor; return DS_OK; }
+	HRESULT STDMETHODCALLTYPE GetDopplerFactor(D3DVALUE *v) override { if (!v) return DSERR_INVALIDPARAM; *v = pending.flDopplerFactor; return DS_OK; }
+	HRESULT STDMETHODCALLTYPE GetOrientation(D3DVECTOR *f, D3DVECTOR *t) override { if (!f || !t) return DSERR_INVALIDPARAM; *f = pending.vOrientFront; *t = pending.vOrientTop; return DS_OK; }
+	HRESULT STDMETHODCALLTYPE GetPosition(D3DVECTOR *v) override { if (!v) return DSERR_INVALIDPARAM; *v = pending.vPosition; return DS_OK; }
+	HRESULT STDMETHODCALLTYPE GetRolloffFactor(D3DVALUE *v) override { if (!v) return DSERR_INVALIDPARAM; *v = pending.flRolloffFactor; return DS_OK; }
+	HRESULT STDMETHODCALLTYPE GetVelocity(D3DVECTOR *v) override { if (!v) return DSERR_INVALIDPARAM; *v = pending.vVelocity; return DS_OK; }
 	HRESULT STDMETHODCALLTYPE SetAllParameters(LPCDS3DLISTENER n, DWORD a) override
 	{
 		gMixer.CatchUp();
+		if (!n || !FiniteVec3D(n->vPosition) || !FiniteVec3D(n->vVelocity) ||
+			!FiniteVec3D(n->vOrientFront) || !FiniteVec3D(n->vOrientTop) ||
+			!Finite3D(n->flDistanceFactor) || !Finite3D(n->flRolloffFactor) || !Finite3D(n->flDopplerFactor) ||
+			n->flDistanceFactor < 0.0f || n->flRolloffFactor < 0.0f || n->flDopplerFactor < 0.0f)
+			return DSERR_INVALIDPARAM;
 		CallLog("port.Listener.SetAllParameters pos=%d,%d,%d vel=%d,%d,%d front=%d,%d,%d top=%d,%d,%d distance=%d doppler=%d rolloff=%d "
 				"apply=%lu hr=0", F(n->vPosition.x), F(n->vPosition.y), F(n->vPosition.z), F(n->vVelocity.x), F(n->vVelocity.y),
 				F(n->vVelocity.z), F(n->vOrientFront.x), F(n->vOrientFront.y), F(n->vOrientFront.z), F(n->vOrientTop.x),
@@ -751,14 +877,20 @@ struct Listener final : public IDirectSound3DListener
 	}
 	HRESULT STDMETHODCALLTYPE SetDistanceFactor(D3DVALUE v, DWORD a) override
 	{
+		if (!Finite3D(v) || v <= 0.0f)
+			return DSERR_INVALIDPARAM;
 		return Change(a, [&](DS3DLISTENER &d) { d.flDistanceFactor = v; });
 	}
 	HRESULT STDMETHODCALLTYPE SetDopplerFactor(D3DVALUE v, DWORD a) override
 	{
+		if (!Finite3D(v) || v < 0.0f)
+			return DSERR_INVALIDPARAM;
 		return Change(a, [&](DS3DLISTENER &d) { d.flDopplerFactor = v; });
 	}
 	HRESULT STDMETHODCALLTYPE SetOrientation(D3DVALUE fx, D3DVALUE fy, D3DVALUE fz, D3DVALUE tx, D3DVALUE ty, D3DVALUE tz, DWORD a) override
 	{
+		if (!Finite3D(fx) || !Finite3D(fy) || !Finite3D(fz) || !Finite3D(tx) || !Finite3D(ty) || !Finite3D(tz))
+			return DSERR_INVALIDPARAM;
 		return Change(a, [&](DS3DLISTENER &d) {
 			d.vOrientFront.x = fx; d.vOrientFront.y = fy; d.vOrientFront.z = fz;
 			d.vOrientTop.x = tx; d.vOrientTop.y = ty; d.vOrientTop.z = tz;
@@ -766,14 +898,20 @@ struct Listener final : public IDirectSound3DListener
 	}
 	HRESULT STDMETHODCALLTYPE SetPosition(D3DVALUE x, D3DVALUE y, D3DVALUE z, DWORD a) override
 	{
+		if (!Finite3D(x) || !Finite3D(y) || !Finite3D(z))
+			return DSERR_INVALIDPARAM;
 		return Change(a, [&](DS3DLISTENER &d) { d.vPosition.x = x; d.vPosition.y = y; d.vPosition.z = z; });
 	}
 	HRESULT STDMETHODCALLTYPE SetRolloffFactor(D3DVALUE v, DWORD a) override
 	{
+		if (!Finite3D(v) || v < 0.0f)
+			return DSERR_INVALIDPARAM;
 		return Change(a, [&](DS3DLISTENER &d) { d.flRolloffFactor = v; });
 	}
 	HRESULT STDMETHODCALLTYPE SetVelocity(D3DVALUE x, D3DVALUE y, D3DVALUE z, DWORD a) override
 	{
+		if (!Finite3D(x) || !Finite3D(y) || !Finite3D(z))
+			return DSERR_INVALIDPARAM;
 		return Change(a, [&](DS3DLISTENER &d) { d.vVelocity.x = x; d.vVelocity.y = y; d.vVelocity.z = z; });
 	}
 	HRESULT STDMETHODCALLTYPE CommitDeferredSettings() override
@@ -878,7 +1016,7 @@ Buffer::~Buffer()
 		Destroy(b3d);
 	if (listener)
 		Destroy(listener);
-	if (--data->refs == 0)
+	if (data && __atomic_sub_fetch(&data->refs, 1, __ATOMIC_ACQ_REL) == 0)
 	{
 		free(data->bytesPtr);
 		free(data);
@@ -887,21 +1025,32 @@ Buffer::~Buffer()
 
 HRESULT STDMETHODCALLTYPE Buffer::QueryInterface(REFIID riid, LPVOID *out)
 {
+	if (!out)
+		return E_POINTER;
 	*out = NULL;
 	if (SameGuid(riid, IID_IDirectSound3DBuffer) && (flags & DSBCAPS_CTRL3D) && !(flags & DSBCAPS_PRIMARYBUFFER))
 	{
 		if (!b3d)
 			b3d = Make<Buffer3D>(this);
+		if (!b3d)
+			return E_OUTOFMEMORY;
 		*out = static_cast<IDirectSound3DBuffer *>(b3d);
 	}
 	else if (SameGuid(riid, IID_IDirectSound3DListener) && (flags & DSBCAPS_PRIMARYBUFFER))
 	{
 		if (!listener)
 			listener = Make<Listener>(this);
+		if (!listener)
+			return E_OUTOFMEMORY;
 		*out = static_cast<IDirectSound3DListener *>(listener);
 	}
 	else if (SameGuid(riid, IID_IDirectSoundNotify) && (flags & DSBCAPS_CTRLPOSITIONNOTIFY))
-		*out = static_cast<IDirectSoundNotify *>(Make<NotifyIface>(this));		// small; freed with the process
+	{
+		NotifyIface *nf = Make<NotifyIface>(this);		// small; freed with the process
+		if (!nf)
+			return E_OUTOFMEMORY;
+		*out = static_cast<IDirectSoundNotify *>(nf);
+	}
 	else if (SameGuid(riid, IID_IDirectSoundBuffer) || SameGuid(riid, IID_IDirectSoundBuffer8) || SameGuid(riid, IID_IUnknown))
 		*out = static_cast<IDirectSoundBuffer8 *>(this);
 	else
@@ -954,16 +1103,21 @@ void Buffer::Gains(float out[2], double *step)
 {
 	float g = DbToGain(volume);
 	float left = g, right = g;
-	double freq = frequency ? frequency : format.nSamplesPerSec;
+	double baseFreq = frequency ? (double)frequency : (format.nSamplesPerSec ? (double)format.nSamplesPerSec : (double)kRate);
+	double freq = baseFreq;
 	if (b3d && b3d->p.now.dwMode != DS3DMODE_DISABLE && gMixer.listener)
 	{
 		const DS3DBUFFER &s = b3d->p.now;
 		const DS3DLISTENER &l = gMixer.listener->now;
 		Vec rel = s.dwMode == DS3DMODE_HEADRELATIVE ? ToVec(s.vPosition) : Sub(ToVec(s.vPosition), ToVec(l.vPosition));
 		float dist = sqrtf(Dot(rel, rel));
-		float minD = s.flMinDistance > 0 ? s.flMinDistance : 1.0f, maxD = s.flMaxDistance;
+		float minD = (Finite3D(s.flMinDistance) && s.flMinDistance > 0.0f) ? s.flMinDistance : 1.0f;
+		float maxD = Finite3D(s.flMaxDistance) ? s.flMaxDistance : minD;
+		if (maxD < minD)
+			maxD = minD;
+		float rolloff = (Finite3D(l.flRolloffFactor) && l.flRolloffFactor >= 0.0f) ? l.flRolloffFactor : 0.0f;
 		float att = 1.0f;
-		if (dist > minD)
+		if (Finite3D(dist) && dist > minD)
 		{
 			if (dist > maxD)
 			{
@@ -972,30 +1126,45 @@ void Buffer::Gains(float out[2], double *step)
 				dist = maxD;
 			}
 			if (att > 0.0f)	// DirectSound's rolloff: 6 dB per doubling of distance at a rolloff factor of 1
-				att = minD / (minD + l.flRolloffFactor * (dist - minD));
+			{
+				float denom = minD + rolloff * (dist - minD);
+				att = (Finite3D(denom) && denom > 0.0f) ? (minD / denom) : 0.0f;
+			}
 		}
 		float pan3d = 0.0f;
 		Vec front = ToVec(l.vOrientFront), top = ToVec(l.vOrientTop);
 		Vec rightAxis = Cross(top, front);
 		float rlen = sqrtf(Dot(rightAxis, rightAxis));
 		float rd = sqrtf(Dot(rel, rel));
-		if (rlen > 0 && rd > 1e-6f)
+		if (Finite3D(rlen) && rlen > 0 && Finite3D(rd) && rd > 1e-6f)
+		{
 			pan3d = Dot(rel, rightAxis) / (rlen * rd);
+			pan3d = !Finite3D(pan3d) ? 0.0f : pan3d < -1.0f ? -1.0f : pan3d > 1.0f ? 1.0f : pan3d;
+		}
 		// equal power across the stereo field, centre at unity
 		float a = (pan3d + 1.0f) * 0.78539816f;
 		float pl = cosf(a) * 1.41421356f, pr = sinf(a) * 1.41421356f;
-		left *= att * (pl > 1.0f ? 1.0f : pl);
-		right *= att * (pr > 1.0f ? 1.0f : pr);
+		left *= att * (pl > 1.0f ? 1.0f : pl < 0.0f ? 0.0f : pl);
+		right *= att * (pr > 1.0f ? 1.0f : pr < 0.0f ? 0.0f : pr);
 		// Doppler: the velocity components along the line from the listener to the source
-		if (l.flDopplerFactor > 0 && rd > 1e-6f)
+		if (Finite3D(l.flDopplerFactor) && l.flDopplerFactor > 0 && Finite3D(rd) && rd > 1e-6f)
 		{
-			float c = 343.0f / (l.flDistanceFactor > 0 ? l.flDistanceFactor : 1.0f);
-			float vs = Dot(ToVec(s.vVelocity), rel) / rd, vl = Dot(ToVec(l.vVelocity), rel) / rd;
-			vs *= l.flDopplerFactor;
-			vl *= l.flDopplerFactor;
-			if (vs > 0.9f * c) vs = 0.9f * c;
-			if (vs < -0.9f * c) vs = -0.9f * c;
-			freq *= (c + vl) / (c + vs);
+			float df = (Finite3D(l.flDistanceFactor) && l.flDistanceFactor > 0) ? l.flDistanceFactor : 1.0f;
+			float c = 343.0f / df;
+			if (Finite3D(c) && c > 0.0f)
+			{
+				float vs = Dot(ToVec(s.vVelocity), rel) / rd, vl = Dot(ToVec(l.vVelocity), rel) / rd;
+				vs *= l.flDopplerFactor;
+				vl *= l.flDopplerFactor;
+				if (Finite3D(vs) && Finite3D(vl))
+				{
+					if (vs > 0.9f * c) vs = 0.9f * c;
+					if (vs < -0.9f * c) vs = -0.9f * c;
+					if (vl > 0.9f * c) vl = 0.9f * c;
+					if (vl < -0.9f * c) vl = -0.9f * c;
+					freq *= (double)(c + vl) / (double)(c + vs);
+				}
+			}
 		}
 	}
 	else if (pan)
@@ -1005,20 +1174,42 @@ void Buffer::Gains(float out[2], double *step)
 		else
 			right *= DbToGain(pan);
 	}
-	out[0] = left;
-	out[1] = right;
-	*step = freq / kRate;
+	out[0] = (Finite3D(left) && left >= 0.0f) ? left : 0.0f;
+	out[1] = (Finite3D(right) && right >= 0.0f) ? right : 0.0f;
+	double st = freq / kRate;
+	if (!isfinite(st) || st <= 0.0)
+		st = baseFreq / kRate;
+	if (!isfinite(st) || st <= 0.0)
+		st = 1.0;
+	*step = st;
 }
 
 void Mixer::Mix(Sint16 *out, int frames)
 {
-	if (scratchFrames < frames)
+	if (frames <= 0)
+		return;
+	if (scratchFrames < frames || !scratch)
 	{
+		size_t wantFloats = (size_t)frames <= SIZE_MAX / (2 * sizeof(float)) ? (size_t)frames * 2 : 0;
+		float *grown = wantFloats ? (float *)DSOUND_SCRATCH_MALLOC(wantFloats * sizeof(float)) : NULL;
+		if (!grown)
+		{
+			if (gSessionAudio)
+				PortSessionCount(PORT_COUNT_AUDIO_ALLOC_FAILED);
+			if (out)
+			{
+				memset(out, 0, (size_t)frames * 4);
+				Record(out, frames);
+				Monitor(out, frames);
+			}
+			mixed += (Uint64)frames;
+			return;
+		}
 		free(scratch);
-		scratch = (float *)malloc(sizeof(float) * 2 * frames);
+		scratch = grown;
 		scratchFrames = frames;
 	}
-	memset(scratch, 0, sizeof(float) * 2 * frames);
+	memset(scratch, 0, sizeof(float) * 2 * (size_t)frames);
 	int musicSpan = 0, filmSpan = 0;
 	for (int v = numVoices - 1; v >= 0; v--)
 	{
@@ -1036,21 +1227,28 @@ void Mixer::Mix(Sint16 *out, int frames)
 		b->lastGain[0] = gain[0];
 		b->lastGain[1] = gain[1];
 		int ch = b->format.nChannels;
-		double pos = b->cursor, start = pos;
+		double pos = b->cursor;
+		if (!isfinite(pos) || pos < 0.0)
+			pos = 0.0;
+		double start = pos;
 		bool wrapped = false, ended = false;
 		int i;
 		for (i = 0; i < frames; i++)
 		{
-			DWORD f0 = (DWORD)pos;
-			if (f0 >= total)
+			if (!isfinite(pos) || pos < 0.0)
+				pos = 0.0;
+			if (pos >= (double)total)
 			{
 				if (b->looping)
 				{
-					pos -= total;
+					pos -= (double)total;
 					wrapped = true;
-					f0 = (DWORD)pos;
-					if (f0 >= total)
-						f0 = 0, pos = 0;
+					if (pos >= (double)total || pos < 0.0)
+					{
+						pos = fmod(pos, (double)total);
+						if (!isfinite(pos) || pos < 0.0 || pos >= (double)total)
+							pos = 0.0;
+					}
 				}
 				else
 				{
@@ -1058,10 +1256,11 @@ void Mixer::Mix(Sint16 *out, int frames)
 					break;
 				}
 			}
+			DWORD f0 = (DWORD)pos;
 			float ramp = (float)i / frames;
 			float gl = g0[0] + (gain[0] - g0[0]) * ramp, gr = g0[1] + (gain[1] - g0[1]) * ramp;
 			float sl, sr;
-			double frac = pos - f0;
+			double frac = pos - (double)f0;
 			if (step == 1.0 && frac == 0.0)
 			{
 				sl = b->Sample(f0, 0);
@@ -1069,7 +1268,12 @@ void Mixer::Mix(Sint16 *out, int frames)
 			}
 			else
 			{
-				const float *k = gKernel[(int)(frac * kPhases + 0.5)];
+				int phase = isfinite(frac) ? (int)(frac * kPhases + 0.5) : 0;
+				if (phase < 0)
+					phase = 0;
+				else if (phase > kPhases)
+					phase = kPhases;
+				const float *k = gKernel[phase];
 				sl = sr = 0;
 				for (int t = 0; t < kTaps; t++)
 				{
@@ -1299,18 +1503,49 @@ Uint32 SDLCALL TimerTick(void *, SDL_TimerID timerId, Uint32 interval)
 		return interval;
 	}
 	Uint64 now = SDL_GetTicksNS();
-	double frames = gMixer.timerFrac + (double)(now - gMixer.timerLast) * kRate / 1e9;
-	gMixer.timerLast = now;
-	int n = (int)frames;
-	gMixer.timerFrac = frames - n;
-	if (n > 0)
+	if (now <= gMixer.timerLast)
 	{
-		Sint16 *buf = (Sint16 *)SDL_malloc(n * 4);
+		if (now < gMixer.timerLast)
+			gMixer.timerLast = now;
+		SDL_UnlockMutex(gMixer.lock);
+		return interval;
+	}
+	Uint64 elapsedNs = now - gMixer.timerLast;
+	gMixer.timerLast = now;
+	// Bound real-time suspend/resume backlog so multi-hour delays neither overflow int/byte counts nor stall mixing.
+	const int kMaxTimerBacklog = kRate * 2;
+	double exact = gMixer.timerFrac + (double)elapsedNs * ((double)kRate / 1e9);
+	int remaining = 0;
+	if (!isfinite(exact) || exact <= 0.0)
+		gMixer.timerFrac = 0.0;
+	else if (exact > (double)kMaxTimerBacklog)
+	{
+		remaining = kMaxTimerBacklog;
+		gMixer.timerFrac = 0.0;
+	}
+	else
+	{
+		remaining = (int)exact;
+		gMixer.timerFrac = exact - (double)remaining;
+	}
+	while (remaining > 0)
+	{
+		int chunk = remaining > kRate ? kRate : remaining;
+		remaining -= chunk;
+		if ((size_t)chunk > SIZE_MAX / 4u)
+			break;
+		Sint16 *buf = (Sint16 *)SDL_malloc((size_t)chunk * 4u);
 		if (buf)
-			gMixer.Mix(buf, n);
-		else if (gSessionAudio)
-			PortSessionCount(PORT_COUNT_AUDIO_ALLOC_FAILED);
-		SDL_free(buf);
+		{
+			gMixer.Mix(buf, chunk);
+			SDL_free(buf);
+		}
+		else
+		{
+			if (gSessionAudio)
+				PortSessionCount(PORT_COUNT_AUDIO_ALLOC_FAILED);
+			break;
+		}
 	}
 	SDL_UnlockMutex(gMixer.lock);
 	return interval;
@@ -1539,10 +1774,19 @@ struct Sound final : public IDirectSound8
 			Destroy(this);
 		return (ULONG)r;
 	}
-	HRESULT STDMETHODCALLTYPE CreateSoundBuffer(LPCDSBUFFERDESC d, LPDIRECTSOUNDBUFFER *out, IUnknown *) override
+	HRESULT STDMETHODCALLTYPE CreateSoundBuffer(LPCDSBUFFERDESC d, LPDIRECTSOUNDBUFFER *out, IUnknown *unk) override
 	{
+		if (out)
+			*out = NULL;
+		if (unk)
+			return DSERR_NOAGGREGATION;
+		if (!d || !out)
+			return DSERR_INVALIDPARAM;
 		const WAVEFORMATEX *w = d->lpwfxFormat;
-		if (!(d->dwFlags & DSBCAPS_PRIMARYBUFFER) && (d->dwBufferBytes < 4 || d->dwBufferBytes > 0x0FFFFFFF))
+		bool primary = (d->dwFlags & DSBCAPS_PRIMARYBUFFER) != 0;
+		bool invalid = primary ? (d->dwBufferBytes != 0 || w != NULL)
+							   : (d->dwBufferBytes < 4 || d->dwBufferBytes > 0x0FFFFFFF || (w && !ValidPcmFormat(w)));
+		if (invalid)
 		{
 			CallLog("CreateSoundBuffer ds=%08lX flags=%lx bytes=%lu tag=%u ch=%u rate=%lu bits=%u alg3d=%08lx out=00000000 hr=%lx",
 					P(this), (unsigned long)d->dwFlags, (unsigned long)d->dwBufferBytes, w ? w->wFormatTag : 0, w ? w->nChannels : 0,
@@ -1550,7 +1794,17 @@ struct Sound final : public IDirectSound8
 					d->dwSize >= sizeof(DSBUFFERDESC) ? (unsigned long)d->guid3DAlgorithm.Data1 : 0UL, (unsigned long)DSERR_INVALIDPARAM);
 			return DSERR_INVALIDPARAM;
 		}
-		*out = reinterpret_cast<IDirectSoundBuffer *>(static_cast<IDirectSoundBuffer8 *>(Make<Buffer>(d, (Data *)NULL)));
+		Buffer *created = NULL;
+		HRESULT hr = Buffer::CreateTransactional(d, NULL, &created);
+		if (FAILED(hr) || !created)
+		{
+			CallLog("CreateSoundBuffer ds=%08lX flags=%lx bytes=%lu tag=%u ch=%u rate=%lu bits=%u alg3d=%08lx out=00000000 hr=%lx",
+					P(this), (unsigned long)d->dwFlags, (unsigned long)d->dwBufferBytes, w ? w->wFormatTag : 0, w ? w->nChannels : 0,
+					w ? (unsigned long)w->nSamplesPerSec : 0UL, w ? w->wBitsPerSample : 0,
+					d->dwSize >= sizeof(DSBUFFERDESC) ? (unsigned long)d->guid3DAlgorithm.Data1 : 0UL, (unsigned long)DSERR_OUTOFMEMORY);
+			return DSERR_OUTOFMEMORY;
+		}
+		*out = reinterpret_cast<IDirectSoundBuffer *>(static_cast<IDirectSoundBuffer8 *>(created));
 		CallLog("CreateSoundBuffer ds=%08lX flags=%lx bytes=%lu tag=%u ch=%u rate=%lu bits=%u alg3d=%08lx out=%08lX hr=0", P(this),
 				(unsigned long)d->dwFlags, (unsigned long)d->dwBufferBytes, w ? w->wFormatTag : 0, w ? w->nChannels : 0,
 				w ? (unsigned long)w->nSamplesPerSec : 0UL, w ? w->wBitsPerSample : 0,
@@ -1559,6 +1813,8 @@ struct Sound final : public IDirectSound8
 	}
 	HRESULT STDMETHODCALLTYPE GetCaps(LPDSCAPS c) override
 	{
+		if (!c || c->dwSize < sizeof(DSCAPS))
+			return DSERR_INVALIDPARAM;
 		DWORD size = c->dwSize;
 		memset(c, 0, size);
 		c->dwSize = size;
@@ -1571,7 +1827,13 @@ struct Sound final : public IDirectSound8
 	}
 	HRESULT STDMETHODCALLTYPE DuplicateSoundBuffer(LPDIRECTSOUNDBUFFER src, LPDIRECTSOUNDBUFFER *out) override
 	{
+		if (out)
+			*out = NULL;
+		if (!src || !out)
+			return DSERR_INVALIDPARAM;
 		Buffer *s = static_cast<Buffer *>(reinterpret_cast<IDirectSoundBuffer8 *>(src));
+		if ((s->flags & DSBCAPS_PRIMARYBUFFER) || !s->data || (s->data->bytes && !s->data->bytesPtr))
+			return DSERR_INVALIDPARAM;
 		DSBUFFERDESC d;
 		memset(&d, 0, sizeof(d));
 		d.dwSize = sizeof(d);
@@ -1579,7 +1841,11 @@ struct Sound final : public IDirectSound8
 		d.dwBufferBytes = s->Bytes();
 		d.lpwfxFormat = &s->format;
 		// a duplicate shares its source's memory (DirectSound's rule) and starts stopped at position 0
-		*out = reinterpret_cast<IDirectSoundBuffer *>(static_cast<IDirectSoundBuffer8 *>(Make<Buffer>(&d, s->data)));
+		Buffer *dup = NULL;
+		HRESULT hr = Buffer::CreateTransactional(&d, s->data, &dup);
+		if (FAILED(hr) || !dup)
+			return DSERR_OUTOFMEMORY;
+		*out = reinterpret_cast<IDirectSoundBuffer *>(static_cast<IDirectSoundBuffer8 *>(dup));
 		CallLog("DuplicateSoundBuffer ds=%08lX src=%08lX new=%08lX hr=0", P(this), P(src), P(*out));
 		return DS_OK;
 	}
@@ -1765,9 +2031,18 @@ extern "C" HRESULT WINAPI DirectSoundEnumerateA(LPDSENUMCALLBACKA cb, LPVOID ctx
 	return DS_OK;
 }
 
-extern "C" HRESULT WINAPI DirectSoundCreate8(const GUID *g, LPDIRECTSOUND8 *out, IUnknown *)
+extern "C" HRESULT WINAPI DirectSoundCreate8(const GUID *g, LPDIRECTSOUND8 *out, IUnknown *unk)
 {
-	*out = Make<Sound>();
+	if (out)
+		*out = NULL;
+	if (unk)
+		return DSERR_NOAGGREGATION;
+	if (!out)
+		return DSERR_INVALIDPARAM;
+	Sound *s = Make<Sound>();
+	if (!s)
+		return DSERR_OUTOFMEMORY;
+	*out = s;
 	CallLog("DirectSoundCreate8 guid=%08lx out=%08lX hr=0", g ? (unsigned long)g->Data1 : 0UL, P(*out));
 	return DS_OK;
 }

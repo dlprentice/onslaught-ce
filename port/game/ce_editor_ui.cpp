@@ -32,7 +32,7 @@ const char *const kCeEditorUiButtons[2] = {"No", "Yes"};
 // One short sentence a command, in the command set's order. Play never saves and Save is the only command that does; the
 // player start is a place of its own, which no object carries with it.
 const char *const kCeEditorUiToolNotes[CeEditorUiToolMax] = {
-    "Save your changes as a new project.",
+    "Keep your changes as a new project.",
     "Load a saved project.",
     "Take back the last change.",
     "Restore the change taken back.",
@@ -295,7 +295,10 @@ void CeEditorUiLay(const CeEditorUiModel &m, CeEditorUiMeasure measure, void *co
         l.banner = Rect(x, l.margin, w, capH);
         if (m.objective[0]) {
             const float ow = Measure(measure,context,CeEditorUiSmall,m.objective)*k+2.f*capEnd;
-            l.objective=Rect(l.margin,l.banner.y+capH+12.f*k,ow,capH);
+            float ox = leftSafe;
+            if (ox + ow > m.width - l.margin) ox = m.width - l.margin - ow;
+            if (ox < l.margin) ox = l.margin;
+            l.objective=Rect(ox,l.banner.y+capH+12.f*k,ow,capH);
         }
     } else {
         const float rightEdge = m.width - l.margin - kCapOverhang * k;
@@ -701,8 +704,12 @@ void Badge(const CeEditorUiRect &r, const char *text, DWORD border, DWORD colour
 void Capsule(const CeEditorUiRect &r, float open = 1.f) {
     if (HUD.mObjectiveLeft && HUD.mObjectiveRight && HUD.mObjectiveInnerLeft && HUD.mObjectiveInnerCentre && HUD.mObjectiveInnerRight) {
         if (open <= 0.f) return;
-        const float body = r.w - r.h;
-        HUD.RenderObjectiveBar(r.x + r.w * 0.5f, r.y + r.h * 0.5f, body > 0.f ? body : 0.f, r.h, open >= 1.f ? 1.f : 0.5f + 0.5f * open);
+        const float rx = floorf(r.x + 0.5f), ry = floorf(r.y + 0.5f);
+        const float rh = 2.f * floorf(r.h * 0.5f + 0.5f);
+        float body = 2.f * floorf((r.w - r.h) * 0.5f + 0.5f);
+        if (body < 0.f) body = 0.f;
+        const float rw = rh + body;
+        HUD.RenderObjectiveBar(rx + rw * 0.5f, ry + rh * 0.5f, body, rh, open >= 1.f ? 1.f : 0.5f + 0.5f * open);
         Prepare();
         return;
     }
@@ -771,6 +778,11 @@ void Pointer(float x, float y) {
 void Prepare() {
     RENDERINFO.SetFogEnabled(false);
     RENDERINFO.SetLightingEnabled(false);
+    LT.SSS_NoCache(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+    LT.SSS_NoCache(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+    SetMipFilterNone(0);
+    LT.SSS_NoCache(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+    LT.SSS_NoCache(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
     LT.SRS(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
     LT.SRS(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
     LT.STS(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
@@ -887,7 +899,7 @@ bool CeEditorUiRender(const CeEditorUiModel &m, CeEditorUiLayout *out) {
         float x = l.title.x + l.capsuleText;
         x = Text(x, l.title.y + ty, "Map Editor", kWhite);
         const float titleRight = l.title.x + l.title.w - l.capsuleText;
-        TextFitted(x + kPairGap * k, l.title.y + ty, m.level, titleRight - (x + kPairGap * k), kWhite);
+        TextFitted(x + kPairGap * k, l.title.y + ty, m.level, titleRight - (x + kPairGap * k), kCapsuleGrey);
         Capsule(l.project);
         // The project's name is content (white); its state a note. Grey alone did not read at 3840x2160.
         const float statePx = (m.state && m.state[0]) ? FontMeasure(0, CeEditorUiSmall, m.state) * gScale : 0.f;
@@ -1050,6 +1062,9 @@ bool CeEditorUiRender(const CeEditorUiModel &m, CeEditorUiLayout *out) {
     }
     // The game's own pointer, drawn by the game's own routine (the pause menu calls it in a level too), once the mouse moved.
     if (m.pointer && !m.playing) Pointer(m.pointerX, m.pointerY);
+    LT.SSS_NoCache(0, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
+    LT.SSS_NoCache(0, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
+    SetMipFilterLinear(0);
     LT.SRS(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
     LT.SRS(D3DRS_ZWRITEENABLE, TRUE);
     LT.SRS(D3DRS_ZENABLE, TRUE);

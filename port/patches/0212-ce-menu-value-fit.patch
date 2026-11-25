@@ -5,7 +5,7 @@
  // FUNCTION: 0x004a3c30
  void	CMenuMenuItem::RenderList(float x, float y, BOOL on_top)
 -{
-+{ extern WCHAR *PortCeValueFit(WCHAR *, float, float *); extern WCHAR *PortCeListFit(WCHAR *, float); extern int PortCeListWindow(const void *, float, long, int, int, int, float *, int *, int *); extern void PortCeListHover(int); extern float PortCeLabelLeftAt(int, float); extern float PortCeValueGap();
++{ extern WCHAR *PortCeValueFit(WCHAR *, float, float, float *); extern WCHAR *PortCeListFit(WCHAR *, float, float); extern float PortCeValueRightAt(int, float); extern int PortCeListWindow(const void *, float, long, int, int, int, float *, int *, int *); extern void PortCeListHover(int); extern float PortCeLabelLeftAt(int, float); extern float PortCeValueGap();
  	WCHAR	text[100];
  	int		value = GetValue();
  
@@ -32,7 +32,7 @@
  		{
  			SIZE	s;
 -			PLATFORM.Font(FONT_SMALL)->GetTextExtent(GetChoiceText(i), &s);
-+			PLATFORM.Font(FONT_SMALL)->GetTextExtent(PortCeListFit(GetChoiceText(i), lx + 2.f), &s);
++			PLATFORM.Font(FONT_SMALL)->GetTextExtent(PortCeListFit(GetChoiceText(i), lx + 2.f, PortCeValueRightAt(FRONTEND.GetCurrentPage(), y)), &s);
  			if (s.cx > widest)
  				widest = s.cx;
  		}
@@ -67,7 +67,7 @@
 +				{ mSelection = i; if (ceWindow) PortCeListHover(i); }
  
 -			PLATFORM.Font(FONT_SMALL)->DrawTextWithShadow(lx + 2.f, ly, c, GetChoiceText(i), 0, 0, 1.f, yscale);
-+			PLATFORM.Font(FONT_SMALL)->DrawTextWithShadow(lx + 2.f, ly, c, PortCeListFit(GetChoiceText(i), lx + 2.f), 0, 0, 1.f, yscale);
++			PLATFORM.Font(FONT_SMALL)->DrawTextWithShadow(lx + 2.f, ly, c, PortCeListFit(GetChoiceText(i), lx + 2.f, PortCeValueRightAt(FRONTEND.GetCurrentPage(), y)), 0, 0, 1.f, yscale);
  
 -			float	cy2 = ly + size.cy;
 -			float	cx2 = size.cx + lx + 2.f;
@@ -79,7 +79,7 @@
  	}
  	else
 -		PLATFORM.Font(FONT_SMALL)->DrawTextWithShadow(lx, y, col, GetChoiceText(mSelection), 0, 0, 1.f, 1.f);
-+		{ float ceFit; WCHAR *ceText = PortCeValueFit(GetChoiceText(mSelection), lx, &ceFit); PLATFORM.Font(FONT_SMALL)->DrawTextWithShadow(lx, y, col, ceText, 0, 0, ceFit, 1.f); }
++		{ float ceFit; WCHAR *ceText = PortCeValueFit(GetChoiceText(mSelection), lx, PortCeValueRightAt(FRONTEND.GetCurrentPage(), y), &ceFit); PLATFORM.Font(FONT_SMALL)->DrawTextWithShadow(lx, y, col, ceText, 0, 0, ceFit, 1.f); }
  }
  
  // FUNCTION: 0x004a40f0

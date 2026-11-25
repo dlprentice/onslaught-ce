@@ -251,11 +251,33 @@ bool	isAncestorOrSame(int a, int b)
 
 bool	entryExists(int dirFd, const std::string &name)
 {
+	if (dirFd < 0)
+		return false;
 	struct stat st{};
 	if (fstatat(dirFd, name.c_str(), &st, AT_SYMLINK_NOFOLLOW) == 0)
 		return true;
 	require(errno == ENOENT);
 	return false;
+}
+
+bool	savegamesAbsent(int parentFd)
+{
+	struct stat st{};
+	return fstatat(parentFd, "savegames", &st, AT_SYMLINK_NOFOLLOW) != 0 && errno == ENOENT;
+}
+
+int	openOptionalSavegames(int parentFd, bool &present)
+{
+	int fd = openat(parentFd, "savegames", O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW);
+	if (fd >= 0)
+	{
+		require(S_ISDIR(statFd(fd).st_mode));
+		present = true;
+		return fd;
+	}
+	require(errno == ENOENT && savegamesAbsent(parentFd));
+	present = false;
+	return -1;
 }
 
 void	writeFullSync(int fd, const unsigned char *data, size_t size)
@@ -303,7 +325,7 @@ bool	collectCareerNames(int dirFd, bool allowMissing, std::set<std::string> &out
 {
 	Fd saves(openat(dirFd, "savegames", O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW));
 	if (saves.n < 0)
-		return allowMissing && errno == ENOENT;
+		return allowMissing && errno == ENOENT && savegamesAbsent(dirFd);
 	struct stat before{};
 	if (fstat(saves.n, &before) != 0)
 		return false;
@@ -792,16 +814,17 @@ CeCareerPublishResult	CeCareerPublishNew(const CeCareerPublishRequest *request)
 			Fd gameFd(requireDir(game, CE_PUBLISH_REFUSED, true));
 			Fd pkgFd(requireDir(pkg, CE_PUBLISH_REFUSED, true));
 			Fd rootFd(requireDir(root, CE_PUBLISH_REFUSED, false));
-			Fd slotsFd(openat(userFd.n, "savegames", O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW));
-			Fd origFd(openat(gameFd.n, "savegames", O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW));
-			require(slotsFd.n >= 0 && origFd.n >= 0 && localFs(userFd.n) && localFs(rootFd.n) &&
-						localFs(slotsFd.n) && localFs(origFd.n),
+			bool slotsPresent = false, origPresent = false;
+			Fd slotsFd(openOptionalSavegames(userFd.n, slotsPresent));
+			Fd origFd(openOptionalSavegames(gameFd.n, origPresent));
+			require(localFs(userFd.n) && localFs(gameFd.n) && localFs(rootFd.n) &&
+						(!slotsPresent || localFs(slotsFd.n)) && (!origPresent || localFs(origFd.n)),
 					CE_PUBLISH_UNSUPPORTED);
 			for (int protectedDir : {userFd.n, gameFd.n, pkgFd.n})
 				require(!isAncestorOrSame(protectedDir, rootFd.n) && !isAncestorOrSame(rootFd.n, protectedDir));
 			require(!isAncestorOrSame(userFd.n, gameFd.n) && !isAncestorOrSame(gameFd.n, userFd.n));
 			std::set<std::string> taken;
-			require(collectCareerNames(userFd.n, false, taken) && collectCareerNames(gameFd.n, false, taken));
+			require(collectCareerNames(userFd.n, true, taken) && collectCareerNames(gameFd.n, true, taken));
 			require(!taken.count(lowerAscii(target)), CE_PUBLISH_OCCUPIED);
 			require(!entryExists(slotsFd.n, target) && !entryExists(origFd.n, target), CE_PUBLISH_OCCUPIED);
 		}
@@ -831,10 +854,11 @@ CeCareerPublishResult	CeCareerPublishNew(const CeCareerPublishRequest *request)
 		Fd gameFd(requireDir(game, CE_PUBLISH_REFUSED, true));
 		Fd pkgFd(requireDir(pkg, CE_PUBLISH_REFUSED, true));
 		Fd rootFd(requireDir(root, CE_PUBLISH_REFUSED, false));
-		Fd slotsFd(openat(userFd.n, "savegames", O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW));
-		Fd origFd(openat(gameFd.n, "savegames", O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW));
-		require(slotsFd.n >= 0 && origFd.n >= 0 && localFs(userFd.n) && localFs(rootFd.n) &&
-					localFs(slotsFd.n) && localFs(origFd.n),
+		bool slotsPresent = false, origPresent = false;
+		Fd slotsFd(openOptionalSavegames(userFd.n, slotsPresent));
+		Fd origFd(openOptionalSavegames(gameFd.n, origPresent));
+		require(localFs(userFd.n) && localFs(gameFd.n) && localFs(rootFd.n) &&
+					(!slotsPresent || localFs(slotsFd.n)) && (!origPresent || localFs(origFd.n)),
 				CE_PUBLISH_UNSUPPORTED);
 		for (int protectedDir : {userFd.n, gameFd.n, pkgFd.n})
 			require(!isAncestorOrSame(protectedDir, rootFd.n) && !isAncestorOrSame(rootFd.n, protectedDir));
@@ -853,11 +877,20 @@ CeCareerPublishResult	CeCareerPublishNew(const CeCareerPublishRequest *request)
 			require(boundDir(userFd.n, user, true) && boundDir(gameFd.n, game, true) &&
 						boundDir(pkgFd.n, pkg, true) && boundDir(rootFd.n, root, false),
 					CE_PUBLISH_CHANGED);
-			Fd a(openat(userFd.n, "savegames", O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW));
-			Fd b(openat(gameFd.n, "savegames", O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW));
-			require(a.n >= 0 && b.n >= 0 && sameStat(statFd(a.n), statFd(slotsFd.n)) &&
-						sameStat(statFd(b.n), statFd(origFd.n)),
-					CE_PUBLISH_CHANGED);
+			if (slotsPresent)
+			{
+				Fd a(openat(userFd.n, "savegames", O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW));
+				require(a.n >= 0 && sameStat(statFd(a.n), statFd(slotsFd.n)), CE_PUBLISH_CHANGED);
+			}
+			else
+				require(savegamesAbsent(userFd.n), CE_PUBLISH_CHANGED);
+			if (origPresent)
+			{
+				Fd b(openat(gameFd.n, "savegames", O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW));
+				require(b.n >= 0 && sameStat(statFd(b.n), statFd(origFd.n)), CE_PUBLISH_CHANGED);
+			}
+			else
+				require(savegamesAbsent(gameFd.n), CE_PUBLISH_CHANGED);
 			struct stat held{};
 			require(fstatat(userFd.n, ".ce-career-custody.lock", &held, AT_SYMLINK_NOFOLLOW) == 0 &&
 						sameStat(held, statFd(lockFd.n)) && held.st_nlink == 1,
@@ -886,6 +919,37 @@ CeCareerPublishResult	CeCareerPublishNew(const CeCareerPublishRequest *request)
 					CE_PUBLISH_CHANGED);
 		};
 
+		verifyRoots();
+		verifyBackup(true);
+		require(request->permitted(request->owner), CE_PUBLISH_AUTHORITY);
+		require(!(request->cancelled && request->cancelled(request->owner)), CE_PUBLISH_CANCELLED);
+		require(request->namePermitted(request->owner, sourceName.c_str(), target.c_str()), CE_PUBLISH_BAD_NAME);
+		{
+			std::set<std::string> preStageTaken;
+			require(collectCareerNames(userFd.n, true, preStageTaken) &&
+					collectCareerNames(gameFd.n, true, preStageTaken));
+			require(!preStageTaken.count(lowerAscii(target)), CE_PUBLISH_OCCUPIED);
+			require(!entryExists(slotsFd.n, target) && !entryExists(origFd.n, target), CE_PUBLISH_OCCUPIED);
+		}
+		if (!slotsPresent)
+		{
+			if (mkdirat(userFd.n, "savegames", 0700) != 0)
+				throw Failure{errno == EEXIST ? CE_PUBLISH_CHANGED : CE_PUBLISH_REFUSED};
+			Fd created(openat(userFd.n, "savegames", O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW));
+			require(created.n >= 0, CE_PUBLISH_CHANGED);
+			const struct stat createdSt = statFd(created.n);
+			struct stat byName{};
+			require(S_ISDIR(createdSt.st_mode) &&
+						fstatat(userFd.n, "savegames", &byName, AT_SYMLINK_NOFOLLOW) == 0 &&
+						sameStat(createdSt, byName),
+					CE_PUBLISH_CHANGED);
+			require(localFs(created.n), CE_PUBLISH_UNSUPPORTED);
+			require(fsync(userFd.n) == 0);
+			slotsFd.n = created.n;
+			created.n = -1;
+			slotsPresent = true;
+		}
+
 		// Stage into an anonymous O_TMPFILE inode inside user/savegames, fsync, and verify read-back.
 		Fd stage(openat(slotsFd.n, ".", O_RDWR | O_TMPFILE | O_CLOEXEC, 0600));
 		require(stage.n >= 0, CE_PUBLISH_UNSUPPORTED);
@@ -893,7 +957,7 @@ CeCareerPublishResult	CeCareerPublishNew(const CeCareerPublishRequest *request)
 		require(readBackMatches(stage.n, request->bytes, CE_CAREER_SIZE));
 
 		std::set<std::string> taken;
-		require(collectCareerNames(userFd.n, false, taken) && collectCareerNames(gameFd.n, false, taken));
+		require(collectCareerNames(userFd.n, false, taken) && collectCareerNames(gameFd.n, true, taken));
 		require(!taken.count(lowerAscii(target)), CE_PUBLISH_OCCUPIED);
 		require(!entryExists(slotsFd.n, target) && !entryExists(origFd.n, target), CE_PUBLISH_OCCUPIED);
 		verifyRoots();
@@ -920,7 +984,7 @@ CeCareerPublishResult	CeCareerPublishNew(const CeCareerPublishRequest *request)
 		{
 			std::set<std::string> postUser, postGame;
 			require(collectCareerNames(userFd.n, false, postUser) &&
-						collectCareerNames(gameFd.n, false, postGame),
+						collectCareerNames(gameFd.n, true, postGame),
 					CE_PUBLISH_UNCERTAIN);
 			const std::string foldedTarget = lowerAscii(target);
 			require(postUser.count(foldedTarget) == 1 && postGame.count(foldedTarget) == 0 &&

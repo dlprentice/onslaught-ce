@@ -62,8 +62,29 @@ static WCHAR *TestWideLast(const WCHAR *s, WCHAR c)
 #define wcslen TestWideLen
 #define wcsrchr TestWideLast
 static int _stricmp(const char *a, const char *b) { return strcasecmp(a,b); }
+static void *TestCalloc(size_t count, size_t size)
+{
+	if (nativeFault == "findstart-oom") return nullptr;
+	return calloc(count, size);
+}
+#define calloc TestCalloc
 static int Resolve(const char *path, Mode mode, char *out, size_t size)
 {
+	if (nativeFault == "findstart-shadow-fail" && mode == SHADOW)
+	{
+		snprintf(out, size, "game\\%s", path ? path : "");
+		return -1;
+	}
+	if (nativeFault == "findstart-read-fail" && mode == READ)
+	{
+		if (out && size) out[0] = 0;
+		return -1;
+	}
+	if (nativeFault == "findstart-both-fail")
+	{
+		if (out && size) out[0] = 0;
+		return -1;
+	}
 	snprintf(out,size,"%s\\%s", mode == READ ? "game" : "user",path); return 0;
 }
 static bool Exists(const char *) { return nativeExists; }

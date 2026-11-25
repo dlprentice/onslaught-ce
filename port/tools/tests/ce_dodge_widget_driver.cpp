@@ -11,7 +11,9 @@ using WCHAR=wchar_t;using WORD=uint16_t;using BOOL=int;using DWORD=uint32_t;
 constexpr BOOL FALSE=0;
 enum EPCText { eNone };enum EMemoryType { eOrdinary=0x80 };
 enum KeyEventType { KEY_EVENT_DOWN,KEY_EVENT_UP,KEY_EVENT_CHAR };
-using Trap=void(*)(WORD,KeyEventType);
+using pKeyTrapper=void(*)(WORD,KeyEventType);
+using pMouseTrapper=bool(*)(WORD,int);
+using Trap=pKeyTrapper;
 void*operator new(std::size_t n,EMemoryType){return ::operator new(n);}
 void operator delete(void*p,EMemoryType)noexcept{::operator delete(p);}
 struct Loop {Trap trap=nullptr;Trap GetKeytrap(){return trap;}void SetKeytrap(Trap t){trap=t;}} LT;
@@ -22,7 +24,7 @@ class CController;
 struct CFrontEnd {static void PlaySound(int){}};
 std::wstring lastHint;
 float lastHintY = 0.f;
-struct CMenuItem {explicit CMenuItem(EPCText,int id):mId(id){}virtual ~CMenuItem()=default;virtual void ReceiveButtonAction(CController*,int,float){}virtual WCHAR*GetText(){return nullptr;}virtual void Render(float,float,BOOL){}virtual bool IsExpanded(){return false;}virtual bool TakesInput(){return false;}void Render(float,float y,BOOL,DWORD,WCHAR*text){lastHintY=y;lastHint=text?text:L"";}int mId;};
+struct CMenuItem {explicit CMenuItem(EPCText,int id):mId(id){}virtual ~CMenuItem()=default;virtual int GetHeight(){return 20;}virtual void ReceiveButtonAction(CController*,int,float){}virtual WCHAR*GetText(){return nullptr;}virtual void Render(float,float,BOOL){}virtual bool IsExpanded(){return false;}virtual bool TakesInput(){return false;}virtual void Refresh(){}void Render(float,float y,BOOL,DWORD,WCHAR*text){lastHintY=y;lastHint=text?text:L"";}int mId;};
 struct CMenuOptionsList {
 	CMenuItem *item=nullptr,*rows[3]={}; int count=0;
 	~CMenuOptionsList(){for(int i=0;i<count;++i)delete rows[i];}
@@ -46,11 +48,12 @@ const char *PortCeActionConflict(CeControlAction a,int code) {
  return nullptr;
 }
 const char *PortCeDodgeBindingConflict(int code){return PortCeActionConflict(CeControlAction::Dodge,code);}
-void send(int code){assert(LT.trap);LT.trap(code,KEY_EVENT_DOWN);if(LT.trap)LT.trap(code,KEY_EVENT_UP);}
+bool dispatchTrap(WORD code,int event){assert(LT.trap);return ((pMouseTrapper)(void(*)(void))LT.trap)(code,event);}
+void send(int code){assert(LT.trap);dispatchTrap(WORD(code),KEY_EVENT_DOWN);if(LT.trap)dispatchTrap(WORD(code),KEY_EVENT_UP);}
 bool has(CMenuItem*p,const wchar_t*text){return std::wcsstr(p->GetText(),text)!=nullptr;}
 int main(){
     ordinary=false;CMenuOptionsList denied;PortCeDodgeControlsAdd(&denied);assert(!denied.item);
-    ordinary=true;CMenuOptionsList list;PortCeDodgeControlsAdd(&list);auto item=list.item;assert(list.count==1&&item&&has(item,L"Dodge modifier: Left Ctrl"));
+    ordinary=true;CMenuOptionsList list;PortCeDodgeControlsAdd(&list);auto item=list.item;assert(list.count==1&&item&&has(item,L"Dodge modifier: Left Ctrl")&&item->GetHeight()==20);
     assert(PortCeDodgeControlsSelect(item)&&LT.trap);send(30);assert(LT.trap&&has(item,L"is used by Strafe Left. Try another key or Esc.")&&!writes);
     item->Render(0,0,1);assert(lastHint==L"Esc keeps Left Ctrl." && lastHintY >= 450.f && lastHintY <= 462.f);
     item->ReceiveButtonAction(nullptr, BUTTON_FRONTEND_MENU_BACK, 1.f);
@@ -70,6 +73,7 @@ int main(){
     ordinary=true; writable=true; enabled=true; mixed=false; unitOn=true; commanderOn=true;
  stored.clear(); takeSaved.clear(); commanderSaved.clear(); PortCeDodgeBindingReload();
  CMenuOptionsList gameplay; PortCeDodgeControlsAdd(&gameplay);assert(gameplay.count==3);
+ assert(gameplay.rows[0]->GetHeight()==14 && gameplay.rows[1]->GetHeight()==14 && gameplay.rows[2]->GetHeight()==20);
  assert(has(gameplay.rows[1],L"Take Unit: E") && has(gameplay.rows[2],L"Commander: M"));
  assert(PortCeDodgeControlsSelect(gameplay.rows[1]));send(0x32);assert(LT.GetKeytrap() && takeSaved.empty());
  send(1);assert(!LT.GetKeytrap() && takeSaved.empty());assert(PortCeDodgeControlsSelect(gameplay.rows[1]));send(0x25);
@@ -77,5 +81,22 @@ int main(){
  assert(PortCeDodgeControlsSelect(gameplay.rows[2]));send(0x25);assert(LT.GetKeytrap() && commanderSaved.empty());send(0x26);
  assert(commanderSaved=="38" && has(gameplay.rows[2],L"Commander: L") && PortCeDodgeReserveFromControls(0x26));
  assert(!PortCeDodgeReserveFromControls(0x32));PortCeDodgeBindingReload();assert(PortCeActionKey(CeControlAction::TakeUnit)==0x25 && PortCeActionKey(CeControlAction::Commander)==0x26);
- std::puts("Dodge menu capture: native ownership, conflicting keys, Escape, Off, save failure and recovery passed.");
+ // Keytrap returns bool matching mouse.cpp pMouseTrapper: swallows MOUSE_EVENT_DOWN (4), passes MOUSE_EVENT_UP (3).
+ assert(PortCeDodgeControlsSelect(gameplay.rows[0]) && LT.GetKeytrap());
+ assert(dispatchTrap(0, 4) == true && dispatchTrap(0, 3) == false);
+ // Multi-key / Alt-Tab (missed KEY_EVENT_UP on Alt 0x38, or Shift 0x2A held while pressing E) must not wedge capture.
+ assert(dispatchTrap(0x38, KEY_EVENT_DOWN) == true);
+ assert(dispatchTrap(0x2a, KEY_EVENT_DOWN) == true);
+ assert(dispatchTrap(18, KEY_EVENT_DOWN) == true);
+ assert(dispatchTrap(18, KEY_EVENT_UP) == true);
+ assert(!LT.GetKeytrap() && stored=="18" && has(gameplay.rows[0],L"Dodge modifier: E"));
+ // Refresh and external keytrap loss clear capture cleanly.
+ assert(PortCeDodgeControlsSelect(gameplay.rows[0]) && LT.GetKeytrap());
+ dispatchTrap(0x38, KEY_EVENT_DOWN);
+ gameplay.rows[0]->Refresh();
+ assert(!LT.GetKeytrap() && !gameplay.rows[0]->IsExpanded() && !gameplay.rows[0]->TakesInput());
+ assert(PortCeDodgeControlsSelect(gameplay.rows[0]) && LT.GetKeytrap());
+ LT.SetKeytrap(nullptr);
+ assert(!gameplay.rows[0]->IsExpanded() && !gameplay.rows[0]->TakesInput() && has(gameplay.rows[0],L"Dodge modifier: E"));
+ std::puts("Dodge menu capture: native ownership, conflicting keys, Escape, Off, save failure, bool trap, multi-key and recovery passed.");
 }

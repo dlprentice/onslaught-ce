@@ -213,6 +213,17 @@ public:
 #else
 // Callback state outlives Cancel until HANDLE_CLOSING. Callbacks only record
 // bounded completion flags; the caller's Poll performs subsequent WinHTTP work.
+bool ConfigureWinHttpTlsProtocols(HINTERNET session) noexcept {
+#ifdef WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3
+    DWORD tls = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2 | WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3;
+    if (WinHttpSetOption(session, WINHTTP_OPTION_SECURE_PROTOCOLS, &tls, sizeof(tls)))
+        return true;
+    if (GetLastError() != ERROR_INVALID_PARAMETER)
+        return false;
+#endif
+    DWORD tls12 = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;
+    return WinHttpSetOption(session, WINHTTP_OPTION_SECURE_PROTOCOLS, &tls12, sizeof(tls12)) != FALSE;
+}
 struct SensitiveWide {
     std::wstring value;
     ~SensitiveWide(){if(!value.empty())crypto_wipe(&value[0],value.size()*sizeof(wchar_t));}
@@ -266,8 +277,7 @@ public:
             (void)WinHttpSetOption(p->session,WINHTTP_OPTION_DISABLE_GLOBAL_POOLING,&isolate,sizeof(isolate));
             const int timeout=int(std::min<uint64_t>(10000,deadline-now));
             if (!WinHttpSetTimeouts(p->session,timeout,std::min(timeout,5000),timeout,timeout)) return false;
-            DWORD tls=WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;
-            if (!WinHttpSetOption(p->session,WINHTTP_OPTION_SECURE_PROTOCOLS,&tls,sizeof(tls))) return false;
+            if (!ConfigureWinHttpTlsProtocols(p->session)) return false;
             std::wstring host(origin_.host.begin(),origin_.host.end());
             p->connection=WinHttpConnect(p->session,host.c_str(),origin_.port,0);if (!p->connection) return false;
             std::string narrow="/ce-signaling/v1/";narrow+=route;std::wstring path(narrow.begin(),narrow.end());
@@ -657,11 +667,8 @@ public:
             const int timeout = int(std::min<uint64_t>(30000, deadline - now));
             if (!WinHttpSetTimeouts(p->session, timeout, std::min(timeout, 5000), timeout, timeout))
                 return false;
-            if (origin_.https) {
-                DWORD tls = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;
-                if (!WinHttpSetOption(p->session, WINHTTP_OPTION_SECURE_PROTOCOLS, &tls, sizeof(tls)))
-                    return false;
-            }
+            if (origin_.https && !ConfigureWinHttpTlsProtocols(p->session))
+                return false;
             std::wstring host(origin_.host.begin(), origin_.host.end());
             p->connection = WinHttpConnect(p->session, host.c_str(), origin_.port, 0);
             if (!p->connection) return false;

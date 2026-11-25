@@ -153,11 +153,110 @@ def main():
     visitor = re.search(r"void CinemaVisitor\(float x,float y\) \{(.*?)\n\}", cinema, re.S)
     check("the crossfade steps from the visit's frame", bool(fade and visitor) and "CeMuseumFilm::Fade(" in fade.group(1)
           and "CinemaFilmFade();" in visitor.group(1))
-    check("the screen asks CeMuseumFilm::Tick with the game's pause, and copies only a frame that is due",
-          "CeMuseumFilm::Tick(&film,calls,GAME.IsPaused(),CinemaClock());" in cinema
+    held = re.search(r"bool CinemaHeld\(\) \{(.*?)\n\}", cinema, re.S)
+    clock = re.search(r"double CinemaClock\(\) \{(.*?)\n\}", cinema, re.S)
+    check("the cinema's hold is the game's pause or Photo Mode, and its one clock stops for it",
+          bool(held) and "GAME.IsPaused()" in held.group(1) and "PortCePhotoOn()" in held.group(1)
+          and bool(clock) and "CeMuseumCinemaHeldClockRead(&held," in clock.group(1) and "CinemaHeld()" in clock.group(1))
+    check("the film's frames, its crossfade, its close and the duck all read that one clock",
+          cinema.count("QueryPerformanceCounter") == 1
+          and "CeMuseumMusicDuck::Settle(&Cinema::duck, now);" in cinema and "const double now = CinemaClock();" in cinema
+          and "CeMuseumFilm::Fade(&Cinema::film, CinemaFilmCalls(), CinemaClock());" in cinema)
+    check("the screen asks CeMuseumFilm::Tick with the cinema's hold, and copies only a frame that is due",
+          "CeMuseumFilm::Tick(&film,calls,CinemaHeld(),CinemaClock());" in cinema
           and "if(step==CeMuseumFilm::kShow) {" in cinema and "CeMuseumFilm::Shown(&film,calls);" in cinema
           and "if(step==CeMuseumFilm::kEnded) { CinemaClose(Finished);return; }" in cinema)
     check("nothing in the duck writes the career", "CAREER.Set" not in cinema and "MUSIC.SetVolume" not in cinema)
+
+    # The held clock and the open-failure rule, as arithmetic (ce_museum_cinema.h), with mutants.
+    held_driver = r"""
+#include <cstddef>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include "ce_museum_cinema_console.h"
+#include "ce_museum_cinema.h"
+static void Need(bool ok, const char *why) { if (!ok) { std::fprintf(stderr, "FAIL: %s\n", why); std::exit(2); } }
+static bool Near(double a, double b) { return std::fabs(a - b) < 1e-9; }
+int main() {
+    CeMuseumCinemaHeldClock c = CeMuseumCinemaHeldClockNew();
+    Need(Near(CeMuseumCinemaHeldClockRead(&c, 1.0, false), 1.0), "running clock follows raw time");
+    Need(Near(CeMuseumCinemaHeldClockRead(&c, 2.5, false), 2.5), "still following");
+    Need(Near(CeMuseumCinemaHeldClockRead(&c, 3.0, true), 3.0), "the read that first sees the hold stops there");
+    Need(Near(CeMuseumCinemaHeldClockRead(&c, 9.0, true), 3.0), "held: six seconds of pause pass and the clock has not moved");
+    Need(Near(CeMuseumCinemaHeldClockRead(&c, 60.0, true), 3.0), "held: a minute in Photo Mode and it has not moved");
+    Need(Near(CeMuseumCinemaHeldClockRead(&c, 61.0, false), 3.0), "released: it continues from where it stopped, with no jump");
+    Need(Near(CeMuseumCinemaHeldClockRead(&c, 62.5, false), 4.5), "then runs at the raw rate again");
+    Need(Near(CeMuseumCinemaHeldClockRead(&c, 63.0, true), 5.0), "a second hold stops it again");
+    Need(Near(CeMuseumCinemaHeldClockRead(&c, 70.0, false), 5.0), "and releases without a jump again");
+    Need(Near(CeMuseumCinemaHeldClockRead(&c, 71.0, false), 6.0), "two holds, 65 s skipped in all");
+    double last = -1.0;
+    CeMuseumCinemaHeldClock m = CeMuseumCinemaHeldClockNew();
+    for (int i = 0; i < 4000; ++i) {
+        const bool hold = ((i / 37) % 3) == 1;
+        const double v = CeMuseumCinemaHeldClockRead(&m, 0.016 * i, hold);
+        Need(v >= last - 1e-12, "the held clock never runs backwards");
+        if (hold && i > 0 && (((i - 1) / 37) % 3) == 1) Need(Near(v, last), "it is still for every read of a hold");
+        last = v;
+    }
+    Need(Near(CeMuseumCinemaHeldClockRead(NULL, 7.0, true), 7.0), "a missing clock passes raw time through");
+    Need(CeMuseumCinemaAfterOpenFailure(true), "the first scan finding nothing playable means films cannot be shown");
+    Need(!CeMuseumCinemaAfterOpenFailure(false), "one chosen film failing leaves the console usable");
+    return 0;
+}
+"""
+    cinema_h = (GAME / "ce_museum_cinema.h").read_text()
+    held_mutants = [
+        ("clock-runs-while-held", "const double at = clock->held ? clock->heldAt : raw;", "const double at = raw;"),
+        ("clock-jumps-on-release", "if (raw > clock->heldAt) clock->skipped += raw - clock->heldAt;", "(void)raw;"),
+        ("clock-never-holds", "if (hold && !clock->held) { clock->held = true; clock->heldAt = raw; }",
+         "if (false && hold && !clock->held) { clock->held = true; clock->heldAt = raw; }"),
+        ("one-bad-film-locks-console", "return scanningWholeList;", "return true || scanningWholeList;"),
+    ]
+    with tempfile.TemporaryDirectory() as folder:
+        folder = Path(folder)
+        (folder / "held.cpp").write_text(held_driver)
+        built, detail = run(["g++", "-std=c++14", "-O1", "-Wall", "-Wextra", "-Werror", "-I" + str(GAME),
+                             str(folder / "held.cpp"), "-o", str(folder / "held")])
+        check("the held clock driver builds", built, detail)
+        if built:
+            good, detail = run([str(folder / "held")])
+            check("a hold stops the cinema clock, a release continues it without a jump", good, detail)
+        for label, old_text, new_text in held_mutants:
+            if cinema_h.count(old_text) != 1:
+                check("held-clock mutant " + label + " applies", False, "not found once: " + old_text)
+                continue
+            mdir = folder / label
+            mdir.mkdir()
+            (mdir / "ce_museum_cinema.h").write_text(cinema_h.replace(old_text, new_text))
+            built, detail = run(["g++", "-std=c++14", "-O1", "-I" + str(mdir), "-I" + str(GAME),
+                                 str(folder / "held.cpp"), "-o", str(mdir / "held")])
+            if not built:
+                check("held-clock mutant " + label + " is caught", False, detail)
+                continue
+            caught, _ = run([str(mdir / "held")], 2)
+            check("held-clock mutant " + label + " is caught", caught)
+
+    # A film that cannot be shown never locks the console, and the projector closes before the sound device is rebuilt.
+    opened = re.search(r"void CinemaOpen\(unsigned selected\) \{(.*?)\n\}", cinema, re.S)
+    start = re.search(r"bool CinemaStartFilm\(void \*, const CeMuseumCinemaCatalogue::Entry &entry\) \{(.*?)\n\}", cinema, re.S)
+    screen = re.search(r"void CinemaScreen\(IDirect3DDevice9 \*dev\) \{(.*?)\n\}", cinema, re.S)
+    check("only the first whole-list scan can leave the console saying films cannot be shown",
+          bool(opened) and "const bool scanning = s.firstPlayable;" in opened.group(1)
+          and "CinemaClose(CeMuseumCinemaAfterOpenFailure(scanning) ? Missing : Idle);" in opened.group(1)
+          and cinema.count("Missing : Idle") == 1
+          and len(re.findall(r"CinemaClose\(Missing\)", cinema)) == 0)
+    check("a film that will not start, a lost screen target and a frame that cannot be written all return to idle",
+          bool(start) and "CinemaClose(Idle); return false;" in start.group(1) and "Missing" not in start.group(1)
+          and bool(screen) and "Missing" not in screen.group(1) and screen.group(1).count("CinemaClose(Idle)") == 2)
+    hall = (GAME / "ce_museum_hall.cpp").read_text()
+    kiosk = (GAME / "ce_museum_audio_kiosk.cpp").read_text()
+    reinit = re.search(r'extern "C" void PortCeMuseumCinemaBeforeSoundReinit\(void\) \{(.*?)\n\}', hall, re.S)
+    before = re.search(r'extern "C" void PortCeSoundBeforeReinit\(void\) \{(.*?)\n\}', kiosk, re.S)
+    check("the projector's film is closed before the sound device is rebuilt",
+          bool(reinit) and "CinemaClose(Cinema::Idle);" in reinit.group(1)
+          and bool(before) and "PortCeMuseumCinemaBeforeSoundReinit();" in before.group(1)
+          and "extern \"C\" void PortCeMuseumCinemaBeforeSoundReinit(void);" in cinema_h)
     return 1 if failures else 0
 
 

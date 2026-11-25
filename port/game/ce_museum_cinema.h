@@ -67,6 +67,18 @@ inline int PickFireSlot(const InputDevice slots[2], bool padActive) {
     for (int i = 0; i < 2; ++i) if (slots[i] == InputDevice::Kbm) return i;
     return -1;
 }
+// The idle house: three sconces on the east lining and strip lights along both edges of the centre aisle.
+// These are the room's own coordinates; the shell builds the fixtures from them and the hall's light bake
+// reads the same ones, so the lamps and their light cannot drift apart.
+constexpr unsigned kSconceCount = 3u;
+inline float SconceY(unsigned index) { return kFront + 4.0f + float(index) * 5.8f; }
+constexpr float kSconceHeight = 3.0f;        // lamp centre above the floor
+constexpr float kSconceWashHalf = 1.5f;      // the wall wash is 3 m square around the lamp
+constexpr float kSconceReach = 1.48f;        // fades smoothly to 0 at the wash panel edge (zero hard seam)
+constexpr float kAisleX = kWallX + 7.15f;    // midway between the two seat banks (SeatX(2) and SeatX(3))
+constexpr float kAisleHalf = 1.55f;         // clear of both seat-bank platforms
+constexpr float kAisleFront = kFront + 1.2f, kAisleBack = kBack - 4.2f;
+
 // Steps the screening room's house lights (1 = full idle lights, 0 = dimmed for a film) by 'steps' Presents.
 // Held constant while the game is paused so the room does not darken or brighten behind the pause menu.
 inline float StepHouseLight(float current, float target, unsigned steps, bool paused, float stepSize = 1.0f / 45.0f) {
@@ -79,8 +91,44 @@ inline float StepHouseLight(float current, float target, unsigned steps, bool pa
 }
 }
 
+// A clock that does not run while it is held (the game paused, Photo Mode up).
+// Read with the raw running time and whether the hold is on; the returned time
+// stops on the read that first sees the hold and continues from there on the
+// read that sees it lifted, so nothing after a hold has to catch up.
+struct CeMuseumCinemaHeldClock {
+    double skipped;   // total raw time spent held
+    double heldAt;    // raw time the current hold began
+    bool held;
+};
+inline CeMuseumCinemaHeldClock CeMuseumCinemaHeldClockNew() {
+    const CeMuseumCinemaHeldClock c = {0.0, 0.0, false};
+    return c;
+}
+inline double CeMuseumCinemaHeldClockRead(CeMuseumCinemaHeldClock *clock, double raw, bool hold) {
+    if (!clock) return raw;
+    if (hold && !clock->held) { clock->held = true; clock->heldAt = raw; }
+    else if (!hold && clock->held) {
+        clock->held = false;
+        if (raw > clock->heldAt) clock->skipped += raw - clock->heldAt;
+    }
+    const double at = clock->held ? clock->heldAt : raw;
+    return at - clock->skipped;
+}
+
+// What a failed film open leaves the console in. Only the first scan of the
+// whole list finding nothing playable means "films cannot be shown" (true: the
+// console says so until the visitor leaves). One chosen film failing, or a frame
+// that cannot be written mid-film, returns the console to idle (false).
+inline bool CeMuseumCinemaAfterOpenFailure(bool scanningWholeList) {
+    return scanningWholeList;
+}
+
 extern "C" bool PortCeMuseumCinemaFire(bool release,float value);
 extern "C" bool PortCeMuseumCinemaFilmName(unsigned index,char *stem,unsigned cap);
+// Closes any film on the Museum projector before the sound device is rebuilt:
+// Bink's sound track lives on the device's buffers, and a film left open across
+// the rebuild would keep a buffer that no longer exists.
+extern "C" void PortCeMuseumCinemaBeforeSoundReinit(void);
 // Exact main-view sample; only the Museum projector consumes it.
 extern "C" void PortCeMuseumCinemaView(const float *view, unsigned present);
 extern "C" bool PortCeMuseumCinemaPanel(CeMuseumCinemaConsole::Presentation *out,

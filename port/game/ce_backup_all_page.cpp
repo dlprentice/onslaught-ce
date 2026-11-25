@@ -13,6 +13,7 @@
 #ifdef CE_VERSION
 #include "common.h"
 #include "ce_extras.h"
+#include "ce_name_text.h"
 #include "../platform/common/ce_career_backup.h"
 #include "../platform/common/ce_full_backup_ui.h"
 #include <stdio.h>
@@ -31,7 +32,8 @@ namespace {
 CeBackupStatus folderView{}; // the folder choice, shared with Back Up Career's chooser
 CeFullBackupDisplay flow{};
 int careers = -1, options = -1;
-bool allowed = false, workRows = false;
+bool allowed = false, workRows = false, reshow = false;
+CeFullBackupPhase shownPhase = CE_FULL_BACKUP_IDLE;
 // No editor, museum or project has the careers fenced, no recording or replay
 // tape, and the Extras pages are showing (only on the front end).
 bool permit() {
@@ -40,12 +42,32 @@ bool permit() {
          (!r || !*r) && (!t || !*t);
 }
 void plain(WCHAR *dst, int n, const char *s) { PortCeExtrasWiden(dst, n, s); }
-const char *leafOf(const char *path) {
-  const char *l = path;
-  for (const char *c = path; *c; ++c)
-    if (*c == '/' || *c == '\\')
-      l = c + 1;
-  return l;
+void widenUtf8(WCHAR *dst, int n, const char *s) { CeDecodeName(dst, n, s, true); }
+void leafOf(char *out, size_t cap, const char *path) {
+  if (!cap)
+    return;
+  out[0] = 0;
+  if (!path || !*path)
+    return;
+  size_t end = strlen(path);
+  while (end > 1 && (path[end - 1] == '/' || path[end - 1] == '\\')) {
+    if (end == 3 && path[1] == ':')
+      break;
+    --end;
+  }
+  if ((end == 1 && (path[0] == '/' || path[0] == '\\')) ||
+      (end == 3 && path[1] == ':' && (path[2] == '/' || path[2] == '\\'))) {
+    snprintf(out, cap, "%.*s", int(end), path);
+    return;
+  }
+  size_t start = end;
+  while (start > 0 && path[start - 1] != '/' && path[start - 1] != '\\')
+    --start;
+  if (start == end) {
+    snprintf(out, cap, "%c", path[0]);
+    return;
+  }
+  snprintf(out, cap, "%.*s", int(end - start), path + start);
 }
 void count() {
   careers = allowed ? PortCeCareerCount() : -1;
@@ -112,11 +134,23 @@ void build() {
   }
   }
 }
+void focus(int row) {
+  reshow = true;
+  PortCeExtrasShow(XP_BACKUP_ALL, row);
+  reshow = false;
+}
 void sync() {
   refresh();
   build();
+  if (flow.phase != shownPhase) {
+    shownPhase = flow.phase;
+    if (flow.phase == CE_FULL_BACKUP_DONE && lineCount > 0)
+      focus(lineCount - 1);
+  }
 }
 void open() {
+  if (reshow)
+    return;
   allowed = permit();
   workRows = false;
   char folder[4096] = {};
@@ -125,12 +159,15 @@ void open() {
   CeBackupEnter(folder);
   CeFullBackupUiOpen(PortUserDir(), PortGameDir());
   count();
-  sync();
+  refresh();
+  shownPhase = flow.phase;
+  build();
 }
 void close() {
   CeFullBackupUiLeave();
   CeBackupLeave();
   memset(&flow, 0, sizeof(flow));
+  shownPhase = CE_FULL_BACKUP_IDLE;
   lineCount = 0;
   workRows = false;
 }
@@ -165,16 +202,21 @@ void row(int i, SCeListRow *out) {
     char when[96], text[160];
     PortCeBackupWhen(when, sizeof(when), flow.set, false);
     snprintf(text, sizeof(text), "Set %s", when);
-    PortCeExtrasWidenName(out->mLeft, 80, text);
+    widenUtf8(out->mLeft, 80, text);
     PortCeExtrasInFont(out->mLeft);
     out->mTone = CE_TONE_DIM;
     plain(out->mRight, 24, l.right);
   } else if (l.folder) {
     // The chosen folder, labelled like the rows under it: "Folder" on the left, its name (or "Not chosen") on the right,
     // so a refusal for want of a folder never comes as a surprise. A name too long for the column ends in "...".
-    const char *leaf = folderView.folder[0] ? leafOf(folderView.folder) : "Not chosen";
+    char leafBuf[256];
+    const char *leaf = "Not chosen";
+    if (folderView.folder[0]) {
+      leafOf(leafBuf, sizeof(leafBuf), folderView.folder);
+      leaf = leafBuf[0] ? leafBuf : folderView.folder;
+    }
     WCHAR wide[160];
-    PortCeExtrasWidenName(wide, 160, leaf);
+    widenUtf8(wide, 160, leaf);
     PortCeExtrasInFont(wide);
     int len = 0;
     while (wide[len])

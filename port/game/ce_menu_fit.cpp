@@ -37,41 +37,51 @@ WCHAR *Cut(CBITMAPFONT *font, WCHAR *text, float room, float scale, SIZE *size)
 }
 }
 
-// The text to draw for the value of a list row that starts at x, and the horizontal scale to draw it at. A value that fits is
-// returned unchanged at scale 1, so every layout that already fit (the game's own pages, a short adapter name) is drawn by
-// exactly the call it was. A longer one is squeezed (as the game squeezes a long label); one too long even squeezed is cut with
-// an ellipsis in a buffer that stays valid until the next call.
-WCHAR *PortCeValueFit(WCHAR *text, float x, float *scale)
+// The text to draw for the value of a list row that starts at x and must end by `right`, and the horizontal scale to draw it at.
+// A value that fits is returned unchanged at scale 1, so every layout that already fit (the game's own pages, a short adapter
+// name) is drawn by exactly the call it was. A longer one is squeezed (as the game squeezes a long label); one too long even
+// squeezed is cut with an ellipsis in a buffer that stays valid until the next call.
+WCHAR *PortCeValueFit(WCHAR *text, float x, float right, float *scale)
 {
     *scale = 1.f;
     if (!text || !PortCeQualityOptionsAvailable()) return text;
     CBITMAPFONT *font = PLATFORM.Font(FONT_SMALL);
     SIZE size;
     if (!font || !font->GetTextExtent(text, &size) || size.cx <= 0) return text;
-    const float room = kCeValueRight - x;
-    float fit = PortCeFitScale(x, (float)size.cx, kCeValueRight, kCeValueMinScale);
+    const float room = right - x;
+    float fit = PortCeFitScale(x, (float)size.cx, right, kCeValueMinScale);
     if ((float)size.cx * fit <= room + 0.01f)
     {
         *scale = fit;
         return text;
     }
     WCHAR *cut = Cut(font, text, room, kCeValueMinScale, &size);
-    *scale = size.cx > 0 ? PortCeFitScale(x, (float)size.cx, kCeValueRight, kCeValueMinScale) : kCeValueMinScale;
+    *scale = size.cx > 0 ? PortCeFitScale(x, (float)size.cx, right, kCeValueMinScale) : kCeValueMinScale;
     return cut;
 }
 
-// The text a dropdown list draws for one of its entries, which starts at x: unchanged when it fits (so a list that fit is drawn and
-// measured exactly as before), else cut with an ellipsis to end at the page's column. The list measures its widest entry with this
-// text too, so its box follows.
-WCHAR *PortCeListFit(WCHAR *text, float x)
+WCHAR *PortCeValueFit(WCHAR *text, float x, float *scale)
+{
+    return PortCeValueFit(text, x, kCeValueRight, scale);
+}
+
+// The text a dropdown list draws for one of its entries, which starts at x and must end by `right`: unchanged when it fits (so a
+// list that fit is drawn and measured exactly as before), else cut with an ellipsis to end at the page's column. The list
+// measures its widest entry with this text too, so its box follows.
+WCHAR *PortCeListFit(WCHAR *text, float x, float right)
 {
     if (!text || !PortCeQualityOptionsAvailable()) return text;
     CBITMAPFONT *font = PLATFORM.Font(FONT_SMALL);
     SIZE size;
     if (!font || !font->GetTextExtent(text, &size) || size.cx <= 0) return text;
-    const float room = kCeValueRight - x;
+    const float room = right - x;
     if ((float)size.cx <= room) return text;
     return Cut(font, text, room, 1.f, &size);
+}
+
+WCHAR *PortCeListFit(WCHAR *text, float x)
+{
+    return PortCeListFit(text, x, kCeValueRight);
 }
 
 namespace
@@ -154,6 +164,18 @@ float PortCeLabelLeftAt(int page, float y)
     float t = (dy * dy) / (150.f * 150.f);
     if (t > 1.f) t = 1.f;
     return 58.f + (kCeLabelLeft - 58.f) * t;
+}
+
+// Right margin for a row's value and dropdown list in RenderList (patch 0212): kCeValueRight outside the front end's options
+// pages, kCeValueRightArc at the top/bottom of options pages, relaxing along the curved right metal arc toward 590 units
+// around y 290.
+float PortCeValueRightAt(int page, float y)
+{
+    if (!PortCeQualityOptionsAvailable() || !OptionsPage(page)) return kCeValueRight;
+    const float dy = y - 290.f;
+    float curve = (dy * dy) / (150.f * 150.f);
+    if (curve > 1.f) curve = 1.f;
+    return 590.f - (590.f - kCeValueRightArc) * curve;
 }
 
 // Horizontal gap after a row's colon in RenderList (patch 0212): original 2 units in faithful runs, kCeValueGap in CE menus.

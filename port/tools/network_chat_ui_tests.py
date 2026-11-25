@@ -66,15 +66,21 @@ extern "C" bool SDL_StopTextInput(SDL_Window*);
 '''
 
 
-def limits():
+def limits(address_space=2*1024**3):
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-    resource.setrlimit(resource.RLIMIT_AS, (2*1024**3, 2*1024**3))
+    resource.setrlimit(resource.RLIMIT_AS, (address_space, address_space))
     resource.setrlimit(resource.RLIMIT_CPU, (30, 30))
+
+
+def emulated_limits():
+    # A 32-bit user-mode emulator can reserve the full 4 GiB guest address space.
+    limits(6*1024**3)
 
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--word-size",choices=("32","64","both"),default="both")
+    parser.add_argument("--i386-runner", help="optional executable to run 32-bit fixtures, such as qemu-i386-static")
     parser.add_argument("--no-controls",action="store_true")
     args=parser.parse_args()
     repo=Path(__file__).resolve().parents[2]
@@ -98,7 +104,7 @@ def main():
     widths=('32','64') if args.word_size=='both' else (args.word_size,)
     def run(label,width,source,enabled=True,control=False):
         log=work/(label+'-'+width+'.log');exe=work/(label+'-'+width)
-        argv=['clang++','-std=c++17','-Wall','-Wextra','-Werror','-O0','-g0','-m'+width,
+        argv=['clang++','-DCE_CHAT_UI_TEST=1','-std=c++17','-Wall','-Wextra','-Werror','-O0','-g0','-m'+width,
               '-I'+str(game),'-I'+str(sdl.parent),str(source),str(driver),
               *(str(p) for p in sources),'-o',str(exe)]
         if enabled:argv.insert(1,'-DCE_NETWORK_TEXT=1')
@@ -108,8 +114,11 @@ def main():
                 built=subprocess.run(argv,env=env,stdout=out,stderr=out,timeout=45,preexec_fn=limits)
                 result['compiled']=built.returncode==0
                 if built.returncode:return result
-                executed=subprocess.run([str(exe)],env=env,stdout=out,stderr=out,
-                                         timeout=10,preexec_fn=limits)
+                runner = [args.i386_runner] if width == '32' and args.i386_runner else []
+                if runner:
+                    result['runner'] = Path(runner[0]).name
+                executed=subprocess.run([*runner, str(exe)],env=env,stdout=out,stderr=out,
+                                         timeout=10,preexec_fn=emulated_limits if runner else limits)
                 result['run_exit']=executed.returncode
             match=re.search(r'^checks=(\d+) failures=(\d+)$',log.read_text(),re.M)
             if match:
@@ -125,7 +134,7 @@ def main():
         sdk=deps.DATA/'src/SDL3-3.4.16/include'
         log=work/('sdk-'+width+'.log')
         argv=['clang++','-std=c++17','-Wall','-Wextra','-Werror','-m'+width,
-              '-DCE_NETWORK_TEXT=1','-I'+str(game),'-I'+str(sdk),'-fsyntax-only',str(ui)]
+              '-DCE_NETWORK_TEXT=1','-DCE_CHAT_UI_TEST=1','-I'+str(game),'-I'+str(sdk),'-fsyntax-only',str(ui)]
         with log.open('wb') as out:
             built=subprocess.run(argv,env=env,stdout=out,stderr=out,timeout=45,preexec_fn=limits)
         receipt['sdk_syntax'].append({'width':width,'passed':built.returncode==0,'log':str(log)})

@@ -312,16 +312,21 @@ bool BuildProceduralMixerMap(float sunX, float sunY, float sunZ) {
 		return false;
 	}
 
-	// Lightmap: 512 x 512 directional sun illumination in [14..62].
+	// Lightmap: 512 x 512 directional sunset illumination in [14..62], with the
+	// shadow each cliff and stack casts down its lee.
 	for (int y = 0; y < CeCarrierClashWorld::kCells; ++y) {
 		UBYTE *row = MIXERMAP.mMap + y * CeCarrierClashWorld::kCells;
 		for (int x = 0; x < CeCarrierClashWorld::kCells; ++x) {
-			row[x] = CeCarrierClashWorld::ComputeCellLight(x, y, sunX, sunY, sunZ);
+			row[x] = CeCarrierClashWorld::ComputeCellLightShadowed(x, y, sunX, sunY, sunZ);
 		}
 	}
 
-	// Per-tile texture mixing: sand along shorelines, craggy basalt rock on
-	// steep slopes and high spires, coastal grass on flatter islet crowns.
+	// Per-tile texture mixing over the base grass: a sand skirt along the
+	// shoreline, basalt rock on steep faces, reefs and the stack. The alphas and
+	// the signed 32-bit wrap proof CHeightField::Unknown47eff0 needs of them are
+	// CeCarrierClashWorld::ComputeMixAlphas (sand and rock in [-62,+62], rock >=
+	// max(0, sand) - 62). A tile where neither layer leaves -62 keeps no slot,
+	// which draws the same as one that does, so tile edges cannot seam.
 	for (int tileY = 0; tileY < CeCarrierClashWorld::kPatches; ++tileY) {
 		for (int tileX = 0; tileX < CeCarrierClashWorld::kPatches; ++tileX) {
 			SMixerSlot &slot = MIXERMAP.mSlots[tileY * CeCarrierClashWorld::kPatches + tileX];
@@ -329,64 +334,29 @@ bool BuildProceduralMixerMap(float sunX, float sunY, float sunZ) {
 			slot.mData = NULL;
 			std::memset(slot.mTextures, 0, sizeof(slot.mTextures));
 
-			bool hasDryOrShore = false;
-			for (int sy = 0; sy < 9 && !hasDryOrShore; ++sy) {
-				const float wy = static_cast<float>(tileY * 8 + sy);
-				for (int sx = 0; sx < 9; ++sx) {
-					const float wx = static_cast<float>(tileX * 8 + sx);
-					if (CeCarrierClashWorld::HeightAt(wx, wy) < CeCarrierClashWorld::kWaterLevel + 4.5f) {
-						hasDryOrShore = true;
-						break;
-					}
-				}
-			}
-			if (!hasDryOrShore) continue;
-
-			slot.mData = new(MEMTYPE_MAP) UBYTE[2 * 81];
-			if (!slot.mData) continue;
-			slot.mCount = 2;
-			slot.mTextures[0] = 2; // sand (shoreline / seabed rim)
-			slot.mTextures[1] = 1; // rock (basalt sea-stacks & cliffs)
-
-			signed char *sandAlpha = reinterpret_cast<signed char *>(slot.mData);
-			signed char *rockAlpha = sandAlpha + 81;
+			signed char alphas[2 * 81];
+			bool mixed = false;
 			for (int sy = 0; sy < 9; ++sy) {
 				const float wy = static_cast<float>(tileY * 8 + sy);
 				for (int sx = 0; sx < 9; ++sx) {
 					const float wx = static_cast<float>(tileX * 8 + sx);
-					const float h = CeCarrierClashWorld::HeightAt(wx, wy);
-					const float aboveSea = CeCarrierClashWorld::kWaterLevel - h; // >0 above water
-					const float hx = CeCarrierClashWorld::HeightAt(wx + 1.0f, wy) -
-					                 CeCarrierClashWorld::HeightAt(wx > 0.0f ? wx - 1.0f : 0.0f, wy);
-					const float hy = CeCarrierClashWorld::HeightAt(wx, wy + 1.0f) -
-					                 CeCarrierClashWorld::HeightAt(wx, wy > 0.0f ? wy - 1.0f : 0.0f);
-					const float slope = std::sqrt(hx * hx + hy * hy) * 0.5f;
-
-					// Sand dominates near waterline (aboveSea in [-4..+4.5 m]).
-					int sand = -96;
-					if (aboveSea > -4.5f && aboveSea < 6.0f) {
-						const float distFromShore = std::fabs(aboveSea - 0.5f);
-						const float band = 1.0f - (distFromShore / 5.5f);
-						sand = static_cast<int>(-80.0f + band * 185.0f);
+					const CeCarrierClashWorld::MixAlphas a = CeCarrierClashWorld::ComputeMixAlphas(wx, wy);
+					alphas[sy * 9 + sx] = static_cast<signed char>(a.sand);
+					alphas[81 + sy * 9 + sx] = static_cast<signed char>(a.rock);
+					if (a.sand > CeCarrierClashWorld::kMixAlphaMin ||
+					    a.rock > CeCarrierClashWorld::kMixAlphaMin) {
+						mixed = true;
 					}
-					if (sand < -120) sand = -120;
-					if (sand > 110) sand = 110;
-
-					// Basalt rock dominates steep cliffs (slope > 0.45) and high spires (> 10 m).
-					int rock = -100;
-					if (aboveSea > 2.5f) {
-						float rf = (slope - 0.30f) * 1.4f + (aboveSea - 9.0f) * 0.06f;
-						if (rf < 0.0f) rf = 0.0f;
-						if (rf > 1.0f) rf = 1.0f;
-						rock = static_cast<int>(-90.0f + rf * 210.0f);
-					}
-					if (rock < -120) rock = -120;
-					if (rock > 120) rock = 120;
-
-					sandAlpha[sy * 9 + sx] = static_cast<signed char>(sand);
-					rockAlpha[sy * 9 + sx] = static_cast<signed char>(rock);
 				}
 			}
+			if (!mixed) continue;
+
+			slot.mData = new(MEMTYPE_MAP) UBYTE[2 * 81];
+			if (!slot.mData) continue;
+			slot.mCount = 2;
+			slot.mTextures[0] = 2; // sand (shoreline skirt)
+			slot.mTextures[1] = 1; // rock (basalt cliffs, reefs & the sea-stack)
+			std::memcpy(slot.mData, alphas, sizeof(alphas));
 		}
 	}
 	return true;
@@ -501,17 +471,18 @@ extern "C" void PortCeCarrierClashInstallArena(void) {
 	MAP.mHeightScale = CeCarrierClashWorld::kHeightScale;
 	MAP.mWaterLevel = CeCarrierClashWorld::kWaterLevel;
 
-	// Sunlit open-ocean maritime atmosphere: crisp azure horizon, warm sunlight,
-	// gentle haze so both flagships stay razor-sharp across the naval corridor.
+	// Golden sunset dusk maritime atmosphere: warm low amber sun, plum-violet dusk
+	// horizon haze, golden water reflection, and cool indigo shadows so the Venturer
+	// reads in dramatic silhouette against the western glow.
 	const UBYTE targetSkyCube = static_cast<UBYTE>(CeCarrierClashWorld::kSkyCubeIndex);
 	const UBYTE targetWaterSet = static_cast<UBYTE>(CeCarrierClashWorld::kWaterSetIndex);
 	std::memset(&MAP.mHFP, 0, sizeof(MAP.mHFP));
-	MAP.mHFP.Fog = 0xffb8d8eeu;
-	MAP.mHFP.Sun = 0xffeef0dcu;
-	MAP.mHFP.AntiSun = 0xff22304cu;
-	const DWORD sunReflect = 0xffeff6ffu;
+	MAP.mHFP.Fog = 0xff5a4650u;
+	MAP.mHFP.Sun = 0xffffb478u;
+	MAP.mHFP.AntiSun = 0xff24223au;
+	const DWORD sunReflect = 0xffffc890u;
 	std::memcpy(&MAP.mHFP.mUnknown0c[0], &sunReflect, sizeof(sunReflect));
-	MAP.mHFP.Ambient = 0xff304258u;
+	MAP.mHFP.Ambient = 0xff2a2c44u;
 	MAP.mHFP.mUnknown18[0] = targetSkyCube;
 	MAP.mHFP.mUnknown18[1] = 1;
 	MAP.mHFP.mUnknown18[2] = 129;
@@ -521,10 +492,14 @@ extern "C" void PortCeCarrierClashInstallArena(void) {
 	MAP.mHFP.FogDensity = 0.0018f;
 	const DWORD waterCol = 0xff163b5eu;
 	std::memcpy(&MAP.mHFP.mUnknown24[0], &waterCol, sizeof(waterCol));
+	// One sunset key for everything the engine lights: the sun stands low over
+	// the north-north-west horizon, so its flare, the units, the water glint and
+	// the terrain lightmap below all agree. Cliffs that face it catch the light;
+	// their lee falls into shadow.
 	MAP.mHFP.VisibleSun = true;
-	MAP.mHFP.SunPosX = 0.56f;
-	MAP.mHFP.SunPosY = 0.72f;
-	MAP.mHFP.SunPosZ = -0.41f;
+	MAP.mHFP.SunPosX = CeCarrierClashWorld::kSunDirX;
+	MAP.mHFP.SunPosY = CeCarrierClashWorld::kSunDirY;
+	MAP.mHFP.SunPosZ = CeCarrierClashWorld::kSunDirZ;
 
 	FinalizeHeightFieldLighting();
 	RefreshProceduralMapExtents();
@@ -568,7 +543,7 @@ extern "C" void PortCeCarrierClashInstallArena(void) {
 	gWorld.arenaInstalled = true;
 
 	PortSessionLog(PORT_SESSION_GAME, false,
-	               "carrier clash arena installed: 512x512 maritime corridor, water %.1f, sky %u",
+	               "carrier clash arena installed: 512x512 basalt archipelago strait, water %.1f, sky %u",
 	               MAP.mWaterLevel, static_cast<unsigned>(CeCarrierClashWorld::kSkyCubeIndex));
 }
 
@@ -602,6 +577,42 @@ extern "C" bool PortCeCarrierClashPreloadMeshes(void) {
 	               "carrier clash preloaded %u textures and %u standalone retail meshes",
 	               static_cast<unsigned>(CeCarrierClashWorld::kPreloadTextureCount),
 	               static_cast<unsigned>(CeCarrierClashWorld::kPreloadMeshCount));
+
+	// Support meshes the level archive lacks (rockets, escape pods, a downed
+	// Wildcat): each one missing would be drawn as the engine's green "?" marker
+	// cube. Optional: whatever an install does not have is skipped.
+	unsigned supportLoaded = 0u;
+	for (unsigned i = 0; i < CeCarrierClashWorld::kSupportMeshCount; ++i) {
+		const CeCarrierClashWorld::SupportMeshSpec &spec = CeCarrierClashWorld::SupportMesh(i);
+		if (CMesh::FindLoadedUnique(spec.mesh) != NULL) {
+			++supportLoaded;
+			continue;
+		}
+		bool ok = true;
+		if (spec.texture) {
+			char texPath[256] = {};
+			bool exists = false;
+			ok = BuildTextureDiskPath(spec.texture, texPath, sizeof(texPath)) &&
+			     VerifyPackedAyaFile(texPath, &exists) && exists &&
+			     PreloadRetailMeshTexture(spec.texture);
+		}
+		if (ok) {
+			char meshPath[128] = {};
+			bool exists = false;
+			std::snprintf(meshPath, sizeof(meshPath), "data\\resources\\meshes\\m_%s.aya", spec.mesh);
+			ok = VerifyPackedAyaFile(meshPath, &exists) && exists &&
+			     LoadRetailMeshFromStandaloneAya(spec.mesh, 908 + static_cast<int32_t>(i));
+		}
+		if (ok) {
+			++supportLoaded;
+		} else {
+			PortSessionLog(PORT_SESSION_GAME, false,
+			               "carrier clash support mesh unavailable (optional): %s", spec.mesh);
+		}
+	}
+	PortSessionLog(PORT_SESSION_GAME, false,
+	               "carrier clash support meshes: %u of %u loaded", supportLoaded,
+	               static_cast<unsigned>(CeCarrierClashWorld::kSupportMeshCount));
 	return true;
 }
 

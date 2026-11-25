@@ -87,6 +87,7 @@ def main():
              "-I" + str(deps / "prefix-sniper/include")]
     cases = ("normal-callback", "normal-timer", "virtual-reopen", "timer-reopen", "stale-catchup", "stale-timer", "stop-inflight",
              "resume-failed", "init-failed", "open-failed", "publish")
+    hardening_cases = ("buffer-validation", "spatial-and-phase", "scratch-oom", "timer-bounds")
     for variant in ("before", "fixed"):
         folder = out / variant
         source = folder / "port/dsound/dsound.cpp"
@@ -101,7 +102,8 @@ def main():
             if sha(source) != "e845d1ac13f7227f3bdeda5716dabaa4bd28acf6afb069d4fe15dea57f5e60be":
                 raise RuntimeError("negative control no longer matches the frozen production mixer")
         binary = folder / "driver"
-        command = [args.compiler, *flags, '-DMIXER_SOURCE="' + str(source) + '"',
+        extra_defs = ["-DDSOUND_HARDENING_TESTS=1"] if variant == "fixed" else []
+        command = [args.compiler, *flags, *extra_defs, '-DMIXER_SOURCE="' + str(source) + '"',
                    str(ROOT / "port/tools/tests/audio_lifecycle_driver.cpp"), "-o", str(binary)]
         receipt["commands"].append(command)
         build = subprocess.run(command, env=env, capture_output=True, text=True, timeout=45)
@@ -110,7 +112,8 @@ def main():
             raise RuntimeError("build failed: " + str(folder / "build.log"))
         receipt[variant + "_sha256"] = sha(source)
         receipt[variant + "_binary_sha256"] = sha(binary)
-        for case in cases:
+        run_cases = cases + (hardening_cases if variant == "fixed" else ())
+        for case in run_cases:
             run = subprocess.run([str(binary), case, "fixed" if variant == "fixed" else "before"], env=env,
                                  capture_output=True, text=True, timeout=8)
             (folder / (case + ".log")).write_text(run.stdout + run.stderr)
@@ -135,7 +138,14 @@ def main():
                    "-include", str(ROOT / "port/platform/common/portlog.h"),
                    str(ROOT / "port/tools/tests/music_finished_driver.cpp"), "-o", str(binary)]
         if args.tsan:
-            command[1:1] = ["-fsanitize=thread", "-fno-omit-frame-pointer", "-fno-pie", "-no-pie"]
+            tsan_stub = folder / "tsan_unused_stubs.h"
+            tsan_stub.write_text(
+                "struct IDirectSoundBuffer;\n"
+                "inline bool PortAudioStreamSnapshot(IDirectSoundBuffer *, unsigned long long *, unsigned long long *, unsigned *, unsigned *) { return false; }\n"
+                "inline unsigned long long PortAudioStreamNotifyMixed(IDirectSoundBuffer *) { return 0; }\n"
+            )
+            command[1:1] = ["-fsanitize=thread", "-fno-omit-frame-pointer", "-fno-pie", "-no-pie",
+                            "-include", str(tsan_stub)]
         receipt["commands"].append(command)
         build = checked(command, env=env)
         (folder / "build.log").write_text(build.stdout + build.stderr)

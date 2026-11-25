@@ -72,10 +72,13 @@ extern "C" int PortCePlayUnitInvertSides(void) __attribute__((weak));
 extern "C" bool PortCeMuseumVisitActive(void) __attribute__((weak));
 extern "C" bool PortCeLivingSandboxActive(void) __attribute__((weak));
 extern "C" bool PortCeCarrierClashActive(void) __attribute__((weak));
+extern "C" bool PortCeFlagshipDuelActive(void) __attribute__((weak));
 extern "C" bool PortCeEditorActive(void) __attribute__((weak));
 bool PortCeCmdMapOpen() __attribute__((weak));
+extern "C" int PortCePlayUnitOwnsPilot(int player) __attribute__((weak));
 bool PortCeNetActive() __attribute__((weak));
 #ifndef CE_NETWORK_OFF
+extern "C" uint32_t CE_LockstepLocalPlayer(void) __attribute__((weak));
 extern "C" int PortCeOnlineMatchActive(void) __attribute__((weak));
 extern "C" int PortCeOnlineMatchSlotCount(void) __attribute__((weak));
 extern "C" int PortCeOnlineMatchLocalSlot(void) __attribute__((weak));
@@ -159,6 +162,7 @@ bool MultiBeFenced()
 	if ((PortCeMuseumVisitActive && PortCeMuseumVisitActive()) ||
 	    (PortCeLivingSandboxActive && PortCeLivingSandboxActive()) ||
 	    (PortCeCarrierClashActive && PortCeCarrierClashActive()) ||
+	    (PortCeFlagshipDuelActive && PortCeFlagshipDuelActive()) ||
 	    (PortCeEditorActive && PortCeEditorActive()))
 		return true;
 	if (PilotEnvPresent())
@@ -2508,8 +2512,15 @@ extern "C" void PortCeMultiBeTickPre()
 
 extern "C" CCamera *PortCeMultiBeRenderCamera(CCamera *camera, int viewpoint, CPlayer *)
 {
+	if (viewpoint != 0)
+		return camera;
+	if ((PortCeCmdMapOpen && PortCeCmdMapOpen()) ||
+	    (PortCePlayUnitOwnsPilot && PortCePlayUnitOwnsPilot(0)) ||
+	    GAME.IsFreeCameraOn(0) ||
+	    camera != GAME.GetCamera(0))
+		return camera;
 #ifndef CE_NETWORK_OFF
-	if (gActive && OnlineMatchActive() && viewpoint == 0)
+	if (gActive && OnlineMatchActive())
 	{
 		if (dynamic_cast<CPanCamera *>(camera) || dynamic_cast<CPanCamera *>(GAME.GetCamera(0)))
 			return camera;
@@ -2519,7 +2530,7 @@ extern "C" CCamera *PortCeMultiBeRenderCamera(CCamera *camera, int viewpoint, CP
 		return camera;
 	}
 #endif
-	if (!gActive || !gConfig.panoramic_cam || viewpoint != 0 || !gOverviewCam.Ready())
+	if (!gActive || !gConfig.panoramic_cam || !gOverviewCam.Ready())
 		return camera;
 	return &gOverviewCam;
 }
@@ -2940,6 +2951,39 @@ extern "C" void PortCeMultiBeDrawMpStartStatus(float transition)
 	font->DrawTextWithShadow(320.0f - float(extent.cx) * scaleX * 0.5f, 418.0f, col, wide, 0, 0, scaleX, 1.0f);
 }
 
+extern "C" int PortCeSoloControlsActive(void)
+{
+	return CeMultiBeShouldUseSoloControls(MultiBeFenced(), PortCeSoloSkirmishActive() != 0, PortCeOneScreenMatch()) ? 1 : 0;
+}
+
+extern "C" int PortCeBattleEngineIsLocalHuman(const void *be)
+{
+	const bool faithfulFence = !be || !PortCeLayer() || PortRecording() || PLAYABLE_DEMO ||
+	                           CLIPARAMS.mAutoConfigTest || CLIPARAMS.mRecordDemo ||
+	                           CLIPARAMS.mPlaybackDemo || CLIPARAMS.mStressTest || CLIPARAMS.mAttractMode;
+	if (faithfulFence)
+		return 1;
+	const int idx = gActive ? IndexOfEngine(static_cast<const CUnit *>(be)) : -1;
+	const bool slotIsAi = (idx >= 0) ? gIsAiControlled[idx] : false;
+	const bool soloOrOne = gSoloSkirmish || PortCeOneScreenMatch();
+	CPlayer *p0 = GAME.GetPlayer(0);
+	const bool matchesSlot0 = (!p0 || !p0->GetBattleEngine() || be == p0->GetBattleEngine());
+#ifndef CE_NETWORK_OFF
+	const bool onlineActive = OnlineMatchActive() || (CE_SessionActive && CE_SessionActive());
+	const int localSlot = (OnlineMatchActive() && PortCeOnlineMatchLocalSlot)
+		? PortCeOnlineMatchLocalSlot()
+		: (CE_LockstepLocalPlayer ? static_cast<int>(CE_LockstepLocalPlayer()) : 0);
+	CPlayer *lp = onlineActive ? GAME.GetPlayer(localSlot) : NULL;
+	const bool matchesLocalOnline = (!lp || !lp->GetBattleEngine() || be == lp->GetBattleEngine());
+#else
+	const bool onlineActive = false;
+	const int localSlot = 0;
+	const bool matchesLocalOnline = true;
+#endif
+	return CeMultiBeShouldUseLocalAudio(false, gActive, idx, slotIsAi, onlineActive, localSlot,
+	                                    soloOrOne, matchesSlot0, matchesLocalOnline) ? 1 : 0;
+}
+
 #else	// private build: completely inert
 
 extern "C" void PortCeMultiBeLevelBegin(int) {}
@@ -2969,5 +3013,7 @@ extern "C" int PortCeMultiBeVersusCheckOutOfLives(int) { return 0; }
 extern "C" int PortCeMultiBePlaySideIsMuspell(void) { return 0; }
 extern "C" int PortCeSoloSkirmishActive(void) { return 0; }
 extern "C" void PortCeMultiBeDrawMpStartStatus(float) {}
+extern "C" int PortCeSoloControlsActive(void) { return 0; }
+extern "C" int PortCeBattleEngineIsLocalHuman(const void *) { return 1; }
 
 #endif

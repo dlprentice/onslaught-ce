@@ -1966,9 +1966,10 @@ extern "C" uint32_t CE_LockstepChatBackspace(void) {
 extern "C" uint32_t CE_LockstepChatSubmit(void) {
     if (OnlineChatActive()) {
         if (!gOnlineChat.composing) return CE_CHAT_INVALID;
-        const bool ok = gOnlineChat.draft_len > 0 && PortCeOnlineMatchSendChat(gOnlineChat.draft) != 0;
+        if (!gOnlineChat.draft_len || !PortCeOnlineMatchSendChat(gOnlineChat.draft))
+            return CE_CHAT_INVALID;
         gOnlineChat.Reset();
-        return ok ? CE_CHAT_OK : CE_CHAT_INVALID;
+        return CE_CHAT_OK;
     }
     if (!CE_LockstepChatAvailable()) return CE_CHAT_CLOSED;
     CeTextChat::Decoded draft{};
@@ -2023,6 +2024,7 @@ extern "C" void CE_LockstepChatCopyView(CE_ChatView *out) {
                 if (flen <= 0) continue;
                 CE_ChatLine &line = out->history[out->history_count++];
                 line.local_transport_accepted = (slot == L.online_local_slot) ? 1u : 0u;
+                line.has_sender_label = label[0] != 0;
                 line.size = (std::min<uint32_t>)(static_cast<uint32_t>(flen), sizeof(line.utf8));
                 std::memcpy(line.utf8, formatted, line.size);
             }

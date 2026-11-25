@@ -29,17 +29,22 @@ LONG gReports;
 
 void Out(const char *fmt, ...)
 {
-	char line[512];
+	char line[512] = {};
 	va_list ap;
 	va_start(ap, fmt);
-	int n = _vsnprintf(line, sizeof line - 1, fmt, ap);
+	int n = vsnprintf(line, sizeof line, fmt, ap);
 	va_end(ap);
-	if (n < 0 || n > (int)sizeof line - 1)
-		n = (int)strlen(line);
+	line[sizeof line - 1] = 0;
+	size_t len = 0;
+	if (n >= 0)
+		len = (size_t)n < sizeof line ? (size_t)n : sizeof line - 1;
+	else
+		while (len < sizeof line - 1 && line[len])
+			++len;
 	DWORD written;
 	HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
-	if (err && err != INVALID_HANDLE_VALUE)
-		WriteFile(err, line, (DWORD)n, &written, NULL);
+	if (len && err && err != INVALID_HANDLE_VALUE)
+		WriteFile(err, line, (DWORD)len, &written, NULL);
 }
 
 bool Readable(const void *p, size_t size)
@@ -105,14 +110,18 @@ const char *NearestExport(HMODULE m, DWORD rva, DWORD *at)
 // "module+0xoffset [export+0xdelta] (base 0x...)" for an address, into buf.
 void Describe(DWORD addr, char *buf, size_t size)
 {
+	if (!buf || !size)
+		return;
+	buf[0] = 0;
 	HMODULE m = NULL;
 	if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
 							(LPCSTR)(UINT_PTR)addr, &m) || !m)
 	{
 		snprintf(buf, size, "%08lx (no module)", (unsigned long)addr);
+		buf[size - 1] = 0;
 		return;
 	}
-	char path[MAX_PATH];
+	char path[MAX_PATH] = {};
 	DWORD n = GetModuleFileNameA(m, path, sizeof path);
 	path[n < sizeof path ? n : sizeof path - 1] = 0;
 	const char *name = strrchr(path, '\\');
@@ -125,6 +134,7 @@ void Describe(DWORD addr, char *buf, size_t size)
 	else
 		snprintf(buf, size, "%08lx %s+0x%lx (base %08lx)", (unsigned long)addr, name, (unsigned long)rva,
 				 (unsigned long)(UINT_PTR)m);
+	buf[size - 1] = 0;
 }
 
 void Report(EXCEPTION_POINTERS *info, LONG k)

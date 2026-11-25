@@ -27,7 +27,6 @@
 #define FEP_CE FEP_LANGUAGE_TEST
 
 bool PortCeNetOffered();
-void PortCeNetShutdown() __attribute__((weak));
 int  PortCeGamepadEdge(int pad, int button, bool release);
 bool PortCeGamepadIsStick(int pad);
 extern "C" int CE_SettingGetBool(const char *key, int def);
@@ -60,18 +59,6 @@ bool OnlineOffered() {
     return PortCeNetOffered() && (CE_SettingGetBool("network_game", 1) == 1);
 }
 
-bool FontCharSafe(unsigned char c) {
-    if (c == ' ' || c == '-' || c == '.' || c == ':' || c == '/' ||
-        c == '#' || c == '(' || c == ')' || c == '[' || c == ']' ||
-        c == '+' || c == '!' || c == '?' || c == ',' || c == '*' ||
-        c == '\'' || c == '<' || c == '>' || c == '%' || c == '=')
-        return true;
-    if (c >= '0' && c <= '9') return true;
-    if (c >= 'A' && c <= 'Z') return true;
-    if (c >= 'a' && c <= 'z') return true;
-    return false;
-}
-
 // 2-byte WCHAR conversion safe under -fshort-wchar (never calls glibc wcslen/wcscpy).
 void WidenSafe(WCHAR *out, int cap, const char *in) {
     if (!out || cap <= 0) return;
@@ -83,7 +70,7 @@ void WidenSafe(WCHAR *out, int cap, const char *in) {
     int i = 0;
     for (; in[i] && i < cap - 1; ++i) {
         unsigned char c = static_cast<unsigned char>(in[i]);
-        if (!FontCharSafe(c)) {
+        if (!CeOnlineFontCharSafe(c)) {
             c = (c == '_') ? '-' : ' ';
         }
         WCHAR w = static_cast<WCHAR>(c);
@@ -334,10 +321,6 @@ void OpExitAction(int kind) {
             PortCeNetOpenDirectFromOnline();
         }
     } else if (kind == CE_OUI_EXIT_CLOSE_MP) {
-        if (sOpenedDirectLan && PortCeNetShutdown) {
-            sOpenedDirectLan = false;
-            PortCeNetShutdown();
-        }
         sExitingToMultiplayer = true;
         sOpenedFromMultiplayer = false;
         FRONTEND.SetPage(FEP_MULTIPLAYER, 40);
@@ -374,6 +357,10 @@ bool OnlineKeyTrap(WORD key, KeyEventType event) {
 } // namespace
 
 extern "C" {
+
+int PortCeOnlineUiOffered(void) {
+    return OnlineOffered() ? 1 : 0;
+}
 
 void PortCeOnlineUiOpen(void) {
     if (!OnlineOffered()) return;
@@ -514,15 +501,22 @@ int PortCeOnlineUiKey(uint16_t key, int eventType) {
         else if (eventType == KEY_EVENT_UP) sCtrlHeld = false;
         return 1;
     }
+    const float now = PLATFORM.GetSysTimeFloat();
+    if (now - sOpenTime < 0.35f) return 0;
     const bool ctrl = sCtrlHeld || (CE_LobbyCtrlHeld() != 0);
     if (eventType == KEY_EVENT_DOWN) {
         sSuppressCharCode = 0;
         if (key == DIK_ESCAPE)                        return PortCeOnlineHostKey(CE_OUI_KEY_ESC, 0);
         if (key == DIK_V && ctrl)                     return PortCeOnlineHostKey(CE_OUI_KEY_PASTE, 0);
         if (key == DIK_BACK)                          return PortCeOnlineHostKey(CE_OUI_KEY_BACKSPACE, 0);
-        if (key == DIK_RETURN || key == DIK_NUMPADENTER) return PortCeOnlineHostKey(CE_OUI_KEY_ENTER, 0);
+        if (key == DIK_RETURN || key == DIK_NUMPADENTER) {
+            if (now - sLastSelectTime < 0.15f) return 1;
+            sLastSelectTime = now;
+            return PortCeOnlineHostKey(CE_OUI_KEY_ENTER, 0);
+        }
         if (key == DIK_SPACE) {
-            if (PortCeOnlineHostKey(CE_OUI_KEY_CHAR, '\0')) {
+            if (now - sLastSelectTime >= 0.15f && PortCeOnlineHostKey(CE_OUI_KEY_CHAR, '\0')) {
+                sLastSelectTime = now;
                 sSuppressCharCode = ' ';
                 return 1;
             }
@@ -534,7 +528,7 @@ int PortCeOnlineUiKey(uint16_t key, int eventType) {
         if (key == DIK_RIGHT)                         return PortCeOnlineHostKey(CE_OUI_KEY_RIGHT, 0);
         if (key == DIK_PRIOR)                         return PortCeOnlineHostKey(CE_OUI_KEY_PGUP, 0);
         if (key == DIK_NEXT)                          return PortCeOnlineHostKey(CE_OUI_KEY_PGDN, 0);
-        if (key == DIK_T) {
+        if (key == DIK_T && !ctrl) {
             if (PortCeOnlineHostKey(CE_OUI_KEY_CHAT, 0)) {
                 sSuppressCharCode = 't';
                 return 1;
@@ -606,9 +600,9 @@ void PortCeOnlineUiMultiplayerRender(float transition) {
     const float fade = RangeTransition(transition, 0.75f, 1.f);
     if (fade <= 0.01f) return;
 
-    const float x0 = 115.f, y0 = 412.f, x1 = 525.f, y1 = 442.f;
-    const bool ready = (transition >= 0.99f) && !FEMESSBOX.BeingDisplayed();
-    const bool hover = ready && FRONTEND.GetCursorStateInRect(x0, y0, x1, y1);
+    const float x0 = 125.f, y0 = 412.f, x1 = 515.f, y1 = 442.f;
+    const bool ready = (transition >= 0.99f) && !FEMESSBOX.BeingDisplayed() && !LT.GetKeytrap();
+    const bool hover = ready && MOUSE_X >= x0 && MOUSE_X < x1 && MOUSE_Y >= y0 && MOUSE_Y < y1;
     const SINT alpha = SINT(fade * 255.f);
 
     const DWORD bgCol = BlendAlpha2(hover ? 0xd8203858u : 0xc00c1828u, alpha);
@@ -618,7 +612,7 @@ void PortCeOnlineUiMultiplayerRender(float transition) {
     FRONTEND.DrawPanel(x0, y0, x1, y1, 0.30f, bgCol);
     FRONTEND.DrawBox(x0, y0, x1, y1, brdCol, 1.5f, 0.29f);
     ApplyTextStates();
-    OpDrawTextCenter(x0, y0, x1, y1, txtCol, "PLAY ONLINE (2-4 PLAYERS) - O / Y BUTTON OR CLICK");
+    OpDrawTextCenter(x0, y0, x1, y1, txtCol, "Play Online (2-4 Players)  O key / Y pad");
     LT.SRS(D3DRS_ZWRITEENABLE, TRUE);
     LT.SRS(D3DRS_ZENABLE, TRUE);
 

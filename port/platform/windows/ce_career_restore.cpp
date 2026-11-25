@@ -459,6 +459,8 @@ template <class Visit> bool enumerateDir(HANDLE dir, Visit visit) {
 }
 
 bool existsEntry(HANDLE parent, const Wide &name) {
+  if (parent == INVALID_HANDLE_VALUE)
+    return false;
   NTSTATUS st = 0;
   Handle probe = openChildRaw(
       parent, name, FILE_READ_ATTRIBUTES | SYNCHRONIZE, 0,
@@ -468,6 +470,33 @@ bool existsEntry(HANDLE parent, const Wide &name) {
     return true;
   require(st == kStatusObjectNameNotFound || st == kStatusObjectPathNotFound);
   return false;
+}
+
+bool savegamesStillAbsent(HANDLE parent) {
+  NTSTATUS st = 0;
+  Handle probe = openChildRaw(
+      parent, L"savegames", FILE_READ_ATTRIBUTES | SYNCHRONIZE, 0,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN,
+      FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT, &st);
+  return !probe &&
+         (st == kStatusObjectNameNotFound || st == kStatusObjectPathNotFound);
+}
+
+void openOptionalSavegames(HANDLE parent, Handle &out, FILE_ID_INFO &idOut,
+                           bool &present) {
+  closeNow(out);
+  idOut = {};
+  NTSTATUS st = 0;
+  Handle h = child(parent, L"savegames", true, false, &st);
+  if (h) {
+    require(dirInfo(h.h, idOut));
+    assignHandle(out, std::move(h));
+    present = true;
+    return;
+  }
+  require((st == kStatusObjectNameNotFound || st == kStatusObjectPathNotFound) &&
+          savegamesStillAbsent(parent));
+  present = false;
 }
 
 struct Member {
@@ -498,6 +527,7 @@ struct Session {
   Directory user, game, package, root;
   Handle slots, original, lock;
   FILE_ID_INFO slotsId{}, originalId{};
+  bool slotsPresent = false, originalPresent = false;
   FileStamp lockStamp{};
   bool locked = false;
   Snapshot saved;
@@ -512,12 +542,12 @@ struct Session {
     require(!user.below(root) && !game.below(root) && !package.below(root));
     require(!user.below(game) && !game.below(user) &&
             !user.differentRootOnSameVolume(game));
-    assignHandle(slots, child(user.h(), L"savegames", true, false));
-    assignHandle(original, child(game.h(), L"savegames", true, false));
-    require(bool(slots) && bool(original) && dirInfo(slots.h, slotsId) &&
-            dirInfo(original.h, originalId));
-    require(isLocalNtfs(user.h()) && isLocalNtfs(root.h()) &&
-                isLocalNtfs(slots.h) && isLocalNtfs(original.h),
+    openOptionalSavegames(user.h(), slots, slotsId, slotsPresent);
+    openOptionalSavegames(game.h(), original, originalId, originalPresent);
+    require(isLocalNtfs(user.h()) && isLocalNtfs(game.h()) &&
+                isLocalNtfs(root.h()) &&
+                (!slotsPresent || isLocalNtfs(slots.h)) &&
+                (!originalPresent || isLocalNtfs(original.h)),
             Status::Unsupported);
     NTSTATUS lockStatus = 0;
     assignHandle(
@@ -543,6 +573,7 @@ struct Session {
                                                 : Status::Refused};
     }
     locked = true;
+    roots();
     saved = snapshot();
   }
 
@@ -567,12 +598,22 @@ struct Session {
     bound(game, r.game);
     bound(package, r.package);
     bound(root, r.backupRoot);
-    Handle a = child(user.h(), L"savegames", true, false);
-    Handle b = child(game.h(), L"savegames", true, false);
-    FILE_ID_INFO aId{}, bId{};
-    require(bool(a) && bool(b) && dirInfo(a.h, aId) && dirInfo(b.h, bId) &&
-                sameId(aId, slotsId) && sameId(bId, originalId),
-            Status::Changed);
+    if (slotsPresent) {
+      Handle a = child(user.h(), L"savegames", true, false);
+      FILE_ID_INFO aId{};
+      require(bool(a) && dirInfo(a.h, aId) && sameId(aId, slotsId),
+              Status::Changed);
+    } else {
+      require(savegamesStillAbsent(user.h()), Status::Changed);
+    }
+    if (originalPresent) {
+      Handle b = child(game.h(), L"savegames", true, false);
+      FILE_ID_INFO bId{};
+      require(bool(b) && dirInfo(b.h, bId) && sameId(bId, originalId),
+              Status::Changed);
+    } else {
+      require(savegamesStillAbsent(game.h()), Status::Changed);
+    }
     Handle held = openChildRaw(
         user.h(), kLockWide, FILE_READ_ATTRIBUTES | SYNCHRONIZE, 0,
         FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN,
@@ -584,12 +625,53 @@ struct Session {
             Status::Changed);
   }
 
+  void ensureUserSavegames() {
+    if (slotsPresent)
+      return;
+    roots();
+    NTSTATUS createSt = 0;
+    Handle created = openChildRaw(
+        user.h(), L"savegames",
+        FILE_READ_ATTRIBUTES | SYNCHRONIZE | FILE_LIST_DIRECTORY,
+        FILE_ATTRIBUTE_DIRECTORY, FILE_SHARE_READ | FILE_SHARE_WRITE,
+        FILE_CREATE,
+        FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT |
+            FILE_DIRECTORY_FILE,
+        &createSt);
+    if (!created) {
+      if (createSt == kStatusObjectNameCollision)
+        throw Failure{Status::Changed};
+      if (createSt == kStatusNotSupported ||
+          createSt == kStatusInvalidDeviceRequest)
+        throw Failure{Status::Unsupported};
+      throw Failure{Status::Refused};
+    }
+    FILE_ID_INFO createdId{};
+    require(dirInfo(created.h, createdId) &&
+            physicalLeaf(created.h, L"savegames"));
+    require(isLocalNtfs(created.h), Status::Unsupported);
+    closeNow(created);
+    Handle reopened = child(user.h(), L"savegames", true, false);
+    DirStamp reopenedStamp{};
+    require(bool(reopened) && readDirStamp(reopened.h, reopenedStamp) &&
+                sameId(reopenedStamp.id, createdId) &&
+                physicalLeaf(reopened.h, L"savegames"),
+            Status::Changed);
+    assignHandle(slots, std::move(reopened));
+    slotsId = createdId;
+    slotsPresent = true;
+  }
+
   Snapshot snapshot(const std::string &exclude = "") const {
     Snapshot s;
     size_t total = 0;
     std::map<std::string, std::string> spelling;
     for (bool fromUser : {true, false}) {
       HANDLE rootHandle = fromUser ? user.h() : game.h();
+      if (!(fromUser ? slotsPresent : originalPresent)) {
+        require(savegamesStillAbsent(rootHandle), Status::Changed);
+        continue;
+      }
       const FILE_ID_INFO &expectedId = fromUser ? slotsId : originalId;
       Handle scan = child(rootHandle, L"savegames", true, false);
       FILE_ID_INFO scanId{};
@@ -739,17 +821,23 @@ std::set<std::string> names(const CeCareerRestoreRequest &r) {
   Directory game = openDir(r.game);
   require(!user.below(game) && !game.below(user) &&
           !user.differentRootOnSameVolume(game));
-  Handle slots = child(user.h(), L"savegames", true, false);
-  Handle original = child(game.h(), L"savegames", true, false);
+  Handle slots, original;
+  FILE_ID_INFO slotsId{}, originalId{};
+  bool slotsPresent = false, originalPresent = false;
+  openOptionalSavegames(user.h(), slots, slotsId, slotsPresent);
+  openOptionalSavegames(game.h(), original, originalId, originalPresent);
   DirStamp beforeUser{}, beforeGame{};
-  require(bool(slots) && bool(original) && readDirStamp(slots.h, beforeUser) &&
-          readDirStamp(original.h, beforeGame));
+  require((!slotsPresent || readDirStamp(slots.h, beforeUser)) &&
+          (!originalPresent || readDirStamp(original.h, beforeGame)));
   require(isLocalNtfs(user.h()) && isLocalNtfs(game.h()) &&
-              isLocalNtfs(slots.h) && isLocalNtfs(original.h),
+              (!slotsPresent || isLocalNtfs(slots.h)) &&
+              (!originalPresent || isLocalNtfs(original.h)),
           Status::Unsupported);
   std::map<std::string, std::string> spellings;
   std::set<std::string> found;
   for (bool fromUser : {true, false}) {
+    if (!(fromUser ? slotsPresent : originalPresent))
+      continue;
     HANDLE folder = fromUser ? slots.h : original.h;
     std::set<std::string> entries;
     require(enumerateDir(folder, [&](const Wide &leaf, DWORD) {
@@ -776,10 +864,14 @@ std::set<std::string> names(const CeCareerRestoreRequest &r) {
     }
   }
   DirStamp afterUser{}, afterGame{};
-  require(readDirStamp(slots.h, afterUser) &&
-              readDirStamp(original.h, afterGame) &&
-              sameDirStamp(beforeUser, afterUser) &&
-              sameDirStamp(beforeGame, afterGame),
+  require((slotsPresent
+               ? (readDirStamp(slots.h, afterUser) &&
+                  sameDirStamp(beforeUser, afterUser))
+               : savegamesStillAbsent(user.h())) &&
+              (originalPresent
+                   ? (readDirStamp(original.h, afterGame) &&
+                      sameDirStamp(beforeGame, afterGame))
+                   : savegamesStillAbsent(game.h())),
           Status::Changed);
   bound(user, r.user);
   bound(game, r.game);
@@ -1088,6 +1180,12 @@ CeCareerRestoreAsNew(const CeCareerRestoreRequest &request) {
                 !existsEntry(session.original.h, wideTarget),
             Status::Occupied);
     backup(session, out, kRestoreReason);
+    checkedBackup(session, out);
+    require(selected(request) == payload, Status::Changed);
+    session.permission();
+    require(request.namePermitted(request.owner, request.sourceName, target));
+    session.check();
+    session.ensureUserSavegames();
     const Wide stageName = toWide(".pending-" + digits(18) + ".tmp");
     NTSTATUS stageStatus = 0;
     Handle stage = openChildRaw(

@@ -92,10 +92,56 @@ done:
 	if (*output_file) DeleteFileA(output_file);
 }
 
+static void check_stderr_only_invalid_stdout(const char *exe, const char *label, const char *args_tail, const char *expect_err, DWORD expect_code)
+{
+	HANDLE err_read = INVALID_HANDLE_VALUE, err_write = INVALID_HANDLE_VALUE;
+	char command[32768], err[4096];
+	DWORD code = ~0u, wait;
+	STARTUPINFOA startup = {0};
+	PROCESS_INFORMATION child = {0};
+	int ok = 0;
+	if (!CreatePipe(&err_read, &err_write, &inherit, 0) || !SetHandleInformation(err_read, HANDLE_FLAG_INHERIT, 0))
+		goto done;
+	startup.cb = sizeof startup;
+	startup.dwFlags = STARTF_USESTDHANDLES;
+	startup.hStdInput = INVALID_HANDLE_VALUE;
+	startup.hStdOutput = INVALID_HANDLE_VALUE;
+	startup.hStdError = err_write;
+	if (snprintf(command, sizeof command, "\"%s\" %s", exe, args_tail) >= (int)sizeof command) goto done;
+	if (!CreateProcessA(exe, command, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, NULL, &startup, &child)) goto done;
+	CloseHandle(err_write); err_write = INVALID_HANDLE_VALUE;
+	wait = WaitForSingleObject(child.hProcess, 60000);
+	if (wait != WAIT_OBJECT_0)
+	{
+		TerminateProcess(child.hProcess, 124);
+		WaitForSingleObject(child.hProcess, 10000);
+		goto done;
+	}
+	if (!GetExitCodeProcess(child.hProcess, &code)) goto done;
+	read_text(err_read, err, sizeof err);
+	ok = code == expect_code && strstr(err, expect_err) != NULL;
+	if (!ok) printf("FAIL %s: exit=%lu stderr=[%s]\n", label, code, err);
+done:
+	if (!ok) { failures++; printf("FAIL %s (Windows error %lu)\n", label, GetLastError()); }
+	else printf("PASS %s\n", label);
+	if (child.hThread) CloseHandle(child.hThread);
+	if (child.hProcess) CloseHandle(child.hProcess);
+	if (err_read != INVALID_HANDLE_VALUE) CloseHandle(err_read);
+	if (err_write != INVALID_HANDLE_VALUE) CloseHandle(err_write);
+}
+
 int main(int argc, char **argv)
 {
 	char exe[MAX_PATH], temp[MAX_PATH], blocked[MAX_PATH];
 	DWORD length;
+	if (argc == 4 && !strcmp(argv[1], "--handoff-stderr-only"))
+	{
+		length = GetFullPathNameA(argv[2], sizeof exe, exe, NULL);
+		if (!length || length >= sizeof exe) return 2;
+		FreeConsole();
+		check_stderr_only_invalid_stdout(exe, "detached stderr-only handoff", argv[3], "onslaught-ce:", 1);
+		return failures ? 1 : 0;
+	}
 	if (argc != 2) return 2;
 	length = GetFullPathNameA(argv[1], sizeof exe, exe, NULL);
 	if (!length || length >= sizeof exe || !GetTempPathA(sizeof temp, temp) ||
@@ -106,6 +152,8 @@ int main(int argc, char **argv)
 	check(exe, "detached pipes version", 0, 0, 0);
 	check(exe, "detached file version", 1, 0, 0);
 	check(exe, "detached stderr", 0, 1, 0);
+	check_stderr_only_invalid_stdout(exe, "detached stderr with invalid stdout", "--apply",
+		"--apply was refused before accessing installation, user or update paths", 2);
 	if (!AllocConsole()) { failures++; printf("FAIL allocate isolated test console\n"); }
 	else
 	{

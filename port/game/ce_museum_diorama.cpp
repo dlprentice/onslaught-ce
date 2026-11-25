@@ -16,6 +16,7 @@
 #include "ce_asset_catalog.h"
 #include "ce_archive_scanner.h"
 #include "ce_museum_diorama.h"
+#include "ce_museum_render_state.h"
 #include "ce_museum_cinema.h"
 #include "ce_museum_textures.h"
 #include "ce_museum_world.h"
@@ -263,12 +264,18 @@ IDirect3DTexture9 *CreateTerrainDetailTexture(IDirect3DDevice9 *dev) {
     auto tileNoise = [&](unsigned px, unsigned py, unsigned period, unsigned seed) -> float {
         const float fx = float(px) * float(period) / float(edge);
         const float fy = float(py) * float(period) / float(edge);
-        const unsigned x0 = static_cast<unsigned>(fx) % period;
-        const unsigned y0 = static_cast<unsigned>(fy) % period;
+        // The lattice cell and the position inside it come from the same floor.
+        // A bare float-to-int conversion rounds to nearest in the game's x87
+        // build, so past each half cell it named the NEXT cell while the fraction
+        // still counted from this one: a hard seam down the middle of every cell.
+        const float flx = std::floor(fx);
+        const float fly = std::floor(fy);
+        const unsigned x0 = static_cast<unsigned>(static_cast<int>(flx)) % period;
+        const unsigned y0 = static_cast<unsigned>(static_cast<int>(fly)) % period;
         const unsigned x1 = (x0 + 1u) % period;
         const unsigned y1 = (y0 + 1u) % period;
-        const float tx = fx - std::floor(fx);
-        const float ty = fy - std::floor(fy);
+        const float tx = fx - flx;
+        const float ty = fy - fly;
         const float sx = tx * tx * (3.0f - 2.0f * tx);
         const float sy = ty * ty * (3.0f - 2.0f * ty);
         const float a = hash2(x0, y0, seed);
@@ -2127,12 +2134,7 @@ void RuntimeDraw(float floorZ, bool ownStateBlock) {
     if (saved) {
         saved->Apply();
         saved->Release();
-        LT.InvalidateAllStates();
-        RENDERINFO.mWorldChanged = true;
-        RENDERINFO.mViewChanged = true;
-        RENDERINFO.mProjectionChanged = true;
-        RENDERINFO.mFVFChanged = true;
-        RENDERINFO.Apply();
+        CeMuseumRestoreEngineRenderState();
     }
 }
 

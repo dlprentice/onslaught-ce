@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // port/game/ce_museum_art.h: Complete 149/149 (100%) framed retail Goodies concept art
 // plates staged in a two-tier museum salon hang across the Concept Art Gallery (75 plates)
-// and Early Designs Vault (74 plates). Pure C++14 manifest, aspect-preserving 256px upload
-// sizing (~37 MiB total VRAM across all 149 simultaneously resident plates, zero doorway
+// and Early Designs Vault (74 plates). Pure C++14 manifest, aspect-preserving 512px BC1/DXT1
+// upload sizing (~19 MiB total VRAM across all 149 simultaneously resident plates, zero doorway
 // pop-in), wing-scoped 2D/3D plaque targeting, and host verification.
 #ifndef CE_MUSEUM_ART_H
 #define CE_MUSEUM_ART_H
@@ -12,8 +12,8 @@
 
 namespace CeMuseumArt {
 
-constexpr unsigned kMaxTexEdge = 256u;
-// All 149/149 retail GT_IMAGE Goodies stay simultaneously resident (149 * 256^2 * 4 <= 37.25 MiB).
+constexpr unsigned kMaxTexEdge = 512u;
+// All 149/149 retail GT_IMAGE Goodies stay simultaneously resident in DXT1/BC1 (~18.6 MiB <= 38 MiB).
 enum { kMaxResidentCanvases = 149, kManifestCount = 149 };
 
 struct CanvasSpec {
@@ -643,7 +643,7 @@ struct UploadSize {
     unsigned height;
 };
 
-// Bounded <= 256 px longest edge preserving exact source aspect ratio.
+// Bounded <= 512 px longest edge preserving exact source aspect ratio.
 inline UploadSize BoundedUpload(unsigned srcW, unsigned srcH, unsigned maxEdge = kMaxTexEdge) {
     if (!srcW || !srcH || !maxEdge) return UploadSize{1u, 1u};
     const unsigned longest = srcW > srcH ? srcW : srcH;
@@ -684,13 +684,13 @@ inline unsigned CountWantedResident(CeMuseumTour::Wing currentWing) {
     return n;
 }
 
-// Estimated worst-case RGBA memory bytes for resident wing canvases (or full 149-plate collection).
+// Estimated worst-case DXT1/BC1 (4 bpp = 0.5 B/px) VRAM bytes for resident wing canvases (or full 149-plate collection).
 inline unsigned EstimateWingBytes(CeMuseumTour::Wing wing) {
-    return CountWantedResident(wing) * kMaxTexEdge * kMaxTexEdge * 4u;
+    return (CountWantedResident(wing) * kMaxTexEdge * kMaxTexEdge) / 2u;
 }
 
 inline unsigned EstimateTotalBytes() {
-    return kManifestCount * kMaxTexEdge * kMaxTexEdge * 4u;
+    return (kManifestCount * kMaxTexEdge * kMaxTexEdge) / 2u;
 }
 
 // Pure prefix/truncated filename matcher for retail packed filenames that hit the original 64-char

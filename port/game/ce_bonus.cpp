@@ -58,12 +58,15 @@ bool	PortCeMenus();
 bool	PortModHas(const char *game_path);	// port/platform/common/mods.h: an active mod supplies this game path
 extern "C" void	PortCeCarrierClashCancel(void) __attribute__((weak));
 extern "C" void	PortCeLivingSandboxCancel(void) __attribute__((weak));
+extern "C" void	PortCeFlagshipDuelCancel(void) __attribute__((weak));
 
 namespace
 {
 const int	kBonusLevel = 201;
 const int	kLivingSandboxLevel = 700;
 const int	kCarrierClashLevel = 742;
+const int	kFlagshipDuel1PLevel = 788;
+const int	kFlagshipDuel2PLevel = 888;
 const int	kRaceFirst = 901, kRaceLast = 905;
 CCareer		*sCareer;		// the career as it was before the bonus level (raw bytes, as CCareer::Save keeps them)
 int			sLevel;			// the level the copy was taken for
@@ -73,6 +76,7 @@ bool		sRaceReturning;	// the front end is back after a race (patch 0116 asks onc
 bool		sCoopReturning;	// the front end is back after a bonus co-op map (patch 0116 asks once)
 int			sReturnLevel;	// the bonus level the front end has come back from, for the CE page's list (0: none)
 bool		sModLevel;		// the level started is one an active mod adds (PortCeBonusStartModLevel)
+bool		sFlagshipDuel2P;// clean-room Flagship Duel (2P) started from Bonus Levels (not a mod)
 
 bool IsRace(int level) { return level >= kRaceFirst && level <= kRaceLast; }
 bool IsCoop(int level) { return level == 856 || level == 858 || sModLevel; }	// sModLevel is set only for a level ModLevel has admitted
@@ -98,6 +102,7 @@ static CCareer *EnsureSnapshot()
 static bool Start(int level, bool mod)
 {
 	sModLevel = mod;
+	sFlagshipDuel2P = false;
 	if (!PortCeMenus() || (level != kBonusLevel && !IsCoop(level) && !IsRace(level)))
 		return false;
 	if (!EnsureSnapshot())
@@ -157,6 +162,7 @@ bool PortCeBonusStartLivingSandbox()
 		return false;
 	memcpy((void *)sCareer, (const void *)&CAREER, sizeof(CCareer));
 	sModLevel = false;
+	sFlagshipDuel2P = false;
 	sLevel = kLivingSandboxLevel;
 	sActive = true;
 	sReturning = false;
@@ -165,6 +171,49 @@ bool PortCeBonusStartLivingSandbox()
 	sReturnLevel = 0;
 	FRONTEND.mSelectedLevel = kLivingSandboxLevel;
 	FRONTEND.SetQuit(kLivingSandboxLevel);
+	return true;
+}
+
+// Starts the standalone clean-room Flagship Duel (1P) bonus level (level 788 over donor 857, outside every career).
+bool PortCeBonusStartFlagshipDuel1P()
+{
+	if (!PortCeMenus())
+		return false;
+	if (!EnsureSnapshot())
+		return false;
+	memcpy((void *)sCareer, (const void *)&CAREER, sizeof(CCareer));
+	sModLevel = false;
+	sFlagshipDuel2P = false;
+	sLevel = kFlagshipDuel1PLevel;
+	sActive = true;
+	sReturning = false;
+	sRaceReturning = false;
+	sCoopReturning = false;
+	sReturnLevel = 0;
+	FRONTEND.mSelectedLevel = kFlagshipDuel1PLevel;
+	FRONTEND.SetQuit(kFlagshipDuel1PLevel);
+	return true;
+}
+
+// Starts the standalone clean-room Flagship Duel (2P) split-screen bonus level (level 888 via FEP_MULTIPLAYER_START).
+bool PortCeBonusStartFlagshipDuel2P()
+{
+	if (!PortCeMenus())
+		return false;
+	if (!EnsureSnapshot())
+		return false;
+	memcpy((void *)sCareer, (const void *)&CAREER, sizeof(CCareer));
+	sModLevel = false;
+	sFlagshipDuel2P = true;
+	sLevel = kFlagshipDuel2PLevel;
+	sActive = true;
+	sReturning = false;
+	sRaceReturning = false;
+	sCoopReturning = false;
+	sReturnLevel = 0;
+	FRONTEND.mSelectedLevel = kFlagshipDuel2PLevel;
+	FRONTEND.mFEPMultiplayer.mCY = 1; // Versus row: P1 Forseti vs P2 Muspell on FEP_MULTIPLAYER_START
+	FRONTEND.SetPage(FEP_MULTIPLAYER_START, 30);
 	return true;
 }
 
@@ -201,7 +250,7 @@ int PortCeBonusTakeModReturn()
 // A bonus co-op level is being played (the CE gamepad defaults run in it as in a solo level).
 bool PortCeBonusCoopRunning()
 {
-	return sActive && IsCoop(sLevel) && GAME.GetCurrentLevel() == sLevel;
+	return sActive && (IsCoop(sLevel) || sFlagshipDuel2P) && GAME.GetCurrentLevel() == sLevel;
 }
 
 // CCareer::Save first copies the live object to dest. For an active bonus level, replace only that object in the output
@@ -270,7 +319,8 @@ bool PortCeBonusLevelEnd()
 	}
 	CAREER.SetScreenPosX(screenX);
 	CAREER.SetScreenPosY(screenY);
-	sReturning = sLevel == kBonusLevel;	// a co-op level goes back to the Multiplayer page, as in retail
+	sFlagshipDuel2P = false;
+	sReturning = sLevel == kBonusLevel || sLevel == kFlagshipDuel1PLevel;	// a co-op level goes back to the Multiplayer page, as in retail
 	sRaceReturning = IsRace(sLevel);	// a race goes back to the Onslaught CE page, with no save (patch 0116)
 	sCoopReturning = IsCoop(sLevel);	// so does a co-op map, instead of the Multiplayer page (patch 0116)
 	sReturnLevel = sLevel;				// the CE page opens on the Bonus Levels list, this level highlighted
@@ -288,6 +338,8 @@ void PortCeBonusBeforeConsoleLevel()
 		PortCeCarrierClashCancel();
 	if (sLevel == kLivingSandboxLevel && PortCeLivingSandboxCancel)
 		PortCeLivingSandboxCancel();
+	if ((sLevel == kFlagshipDuel1PLevel || sFlagshipDuel2P) && PortCeFlagshipDuelCancel)
+		PortCeFlagshipDuelCancel();
 	PortCeBonusLevelEnd();
 	sReturning = false;
 	sRaceReturning = false;
@@ -334,12 +386,20 @@ void PortCeBonusLeaveDebriefing()
 	FRONTEND.SetPage(FEP_LANGUAGE_TEST, 30);	// the CE page's slot (patch 0050)
 }
 
-// Backing out of the Multiplayer start page after entering from Bonus Levels (856/858) or Mods (850-899):
+void PortCeBonusClearDebriefing()
+{
+	sReturning = false;
+}
+
+// Backing out of the Multiplayer start page after entering from Bonus Levels (856/858/888) or Mods (850-899):
 // clears the pending launch state and queues return highlight on the CE page instead of retail Multiplayer.
 extern "C" bool PortCeBonusCancelMpStart(void)
 {
-	if (!sActive || !IsCoop(sLevel))
+	if (!sActive || (!IsCoop(sLevel) && !sFlagshipDuel2P))
 		return false;
+	if (sFlagshipDuel2P && PortCeFlagshipDuelCancel)
+		PortCeFlagshipDuelCancel();
+	sFlagshipDuel2P = false;
 	sActive = false;
 	sReturning = false;
 	sRaceReturning = false;

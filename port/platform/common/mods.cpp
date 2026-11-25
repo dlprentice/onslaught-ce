@@ -1949,15 +1949,15 @@ const char *LoadMod(const std::string &id, Mod *mod, std::vector<File> *files, u
 		}
 		HANDLE user = CreateFileW(userW, FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
 								  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
-		bool inexact = false;	// a folder the volume spells in another case than `mods` or the id: valid here, not on Linux
+		bool modsInexact = false, rootInexact = false;	// a folder the volume spells in another case than `mods` or the id: valid here, not on Linux
 		HANDLE mods = user == INVALID_HANDLE_VALUE ? user : OpenChild(user, "mods", true);
-		if (mods != INVALID_HANDLE_VALUE && (Verify(mods, true, NULL) || (inexact = !NameIsExact(mods, "mods"))))
+		if (mods != INVALID_HANDLE_VALUE && (Verify(mods, true, NULL) || (modsInexact = !NameIsExact(mods, "mods"))))
 		{
 			CloseHandle(mods);
 			mods = INVALID_HANDLE_VALUE;
 		}
 		HANDLE root = mods == INVALID_HANDLE_VALUE ? mods : OpenChild(mods, id, true);
-		if (root != INVALID_HANDLE_VALUE && (Verify(root, true, NULL) || (inexact = !NameIsExact(root, id))))
+		if (root != INVALID_HANDLE_VALUE && (Verify(root, true, NULL) || (rootInexact = !NameIsExact(root, id))))
 		{
 			CloseHandle(root);
 			root = INVALID_HANDLE_VALUE;
@@ -1967,8 +1967,12 @@ const char *LoadMod(const std::string &id, Mod *mod, std::vector<File> *files, u
 		if (mods != INVALID_HANDLE_VALUE)
 			CloseHandle(mods);
 		mod->root = root;
-		if (inexact)
+		if (modsInexact || rootInexact)
+		{
+			gWhy = PORT_MOD_WHY_RENAMED;
+			gWanted = modsInexact ? "/mods" : id;
 			return "a mods folder or a mod folder that the volume spells differently from `mods` or the id (another case, or a short name; a mod must match exactly on every platform)";
+		}
 		if (root == INVALID_HANDLE_VALUE)
 			return "no such folder in the user folder's mods folder (or the folder is a link)";
 	}

@@ -52,9 +52,13 @@ DRIVER_CPP = r"""
 // SPDX-License-Identifier: GPL-3.0-only
 #include "ce_online_service.h"
 #include "ce_online_match.h"
+#include "online_lobby_client.h"
 #include "online_profile.h"
 #include "signaling_https.h"
+#include "star_transport.h"
+#include <juice/juice.h>
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -62,7 +66,12 @@ DRIVER_CPP = r"""
 #include <functional>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 extern "C" int PortCeOnlineServiceAttachMatchBridge(const uint8_t compat_digest[32]);
 extern "C" void PortCeOnlineServiceFinishMatch(int won);
@@ -672,6 +681,491 @@ int main(int argc, char **argv) {
         Check(!saw_stale_room_op, "6c zero stale room requests fired after SaveCallsign session reset");
     }
 
+    // -----------------------------------------------------------------------
+    // 7. Per-peer acknowledged offer_seq isolation & answer-to-offer binding
+    // -----------------------------------------------------------------------
+    {
+        CE_OnlineMatchTicket h3_tk = MakeMatchTicket(3, 3, 0, false);
+        Check(PortCeOnlineMatchSetTicket(&h3_tk) == 1, "7 set 3P STUN host ticket");
+
+        CeStarConfig rg_cfg;
+        rg_cfg.role = CeStarRole::Guest;
+        rg_cfg.use_ice = true;
+        rg_cfg.require_relay = false;
+        rg_cfg.max_guests = 2;
+        rg_cfg.local_seat = 1;
+        rg_cfg.local_sim_slot = 1;
+        std::memcpy(rg_cfg.match_secret.data(), h3_tk.match_secret, 32);
+        std::memcpy(rg_cfg.compatibility.data(), compat, 32);
+        std::memcpy(rg_cfg.roster_hash.data(), h3_tk.roster_hash, 32);
+        rg_cfg.version = "0.1.16";
+        auto real_guest = CeStarTransport::Create(rg_cfg);
+        juice_config_t rg_jcfg{};
+        rg_jcfg.bind_address = "127.0.0.1";
+        Check(bool(real_guest) && real_guest->AttachHostIceBridge(rg_jcfg, false), "7 real_guest STUN bridge attached");
+
+        std::string captured_seat1_offer;
+        std::string first_poll_path;
+        unsigned sig_poll_num = 0;
+        std::string real_guest_sdp;
+
+        gHttp.should_hold = nullptr;
+        gHttp.history.clear();
+        gHttp.responder = [&](const RecordedReq &req) -> QueuedReply {
+            if (req.path == "/ce-lobby/v1/rooms/rm_0123456789abcdef/signal" && req.method == CeOnlineHttpMethod::Post) {
+                if (req.body.find("\"to_seat\":1") != std::string::npos) {
+                    CeOnlineJson::Value v;
+                    if (CeOnlineJson::Parse(req.body, v) && v.Get("sdp") && v.Get("sdp")->IsString()) {
+                        captured_seat1_offer = v.Get("sdp")->str_val;
+                    }
+                    return {"", 200, "{\"ok\":true,\"seq\":5,\"server_time_ms\":1}", false, false};
+                }
+                if (req.body.find("\"to_seat\":2") != std::string::npos) {
+                    // Seat 2 offer gets higher seq=10; must NOT advance Host's GET /signal?since= cursor!
+                    return {"", 200, "{\"ok\":true,\"seq\":10,\"server_time_ms\":1}", false, false};
+                }
+            }
+            if (req.path.find("/signal?") != std::string::npos) {
+                ++sig_poll_num;
+                if (sig_poll_num == 1u) {
+                    first_poll_path = req.path;
+                    const std::string bogus_sdp =
+                        "v=0\\r\\na=ice-ufrag:bogus1\\r\\na=ice-pwd:boguspassword0123456789ab\\r\\n"
+                        "a=candidate:1 1 UDP 2130706431 127.0.0.1 59998 typ host\\r\\n"
+                        "a=end-of-candidates\\r\\na=x-ce-offer:1\\r\\na=x-ce-gen:99\\r\\n";
+                    // Msg seq=4 (< seat 1 offer_seq=5) AND Msg seq=6 (> offer_seq=5, but wrong bound offer/gen!)
+                    // must BOTH be rejected without locking g.answer_applied!
+                    CeOnlineJson::ObjectBuilder m1;
+                    m1.AddUInt("seq", 4);
+                    m1.AddUInt("from_seat", 1);
+                    m1.AddUInt("to_seat", 0);
+                    m1.AddString("kind", "answer");
+                    m1.AddString("sdp", real_guest_sdp);
+                    return {"", 200,
+                            "{\"seq\":6,\"messages\":[" + m1.Finish() +
+                            ",{\"seq\":6,\"from_seat\":1,\"to_seat\":0,\"kind\":\"answer\",\"sdp\":\"" + bogus_sdp + "\"}]}",
+                            false, false};
+                }
+                if (sig_poll_num == 2u) {
+                    // Valid answer at seq=7 bound to Seat 1's Offer #1 (seq=5, gen=1):
+                    CeOnlineJson::ObjectBuilder m2;
+                    m2.AddUInt("seq", 7);
+                    m2.AddUInt("from_seat", 1);
+                    m2.AddUInt("to_seat", 0);
+                    m2.AddString("kind", "answer");
+                    m2.AddString("sdp", real_guest_sdp + "a=x-ce-offer:5\r\na=x-ce-gen:1\r\n");
+                    return {"", 200, "{\"seq\":7,\"messages\":[" + m2.Finish() + "]}", false, false};
+                }
+                return {"", 200, "{\"seq\":10,\"messages\":[]}", false, false};
+            }
+            return {"", 200, "{}", false, false};
+        };
+
+        Check(PortCeOnlineServiceAttachMatchBridge(compat) == 1, "7 attach 3P STUN host bridge");
+        Check(PortCeOnlineMatchBeginSession(851u, 2u, 20u) == 1, "7 begin 3P STUN host session");
+
+        // Gather real_guest local SDP and let Host send offers for Seat 1 and Seat 2.
+        uint64_t sim_t = 100;
+        for (int i = 0; i < 40 && (captured_seat1_offer.empty() || real_guest_sdp.empty()); ++i) {
+            sim_t += 20;
+            PortCeOnlineMatchPoll(sim_t);
+            if (real_guest_sdp.empty()) real_guest->GetLocalIceDescription(real_guest_sdp);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        Check(!captured_seat1_offer.empty() &&
+              captured_seat1_offer.find("a=x-ce-gen:1") != std::string::npos,
+              "7 Host offer carries a=x-ce-gen:1 metadata");
+        // Strip custom x-ce-* lines via SetRemoteIceDescription (FilterDescription ignores unknown attributes).
+        Check(!real_guest_sdp.empty() && real_guest->SetRemoteIceDescription(captured_seat1_offer),
+              "7 real_guest accepted Host STUN offer");
+
+        // Advance until Host runs Poll #1 (which serves stale seq=4 and wrong-gen seq=6).
+        for (int i = 0; i < 10 && sig_poll_num < 1u; ++i) {
+            sim_t += 200;
+            PortCeOnlineMatchPoll(sim_t);
+        }
+        Check(sig_poll_num >= 1u && first_poll_path.find("since=0") != std::string::npos,
+              "7 POST /signal ack seq=10 did NOT advance Host poll cursor signal_seq_ past since=0");
+
+        // Pump briefly: real_guest MUST NOT be authenticated yet because seq=4 and wrong-gen seq=6 were rejected!
+        for (int i = 0; i < 10; ++i) {
+            sim_t += 15;
+            PortCeOnlineMatchPoll(sim_t);
+            real_guest->Poll(sim_t);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        Check(!real_guest->IsAuthenticated(), "7 stale seq=4 and mismatched-gen seq=6 answers were rejected");
+
+        // Advance >= 500ms so Poll #2 delivers properly bound seq=7 answer -> real_guest authenticates!
+        bool rg_authed = false;
+        for (int i = 0; i < 80 && !rg_authed; ++i) {
+            sim_t += 100;
+            PortCeOnlineMatchPoll(sim_t);
+            real_guest->Poll(sim_t);
+            rg_authed = real_guest->IsAuthenticated();
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        Check(rg_authed, "7 valid answer bound to offer seq=5 gen=1 applied cleanly and authenticated Guest");
+
+        PortCeOnlineMatchStop(0);
+        PortCeOnlineServiceDetachMatchBridge();
+        PortCeOnlineMatchClear();
+    }
+
+    // -----------------------------------------------------------------------
+    // 8. Guest local gather exhaustion checked even when !guest_offer_applied_
+    // -----------------------------------------------------------------------
+    {
+        // 8a. Relay-only Guest whose TURN server rejects allocation (403 Forbidden) finishes gathering
+        //     with zero relay candidates before any Host offer arrives -> faults cleanly instead of hanging.
+        int turn_403_fd = ::socket(AF_INET, SOCK_DGRAM, 0);
+        sockaddr_in turn_addr{};
+        turn_addr.sin_family = AF_INET;
+        turn_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        turn_addr.sin_port = 0;
+        socklen_t turn_alen = sizeof(turn_addr);
+        Check(turn_403_fd >= 0 &&
+              ::bind(turn_403_fd, reinterpret_cast<sockaddr *>(&turn_addr), sizeof(turn_addr)) == 0 &&
+              ::getsockname(turn_403_fd, reinterpret_cast<sockaddr *>(&turn_addr), &turn_alen) == 0,
+              "8a bound loopback STUN/TURN 403 responder socket");
+        const unsigned turn_403_port = ntohs(turn_addr.sin_port);
+
+        CE_OnlineMatchTicket g_exhaust_tk = MakeMatchTicket(2, 2, 1, true);
+        Check(PortCeOnlineMatchSetTicket(&g_exhaust_tk) == 1, "8a set relay-only guest ticket");
+        gHttp.should_hold = nullptr;
+        gHttp.responder = [&](const RecordedReq &req) -> QueuedReply {
+            if (req.path.find("/turn") != std::string::npos) {
+                return {"", 200,
+                        "{\"iceServers\":[{\"urls\":[\"turn:127.0.0.1:" + std::to_string(turn_403_port) +
+                        "?transport=udp\"],\"username\":\"u\",\"credential\":\"c\"}],\"ttl\":900}",
+                        false, false};
+            }
+            if (req.path.find("/signal?") != std::string::npos) {
+                return {"", 200, "{\"seq\":0,\"messages\":[]}", false, false};
+            }
+            return {"", 200, "{}", false, false};
+        };
+        Check(PortCeOnlineServiceAttachMatchBridge(compat) == 1, "8a attach relay-only guest bridge");
+        Check(PortCeOnlineMatchBeginSession(851u, 2u, 20u) == 1, "8a begin relay-only guest session");
+        char g_fault[256] = {};
+        bool saw_exhaust_fault = false;
+        uint64_t gt = 100;
+        for (int i = 0; i < 80 && !saw_exhaust_fault; ++i) {
+            uint8_t pkt[512];
+            sockaddr_in peer_sa{};
+            socklen_t peer_len = sizeof(peer_sa);
+            while (turn_403_fd >= 0) {
+                const ssize_t n = ::recvfrom(turn_403_fd, pkt, sizeof(pkt), MSG_DONTWAIT,
+                                             reinterpret_cast<sockaddr *>(&peer_sa), &peer_len);
+                if (n < 20) break;
+                uint8_t resp[28] = {};
+                resp[0] = 0x01; resp[1] = 0x13; // STUN Allocate Error Response
+                resp[2] = 0x00; resp[3] = 0x08; // 8-byte body
+                std::memcpy(resp + 4, pkt + 4, 16); // magic cookie + transaction ID
+                resp[20] = 0x00; resp[21] = 0x09; // ERROR-CODE attribute
+                resp[22] = 0x00; resp[23] = 0x04; // 4-byte value
+                resp[26] = 4;    resp[27] = 3;    // 403 Forbidden
+                (void)::sendto(turn_403_fd, resp, sizeof(resp), 0,
+                               reinterpret_cast<const sockaddr *>(&peer_sa), peer_len);
+                peer_len = sizeof(peer_sa);
+            }
+            gt += 100;
+            PortCeOnlineMatchPoll(gt);
+            if (PortCeOnlineMatchCheckFault(g_fault, sizeof(g_fault)) != 0) saw_exhaust_fault = true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        if (turn_403_fd >= 0) ::close(turn_403_fd);
+        Check(saw_exhaust_fault, "8a Guest with exhausted empty relay gather faults even when !guest_offer_applied_");
+        PortCeOnlineMatchStop(0);
+        PortCeOnlineServiceDetachMatchBridge();
+        PortCeOnlineMatchClear();
+
+        // 8b. STUN-first Guest with usable local host candidates and !guest_offer_applied_ waits normally
+        //     for Host's offer without prematurely switching to TURN or faulting.
+        CE_OnlineMatchTicket g_wait_tk = MakeMatchTicket(2, 2, 1, false);
+        Check(PortCeOnlineMatchSetTicket(&g_wait_tk) == 1, "8b set STUN-first guest ticket");
+        unsigned turn_fetches = 0;
+        gHttp.responder = [&](const RecordedReq &req) -> QueuedReply {
+            if (req.path.find("/turn") != std::string::npos) {
+                ++turn_fetches;
+                return {"", 200, "{\"iceServers\":[{\"urls\":[\"turn:127.0.0.1:3478?transport=udp\"],\"username\":\"u\",\"credential\":\"c\"}],\"ttl\":900}", false, false};
+            }
+            if (req.path.find("/signal?") != std::string::npos) {
+                return {"", 200, "{\"seq\":0,\"messages\":[]}", false, false};
+            }
+            return {"", 200, "{}", false, false};
+        };
+        Check(PortCeOnlineServiceAttachMatchBridge(compat) == 1, "8b attach STUN-first guest bridge");
+        Check(PortCeOnlineMatchBeginSession(851u, 2u, 20u) == 1, "8b begin STUN-first guest session");
+        for (int i = 1; i <= 10; ++i) {
+            PortCeOnlineMatchPoll(static_cast<uint64_t>(i * 300));
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        std::memset(g_fault, 0, sizeof(g_fault));
+        Check(turn_fetches == 0u && PortCeOnlineMatchCheckFault(g_fault, sizeof(g_fault)) == 0,
+              "8b Guest with usable local candidates waits normally while !guest_offer_applied_");
+        PortCeOnlineMatchStop(0);
+        PortCeOnlineServiceDetachMatchBridge();
+        PortCeOnlineMatchClear();
+    }
+
+    // -----------------------------------------------------------------------
+    // 9. Scoped /finish retry & match-change guard
+    // -----------------------------------------------------------------------
+    {
+        // 9a. Transient 503 on /finish does NOT prematurely latch finish_sent_; retry succeeds with match_id!
+        CE_OnlineMatchTicket fin_tk = MakeMatchTicket(2, 2, 0, true);
+        std::snprintf(fin_tk.match_id, sizeof(fin_tk.match_id), "mt_finish_retry_01");
+        Check(PortCeOnlineMatchSetTicket(&fin_tk) == 1, "9a set host ticket for /finish retry");
+        unsigned finish_calls = 0;
+        std::string last_finish_body;
+        gHttp.should_hold = nullptr;
+        gHttp.responder = [&](const RecordedReq &req) -> QueuedReply {
+            if (req.path == "/ce-lobby/v1/rooms/rm_0123456789abcdef/finish") {
+                ++finish_calls;
+                last_finish_body = req.body;
+                if (finish_calls == 1u) {
+                    return {"", 503, "{\"error\":\"unavailable\",\"message\":\"transient\"}", false, false};
+                }
+                return {"", 200, RoomJson("rm_0123456789abcdef", 9, "lobby", prof.player_id, 2), false, false};
+            }
+            return {"", 200, "{\"iceServers\":[{\"urls\":[\"turn:127.0.0.1:3478?transport=udp\"],\"username\":\"u\",\"credential\":\"c\"}],\"ttl\":900}", false, false};
+        };
+        Check(PortCeOnlineServiceAttachMatchBridge(compat) == 1, "9a attach host bridge");
+        PortCeOnlineServiceFinishMatch(0); // attempt 1 -> 503, sets 250ms backoff
+        Check(finish_calls == 1u &&
+              last_finish_body.find("\"match_id\":\"mt_finish_retry_01\"") != std::string::npos,
+              "9a first /finish attempt sent scoped match_id and survived 503");
+        PortCeOnlineServicePollFinished(100); // before backoff
+        PortCeOnlineServicePollFinished(5000000000ULL); // well past steady_clock backoff -> attempt 2 -> 200!
+        PortCeOnlineServicePollFinished(5000000100ULL);
+        Check(finish_calls == 2u, "9a /finish retried after 503 and latched on 200");
+        PortCeOnlineServiceDetachMatchBridge();
+        PortCeOnlineMatchClear();
+
+        // 9b. Pending /finish retry aborts immediately if a new match becomes active (never finishes new match!).
+        CE_OnlineMatchTicket old_tk = MakeMatchTicket(2, 2, 0, true);
+        std::snprintf(old_tk.match_id, sizeof(old_tk.match_id), "mt_old_match_0001");
+        Check(PortCeOnlineMatchSetTicket(&old_tk) == 1, "9b set old match ticket");
+        unsigned old_finish_calls = 0;
+        gHttp.responder = [&](const RecordedReq &req) -> QueuedReply {
+            if (req.path == "/ce-lobby/v1/rooms/rm_0123456789abcdef/finish") {
+                ++old_finish_calls;
+                return {"", 503, "{\"error\":\"unavailable\",\"message\":\"transient\"}", false, false};
+            }
+            return {"", 200, "{}", false, false};
+        };
+        Check(PortCeOnlineServiceAttachMatchBridge(compat) == 1, "9b attach host bridge for old match");
+        PortCeOnlineServiceFinishMatch(0); // attempt 1 -> 503 (pending retry)
+        Check(old_finish_calls == 1u, "9b initial /finish failed with 503");
+
+        // Switch active match ticket to a NEW match before retry runs!
+        CE_OnlineMatchTicket new_tk = MakeMatchTicket(2, 2, 0, true);
+        std::snprintf(new_tk.match_id, sizeof(new_tk.match_id), "mt_new_match_0002");
+        Check(PortCeOnlineMatchSetTicket(&new_tk) == 1, "9b set new match ticket");
+        Check(PortCeOnlineMatchBeginSession(851u, 2u, 20u) == 1, "9b begin new match session");
+        PortCeOnlineServicePollFinished(9000000000ULL);
+        Check(old_finish_calls == 1u, "9b stale /finish retry cancelled when active match_id changed");
+        PortCeOnlineMatchStop(0);
+        PortCeOnlineServiceDetachMatchBridge();
+        PortCeOnlineMatchClear();
+    }
+
+    // -----------------------------------------------------------------------
+    // 10. /leave retry across 401 re-auth & transient 503 with bounded cap
+    // -----------------------------------------------------------------------
+    {
+        CeOnlineServiceFacade *svc = PortCeOnlineServiceInstance();
+        CeSvcProfile cur_prof{};
+        svc->GetProfile(&cur_prof);
+        unsigned leave_33_calls = 0;
+        unsigned leave_44_calls = 0;
+        unsigned reauth_challenges = 0;
+
+        gHttp.should_hold = nullptr;
+        gHttp.responder = [&](const RecordedReq &req) -> QueuedReply {
+            if (req.path == "/ce-lobby/v1/auth/challenge") {
+                ++reauth_challenges;
+                return {"", 200, "{\"nonce\":\"fedcba9876543210fedcba9876543210\",\"issued_at\":1763900000,\"expires_at\":1763900120,\"server_time_ms\":1763900000000}", false, false};
+            }
+            if (req.path == "/ce-lobby/v1/auth/session") {
+                svc->GetProfile(&cur_prof);
+                return {"", 200, "{\"session_token\":\"CES1.reauth.tok\",\"player_id\":\"" + cur_prof.player_id +
+                                 "\",\"tag\":\"" + cur_prof.tag + "\",\"callsign\":\"" + cur_prof.callsign +
+                                 "\",\"expires_at\":1763914400,\"server_time_ms\":1763900000000}", false, false};
+            }
+            if (req.path == "/ce-lobby/v1/lobbies" && req.method == CeOnlineHttpMethod::Post) {
+                const bool second = (req.body.find("LeaveCapRoom") != std::string::npos);
+                return {"", 200, RoomJson(second ? "rm_4444444444444444" : "rm_3333333333333333",
+                                          1, "lobby", cur_prof.player_id, 4), false, false};
+            }
+            if (req.path == "/ce-lobby/v1/rooms/rm_3333333333333333/leave") {
+                ++leave_33_calls;
+                if (leave_33_calls == 1u) {
+                    return {"", 401, "{\"error\":\"unauthorized\",\"message\":\"Expired\"}", false, false};
+                }
+                if (leave_33_calls == 2u) {
+                    return {"", 503, "{\"error\":\"unavailable\",\"message\":\"Transient\"}", false, false};
+                }
+                return {"", 200, "{\"ok\":true}", false, false};
+            }
+            if (req.path == "/ce-lobby/v1/rooms/rm_4444444444444444/leave") {
+                ++leave_44_calls;
+                return {"", 503, "{\"error\":\"unavailable\",\"message\":\"Always down\"}", false, false};
+            }
+            return {"", 200, "{\"unchanged\":true,\"rev\":1,\"server_time_ms\":1763900002000}", false, false};
+        };
+
+        std::string err;
+        CeSvcCreateParams cp;
+        cp.name = "LeaveRetryRoom";
+        cp.mode = "versus_2v2";
+        cp.map = 851;
+        cp.max_seats = 4;
+        Check(svc->RequestCreateRoom(cp, &err), "10a create LeaveRetryRoom");
+        svc->Poll(20000);
+        svc->Poll(20050);
+        svc->RequestLeaveRoom();
+        uint64_t lt = 20100;
+        for (int step = 0; step < 20; ++step) {
+            lt += 400;
+            svc->Poll(lt);
+        }
+        Check(reauth_challenges == 1u && leave_33_calls == 3u,
+              "10a /leave recovered across 401 re-auth + transient 503 and stopped after 200");
+
+        cp.name = "LeaveCapRoom";
+        Check(svc->RequestCreateRoom(cp, &err), "10b create LeaveCapRoom");
+        lt += 500;
+        svc->Poll(lt);
+        svc->Poll(lt + 50);
+        svc->RequestLeaveRoom();
+        for (int step = 0; step < 25; ++step) {
+            lt += 600;
+            svc->Poll(lt);
+        }
+        Check(leave_44_calls == 4u, "10b /leave stopped cleanly at bounded 1 + kMaxLeaveRetries = 4 attempts");
+    }
+
+    // -----------------------------------------------------------------------
+    // 11. Host promotes room to in_match once all guests authenticate and
+    //     sends non-fatal periodic keepalive polls during long matches.
+    // -----------------------------------------------------------------------
+    {
+        CE_OnlineMatchTicket h2_tk = MakeMatchTicket(2, 2, 0, false);
+        Check(PortCeOnlineMatchSetTicket(&h2_tk) == 1, "11 set 2P STUN host ticket");
+
+        CeStarConfig g_cfg;
+        g_cfg.role = CeStarRole::Guest;
+        g_cfg.use_ice = true;
+        g_cfg.require_relay = false;
+        g_cfg.max_guests = 1;
+        g_cfg.local_seat = 1;
+        g_cfg.local_sim_slot = 1;
+        std::memcpy(g_cfg.match_secret.data(), h2_tk.match_secret, 32);
+        std::memcpy(g_cfg.compatibility.data(), compat, 32);
+        std::memcpy(g_cfg.roster_hash.data(), h2_tk.roster_hash, 32);
+        g_cfg.version = "0.1.16";
+        auto real_guest = CeStarTransport::Create(g_cfg);
+        juice_config_t g_jcfg{};
+        g_jcfg.bind_address = "127.0.0.1";
+        Check(bool(real_guest) && real_guest->AttachHostIceBridge(g_jcfg, false), "11 real_guest attached");
+
+        std::string host_offer_sdp;
+        std::string guest_answer_sdp;
+        bool answer_delivered = false;
+        unsigned in_match_update_calls = 0;
+        unsigned keepalive_poll_calls = 0;
+
+        gHttp.should_hold = nullptr;
+        gHttp.history.clear();
+        gHttp.responder = [&](const RecordedReq &req) -> QueuedReply {
+            if (req.path == "/ce-lobby/v1/rooms/rm_0123456789abcdef/signal" && req.method == CeOnlineHttpMethod::Post) {
+                CeOnlineJson::Value v;
+                if (CeOnlineJson::Parse(req.body, v) && v.Get("sdp") && v.Get("sdp")->IsString()) {
+                    host_offer_sdp = v.Get("sdp")->str_val;
+                }
+                return {"", 200, "{\"ok\":true,\"seq\":2,\"server_time_ms\":1}", false, false};
+            }
+            if (req.path.find("/signal?") != std::string::npos) {
+                if (!answer_delivered && !guest_answer_sdp.empty()) {
+                    answer_delivered = true;
+                    CeOnlineJson::ObjectBuilder m;
+                    m.AddUInt("seq", 3);
+                    m.AddUInt("from_seat", 1);
+                    m.AddUInt("to_seat", 0);
+                    m.AddString("kind", "answer");
+                    m.AddString("sdp", guest_answer_sdp + "a=x-ce-offer:2\r\na=x-ce-gen:1\r\n");
+                    return {"", 200, "{\"seq\":3,\"messages\":[" + m.Finish() + "]}", false, false};
+                }
+                return {"", 200, "{\"seq\":3,\"messages\":[]}", false, false};
+            }
+            if (req.path == "/ce-lobby/v1/rooms/rm_0123456789abcdef/update" && req.method == CeOnlineHttpMethod::Post) {
+                if (req.body.find("\"state\":\"in_match\"") != std::string::npos) {
+                    ++in_match_update_calls;
+                    if (in_match_update_calls == 1u) {
+                        return {"", 503, "{\"error\":\"unavailable\",\"message\":\"Transient\"}", false, false};
+                    }
+                    return {"", 200, RoomJson("rm_0123456789abcdef", 12, "in_match", prof.player_id, 2), false, false};
+                }
+            }
+            if (req.path.find("/ce-lobby/v1/rooms/rm_0123456789abcdef?since=") == 0 &&
+                req.method == CeOnlineHttpMethod::Get) {
+                ++keepalive_poll_calls;
+                if (keepalive_poll_calls == 1u) {
+                    return {"", 503, "{\"error\":\"unavailable\",\"message\":\"Transient poll\"}", false, false};
+                }
+                return {"", 200, "{\"unchanged\":true,\"rev\":12,\"server_time_ms\":1763900060000}", false, false};
+            }
+            return {"", 200, "{}", false, false};
+        };
+
+        Check(PortCeOnlineServiceAttachMatchBridge(compat) == 1, "11 attach 2P host bridge");
+        Check(PortCeOnlineMatchBeginSession(851u, 2u, 20u) == 1, "11 begin 2P host session");
+
+        uint64_t mt = 1000;
+        bool guest_applied_offer = false;
+        for (int i = 0; i < 300 && !real_guest->IsAuthenticated(); ++i) {
+            mt += 25;
+            if (guest_answer_sdp.empty()) real_guest->GetLocalIceDescription(guest_answer_sdp);
+            if (!guest_applied_offer && !host_offer_sdp.empty()) {
+                guest_applied_offer = real_guest->SetRemoteIceDescription(host_offer_sdp);
+            }
+            PortCeOnlineMatchPoll(mt);
+            real_guest->Poll(mt, 32);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        Check(real_guest->IsAuthenticated(), "11 real_guest authenticated over localhost STUN ICE");
+
+        // Advance time so Host sends initial in_match update (503), retries after 1s backoff (200),
+        // then sends keepalive polls past 60s (first 503 non-fatal, second 200).
+        for (int step = 0; step < 6; ++step) {
+            mt += 600;
+            PortCeOnlineMatchPoll(mt);
+            real_guest->Poll(mt, 32);
+        }
+        char m_fault[256] = {};
+        Check(in_match_update_calls == 2u, "11 Host promoted room to in_match after retrying transient 503");
+        Check(PortCeOnlineMatchCheckFault(m_fault, sizeof(m_fault)) == 0,
+              "11 transient 503 on in_match promotion did not fault live match");
+
+        // Step 140s of simulated match time in 2s steps with real ICE/ENet keepalives flowing so
+        // silence_timeout_ms never trips while Host fires 60s lobby keepalive polls (first 503 non-fatal, second 200).
+        for (int step = 0; step < 75; ++step) {
+            mt += 2000;
+            PortCeOnlineMatchPoll(mt);
+            real_guest->Poll(mt, 32);
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        Check(keepalive_poll_calls >= 2u, "11 Host sent periodic match keepalive polls after in_match");
+        Check(PortCeOnlineMatchCheckFault(m_fault, sizeof(m_fault)) == 0,
+              "11 transient 503 on match keepalive poll did not fault live match");
+
+        PortCeOnlineMatchStop(0);
+        PortCeOnlineServiceDetachMatchBridge();
+        PortCeOnlineMatchClear();
+    }
+
     std::printf("CE_ONLINE_SERVICE_TESTS checks=%d failures=%d\n", gChecks, gFails);
     return gFails == 0 ? 0 : 1;
 }
@@ -713,7 +1207,7 @@ class CeOnlineServiceTests(unittest.TestCase):
             for name in ("callbacks", "compress", "host", "list", "packet", "peer", "protocol", "unix"):
                 obj = tmp / f"enet-{name}.o"
                 subprocess.run(
-                    [cc, "-std=gnu11", "-O1", "-g", *san,
+                    [cc, "-std=gnu11", "-O1", "-g", *san, "-fno-sanitize=null",
                      "-DHAS_FCNTL=1", "-DHAS_POLL=1", "-DHAS_GETADDRINFO=1", "-DHAS_GETNAMEINFO=1",
                      "-DHAS_GETHOSTBYNAME_R=1", "-DHAS_GETHOSTBYADDR_R=1", "-DHAS_INET_PTON=1",
                      "-DHAS_INET_NTOP=1", "-DHAS_MSGHDR_FLAGS=1", "-DHAS_SOCKLEN_T=1",

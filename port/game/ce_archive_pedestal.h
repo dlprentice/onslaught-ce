@@ -32,7 +32,7 @@ constexpr float kCustomWorldButtonMaxRange = 18.0f;
 constexpr float kKeyboardNearRange = 9.5f;
 constexpr float kFocusMaxRange = 11.0f;
 constexpr float kTargetSpan = 3.75f;
-constexpr float kDefaultRateRadPerSec = 14.0f * 3.14159265f / 180.0f;
+constexpr float kDefaultRateRadPerSec = 5.0f * 3.14159265f / 180.0f; // ~5 deg/s (~72 s / rev; calm gallery inspection pace)
 constexpr float kSwapFadeSeconds = 0.22f;
 constexpr unsigned kLightboxMaxEdge = 1024u;
 
@@ -62,9 +62,68 @@ struct ButtonSpec {
 static const ButtonSpec kButtons[kBtnCount] = {
     {kBtnPrev,     "Previous Exhibit", "Step back to the previous item in this archive category.", -0.90f},
     {kBtnNext,     "Next Exhibit",     "Advance to the next item in this archive category.",      -0.30f},
-    {kBtnCategory, "Switch Category",  "Cycle Retail Meshes, Goodie Models, Concept Art, Cinema, and Bonus Levels.", 0.30f},
+    {kBtnCategory, "Switch Category",  "Cycle Field Models, Collection Models, Concept Art, Films and Bonus Levels.", 0.30f},
     {kBtnPause,    "Pause or Spin",    "Pause or resume turntable rotation on the display pedestal.", 0.90f},
 };
+
+// The glyph engraved on each control block's top face. Coordinates are metres from
+// the block's centre: +X to the visitor's right, +Y away from the visitor. Every
+// glyph stays inside kGlyphHalf of the centre, well within the smallest block face.
+enum ControlGlyph {
+    kGlyphPrevious = 0,   // a triangle pointing left
+    kGlyphNext,           // a triangle pointing right
+    kGlyphCategory,       // three stacked bars: the collections
+    kGlyphPause,          // two upright bars
+    kGlyphPlay,           // a triangle pointing right, shown on Pause while the turntable is paused
+    kGlyphCount
+};
+constexpr float kGlyphHalf = 0.066f;
+constexpr unsigned kMaxGlyphTriangles = 6u;
+
+struct GlyphTriangles {
+    unsigned count;                             // triangles
+    float xy[kMaxGlyphTriangles * 3u][2];       // three corners each
+};
+
+inline ControlGlyph GlyphForButton(ControlButton button) {
+    switch (button) {
+    case kBtnPrev:     return kGlyphPrevious;
+    case kBtnNext:     return kGlyphNext;
+    case kBtnCategory: return kGlyphCategory;
+    default:           return kGlyphPause;
+    }
+}
+
+inline void BuildControlGlyph(ControlGlyph glyph, GlyphTriangles *out) {
+    if (!out) return;
+    out->count = 0u;
+    auto tri = [&](float ax, float ay, float bx, float by, float cx, float cy) {
+        if (out->count >= kMaxGlyphTriangles) return;
+        float (*p)[2] = out->xy + out->count * 3u;
+        p[0][0] = ax; p[0][1] = ay; p[1][0] = bx; p[1][1] = by; p[2][0] = cx; p[2][1] = cy;
+        ++out->count;
+    };
+    auto bar = [&](float x0, float y0, float x1, float y1) {
+        tri(x0, y0, x1, y0, x1, y1);
+        tri(x0, y0, x1, y1, x0, y1);
+    };
+    const float a = kGlyphHalf;
+    switch (glyph) {
+    case kGlyphPrevious: tri(-a, 0.0f, a * 0.78f, a, a * 0.78f, -a); break;
+    case kGlyphNext:
+    case kGlyphPlay:     tri(a, 0.0f, -a * 0.78f, -a, -a * 0.78f, a); break;
+    case kGlyphCategory:
+        bar(-a, a * 0.52f, a, a * 0.88f);
+        bar(-a, -a * 0.18f, a, a * 0.18f);
+        bar(-a, -a * 0.88f, a, -a * 0.52f);
+        break;
+    case kGlyphPause:
+        bar(-a * 0.62f, -a, -a * 0.18f, a);
+        bar(a * 0.18f, -a, a * 0.62f, a);
+        break;
+    default: break;
+    }
+}
 
 enum Category {
     kCatRetailMeshes = 0,
@@ -77,8 +136,8 @@ enum Category {
 
 inline const char *CategoryName(Category c) {
     switch (c) {
-    case kCatRetailMeshes: return "Retail 3D Meshes";
-    case kCatGoodieModels: return "Goodie 3D Models";
+    case kCatRetailMeshes: return "Field Archive Models";
+    case kCatGoodieModels: return "Collection Models";
     case kCatConceptArt:   return "Concept Art Lightbox";
     case kCatCinemaFmvs:   return "Cinema Archive";
     case kCatBonusLevels:  return "Bonus Levels";
@@ -87,10 +146,12 @@ inline const char *CategoryName(Category c) {
 }
 
 // -----------------------------------------------------------------------------
-// Complete 232-Goodie Classification (matches retail FEPGoodies.cpp exact IDs)
-//   45 Goodie 3D Models + 149 Art Plates + 33 FMVs + 5 Bonus Levels = 232
+// Complete 233-Goodie Classification (matches retail FEPGoodies.cpp exact IDs)
+//   45 Goodie 3D Models + 149 Art Plates + 34 FMVs + 5 Bonus Levels = 233
+// Goodie ids run 0..232: the last one, 232, is the PC build's final in-game film
+// (retail get_goodie_fmv gives ids 201..232 a film each).
 // -----------------------------------------------------------------------------
-constexpr unsigned kGoodieTotal = 232u;
+constexpr unsigned kGoodieTotal = 233u;
 
 enum GoodieKind {
     kGoodieImage = 0,
@@ -129,6 +190,35 @@ inline int GoodieIdAt(GoodieKind kind, unsigned ordinal) {
         }
     }
     return -1;
+}
+
+// Copies a catalogue path whole or not at all. A path too long for its buffer
+// is refused (the buffer is left empty): a cut-off path would name a different
+// file, or none, and would be remembered under the wrong name.
+inline bool CopyPathChecked(const char *src, char *dst, size_t cap) {
+    if (!dst || cap == 0u) return false;
+    dst[0] = '\0';
+    if (!src || !src[0]) return false;
+    const size_t len = std::strlen(src);
+    if (len + 1u > cap) return false;
+    std::memcpy(dst, src, len + 1u);
+    return true;
+}
+
+// Builds the standalone model path for a goodie mesh name, whole or not at all.
+inline bool BuildGoodieMeshPath(const char *meshName, char *dst, size_t cap) {
+    if (!dst || cap == 0u) return false;
+    dst[0] = '\0';
+    if (!meshName || !meshName[0]) return false;
+    static const char kHead[] = "data/resources/meshes/m_";
+    static const char kTail[] = ".aya";
+    const size_t headLen = sizeof(kHead) - 1u, tailLen = sizeof(kTail) - 1u;
+    const size_t nameLen = std::strlen(meshName);
+    if (headLen + nameLen + tailLen + 1u > cap) return false;
+    std::memcpy(dst, kHead, headLen);
+    std::memcpy(dst + headLen, meshName, nameLen);
+    std::memcpy(dst + headLen + nameLen, kTail, tailLen + 1u);
+    return true;
 }
 
 inline int BonusLevelNumberForGoodie(int goodieId) {

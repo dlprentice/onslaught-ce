@@ -40,6 +40,23 @@ int main(){
         const char *ok[]={good,nullptr};finish(ticket,ok,0);
         CeBackupStatus st=snapshot();check(st.state==CE_BACKUP_IDLE && !strcmp(st.folder,good));
     }
+#ifdef _WIN32
+    CeBackupEnter("C:\\first\\\\");check(!strcmp(snapshot().folder,"C:\\first"));
+    CeBackupEnter("E:\\");check(!strcmp(snapshot().folder,"E:\\"));
+    CeBackupEnter("E:/");check(!strcmp(snapshot().folder,"E:/"));
+    CeBackupChoose();{const char *ok[]={"D:\\Backups\\/",nullptr};finish(ticket,ok,0);}check(!strcmp(snapshot().folder,"D:\\Backups"));
+    CeBackupChoose();{const char *ok[]={"E:\\\\",nullptr};finish(ticket,ok,0);}check(!strcmp(snapshot().folder,"E:\\"));
+    CeBackupChoose();{const char *ok[]={"E://",nullptr};finish(ticket,ok,0);}check(!strcmp(snapshot().folder,"E:/"));
+    CeBackupEnter(good2);
+#else
+    CeBackupEnter("/first///");check(!strcmp(snapshot().folder,"/first"));
+    CeBackupEnter("///");check(!strcmp(snapshot().folder,"/"));
+    CeBackupEnter("/dir_with_backslash\\");check(!strcmp(snapshot().folder,"/dir_with_backslash\\"));
+    CeBackupChoose();{const char *ok[]={"/Backups///",nullptr};finish(ticket,ok,0);}check(!strcmp(snapshot().folder,"/Backups"));
+    CeBackupChoose();{const char *ok[]={"///",nullptr};finish(ticket,ok,0);}check(!strcmp(snapshot().folder,"/"));
+    CeBackupChoose();{const char *ok[]={"/Backups\\leaf\\",nullptr};finish(ticket,ok,0);}check(!strcmp(snapshot().folder,"/Backups\\leaf\\"));
+    CeBackupEnter(good2);
+#endif
     for(const char *bad:badPaths){
         CeBackupChoose();check(snapshot().state==CE_BACKUP_PICKING);
         const char *fail[]={bad,nullptr};finish(ticket,fail,0);

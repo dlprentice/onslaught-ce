@@ -106,6 +106,7 @@
 #include "../platform/common/feel.h"
 
 extern "C" bool PortCeMuseumVisitActive(void) __attribute__((weak));
+extern "C" bool PortCeSandboxSquadCommandable(const void *squad) __attribute__((weak));
 
 #include <d3dx9.h>
 #include <math.h>
@@ -569,9 +570,10 @@ CePlayUnitFacts Facts(CUnit *u, CBattleEngine *engine)
 	f.vehicle = (type & THING_TYPE_VEHICLE) != 0 && !f.aircraft && !f.naval;
 	f.groundUnit = d && d->mBehaviour == UB_GROUND_UNIT && (type & THING_TYPE_GROUND_UNIT) != 0 && !f.aircraft && !f.naval;
 	f.deploys = d && (d->mUnknown108 || (d->mName && strstr(d->mName, "Artillery")));
+	const bool sandboxCommandable = squad && PortCeSandboxSquadCommandable && PortCeSandboxSquadCommandable(squad);
 	f.normalSquad = squad && IsNormal(squad);
 	f.ordinaryFoot = IsOrdinaryFoot(u, squad);
-	f.spawned = squad && squad->mUnknown84;
+	f.spawned = squad && squad->mUnknown84 && !sandboxCommandable;
 	// Armed: a current weapon, or one the unit carries with a mode (the game clears the current weapon between engagements; free fire makes the first ready one current).
 	f.armed = u->mCurrentWeapon != NULL;
 	if (!f.armed)
@@ -588,7 +590,7 @@ CePlayUnitFacts Facts(CUnit *u, CBattleEngine *engine)
 	// Retail missions commonly attach patrol scripts or escort-objective markers to friendly aircraft, landing craft, and base turrets;
 	// allow player takeover of those combat/transport classes (AI & squad resume cleanly on hand-back) while keeping ground squad fences intact.
 	const bool exemptMission = f.aircraft || f.naval || f.turret;
-	f.spawned = !exemptMission && (squad && squad->mUnknown84);
+	f.spawned = !exemptMission && !sandboxCommandable && (squad && squad->mUnknown84);
 	f.scripted = !exemptMission && (u->GetMissionScript() != NULL || (squad && squad->GetMissionScript() != NULL));
 	f.objective = !exemptMission && (u->IsObjective() != FALSE);
 	f.family = FamilyOf(type, f.armed);
@@ -1498,6 +1500,13 @@ void DriveAircraft(CUnit *u)
 	if (!strcmp(u->_GetClassName(), "CPlane")) ((CPlane *)u)->OpenWings();
 	else if (!strcmp(u->_GetClassName(), "CCarver")) ((CCarver *)u)->OpenWings();
 	else if (!strcmp(u->_GetClassName(), "CDiveBomber")) ((CDiveBomber *)u)->OpenBay();
+	else if (!strcmp(u->_GetClassName(), "CDropship"))
+	{
+		CDropship *ship = (CDropship *)u;
+		if (ship->mDoorState == 5 && ship->GetRenderThing() && ship->GetRenderThing()->GetRTMesh() &&
+		    ship->GetRenderAnimation() == ship->GetRenderThing()->GetRTMesh()->GetAnimModeByName("wingflat"))
+			ship->mDoorState = 0;
+	}
 }
 
 void DriveNaval(CUnit *u)
@@ -1509,12 +1518,17 @@ void DriveNaval(CUnit *u)
 	const CePlayUnitTankMotion m = CePlayUnitTankMotionOf(yaw, gApplied.forward, gApplied.back, gApplied.turn,
 	                                                      law.steerLead, law.reverseShare, law.turnSlow);
 	const CePlayUnitTankEase &ease = CePlayUnitTankEaseLaw();
-	const float rate = u->mUnknown12C.mYaw > 0.f ? u->mUnknown12C.mYaw : 0.03f;
+	float rate = u->mUnknown12C.mYaw > 0.f ? u->mUnknown12C.mYaw : 0.03f;
 	const float steer = gApplied.turn > 1.f ? 1.f : (gApplied.turn < -1.f ? -1.f : gApplied.turn);
-	// If already beached/landed, allow reverse back off the beach cleanly once ramp is closed or cargo is empty.
+	// If already beached/landed, clear stale open-water event 8000 landings immediately and allow reverse off beaches once ramp is closed or cargo is empty.
 	if (boat && boat->mLanded)
 	{
-		if (gApplied.back > 0.1f && (!boat->mDeploying || TransportCargoCount(u) <= 0))
+		const FVector bowDir = u->GetOrientation().GetColumnY();
+		const FVector bowPos = u->GetPos() + bowDir * (u->GetRadius() > 3.f ? u->GetRadius() : 6.f);
+		const bool bowInOpenWater = MAP.Collide(bowPos) >= MAP.GetWaterLevel() + 1.2f &&
+		                            MAP.Collide(u->GetPos()) >= MAP.GetWaterLevel() + 1.2f;
+		if ((!gUnloadPending && !boat->mDeploying && bowInOpenWater) ||
+		    (gApplied.back > 0.1f && (!boat->mDeploying || TransportCargoCount(u) <= 0)))
 		{
 			if (boat->mDeploying)
 			{
@@ -1524,6 +1538,7 @@ void DriveNaval(CUnit *u)
 			boat->mLanded = FALSE;
 			boat->mBeachCount = 0;
 			if (u->mUnitData) u->mUnknown12C.mYaw = u->mUnitData->mTurnRate;
+			rate = u->mUnknown12C.mYaw > 0.f ? u->mUnknown12C.mYaw : 0.03f;
 		}
 		else
 		{
@@ -1562,7 +1577,8 @@ void DriveNaval(CUnit *u)
 	const FVector v = u->GetVelocity();
 	const float along = v.X * ahead.X + v.Y * ahead.Y;
 	const float speed = CePlayUnitEaseToward(along, top * share, ease.speedRise, ease.speedFall, ease.settle * top);
-	u->SetVelocity(FVector(ahead.X * speed, ahead.Y * speed, 0.f));
+	const float vz = isBoat ? 0.f : (isfinite(v.Z) ? v.Z : 0.f);
+	u->SetVelocity(FVector(ahead.X * speed, ahead.Y * speed, vz));
 	u->SetUnknown14C(FVector(0.f, 0.f, 0.f));
 }
 
@@ -1648,12 +1664,15 @@ bool SpawnEmbarkedCargo(CUnit *u)
 {
 	if (!u) return false;
 	bool spawnedAny = false;
+	const float now = EVENT_MANAGER.GetTime();
 	ListIterator<CSpawner> spawners(&u->mSpawners);
 	for (CSpawner *s = spawners.First(); s; s = spawners.Next())
 	{
 		if (!s->mData) continue;
 		if (s->mUnknown3D8 >= s->mData->mAmount) continue;
+		if (s->Unknown4e4420()) continue;
 		s->mEnabled = TRUE;
+		if (s->mUnknown3E0 >= now) s->mUnknown3E0 = now - 0.05f;
 		if (s->DoSpawn()) spawnedAny = true;
 	}
 	return spawnedAny;
@@ -1691,7 +1710,6 @@ bool HandleManualUnload(CUnit *u, bool pressed)
 			if (status == CE_NAVAL_AT_SEA) { CePlayUnitNotice("Descend over land to drop cargo.", NULL); CFrontEnd::PlaySound(FES_BACK); return true; }
 			CDropship *ship = (CDropship *)u;
 			ship->mDoorState = 4;
-			ship->mUnknown1F0 = 1;
 			ship->mUnknown2A4 = 1.0f;
 			if (ship->GetRenderThing() && ship->GetRenderThing()->GetRTMesh())
 			{
@@ -1708,29 +1726,39 @@ bool HandleManualUnload(CUnit *u, bool pressed)
 	if (gUnloadPending)
 	{
 		++gUnloadWaitTicks;
-		const bool readyNow = u->mUnknown1F0 != 0 || gUnloadWaitTicks >= 24;
+		const bool isDropship = !strcmp(u->_GetClassName(), "CDropship");
+		const bool readyNow = (isDropship ? (((CDropship *)u)->mDoorState == 4) : (u->mUnknown1F0 != 0)) || gUnloadWaitTicks >= 24;
 		if (readyNow)
 		{
 			if (TransportCargoCount(u) <= 0)
 			{
+				if (isDropship && ((CDropship *)u)->AnySpawnerUnknown4e4420())
+					return false;
 				gUnloadPending = false;
 				if (!strcmp(u->_GetClassName(), "CBoat"))
 				{
 					CBoat *boat = (CBoat *)u;
 					if (boat->mDeploying) boat->Unknown83();
 				}
-				else if (!strcmp(u->_GetClassName(), "CDropship"))
+				else if (isDropship)
 				{
 					CDropship *ship = (CDropship *)u;
 					ship->mUnknown1F0 = 0;
 					if (ship->mDoorState == 4)
 					{
-						ship->Unknown448120();
-						ship->mDoorState = 0;
-						if (ship->GetRenderThing() && ship->GetRenderThing()->GetRTMesh())
+						if (ship->GetRenderThing() && ship->GetRenderThing()->GetRTMesh() &&
+						    ship->GetRenderThing()->GetRTMesh()->GetAnimModeByName("doorclosing") != AM_INVALID)
 						{
-							EAnimMode anim = ship->GetRenderThing()->GetRTMesh()->GetAnimModeByName("wingflat");
-							if (anim != AM_INVALID) ship->SetAnimMode(anim, TRUE, TRUE);
+							ship->Unknown448120();
+						}
+						else
+						{
+							ship->mDoorState = 0;
+							if (ship->GetRenderThing() && ship->GetRenderThing()->GetRTMesh())
+							{
+								EAnimMode anim = ship->GetRenderThing()->GetRTMesh()->GetAnimModeByName("wingflat");
+								if (anim != AM_INVALID) ship->SetAnimMode(anim, TRUE, TRUE);
+							}
 						}
 					}
 				}
@@ -2628,7 +2656,7 @@ bool Ready(CPlayer **playerOut, CBattleEngine **engineOut, CCONTROLLER **control
 	if (!engine || !controller || engine->IsDying() || engine->GetLife() <= 0.f || !engine->GetIsPoweredUp()) return false;
 	// A powered-down engine that is not standing falls: levels that drop the engine in (level 201 does) are lost when it reaches the sea.
 	if (engine->GetState() != BATTLE_ENGINE_STATE_WALKER || !engine->IsWalkerOnGroundOrObject()) return false;
-	if (controller->GetToControl() != player || GAME.IsFreeCameraOn(0) || GAME.mRemoteCamera || GAME.mOldRemoteCamera) return false;
+	if ((controller->GetToControl() != player && !PortCeCmdMapOpen()) || GAME.IsFreeCameraOn(0) || GAME.mRemoteCamera || GAME.mOldRemoteCamera) return false;
 	CCamera *camera = GAME.GetCurrentCamera(0);
 	if (!camera || !camera->GetShowHUD()) return false;		// the player's own control view (not the opening pan, a cutscene or a mission camera)
 	*playerOut = player;
@@ -2646,7 +2674,7 @@ const char *NotReadySentence()
 	CBattleEngine *engine = player ? player->GetBattleEngine() : NULL;
 	if (!engine || engine->IsDying() || engine->GetLife() <= 0.f) return NULL;
 	CCONTROLLER *controller = GAME.GetController(0);
-	if (!controller || controller->GetToControl() != player) return NULL;		// a menu (the level's end, a message) has the controls
+	if (!controller || (controller->GetToControl() != player && !PortCeCmdMapOpen())) return NULL;		// a menu (the level's end, a message) has the controls
 	CCamera *camera = GAME.GetCurrentCamera(0);
 	if (!camera || !camera->GetShowHUD()) return NULL;
 	if (engine->GetState() != BATTLE_ENGINE_STATE_WALKER || !engine->IsWalkerOnGroundOrObject()) return "Land your Battle Engine first.";
@@ -3295,6 +3323,7 @@ void Drive(CUnit *u, CPlayer *player, CBattleEngine *engine)
             if (view != kCePlayUnitCameraFirst) gUnitViewThird = view;
             gFootFirstPerson = view == kCePlayUnitCameraFirst;
             gFootRenderedView = NULL;
+            if (gFootFirstPerson && gSpotter.enabled) CePlayUnitSpotterReset(&gSpotter);
             char tip[96];
             UnitViewHelp(tip, sizeof(tip));
             CePlayUnitNotice(UnitViewName(view), tip, true);
@@ -3641,8 +3670,9 @@ bool CePlayUnitHudTelemetryOf(CePlayUnitHudTelemetry *out)
 		out->weaponCount = gInfantryWeaponSlot.usableCount;
 	}
 
-	float ratio = u->GetLife() / u->GetMaxLife();
-	if (ratio < 0.f) ratio = 0.f;
+	const float maxLife = u->GetMaxLife();
+	float ratio = maxLife > 0.f ? (u->GetLife() / maxLife) : 0.f;
+	if (!(ratio > 0.f)) ratio = 0.f;
 	if (ratio > 1.f) ratio = 1.f;
 	out->hullPct = int(ratio * 100.f + 0.5f);
 	out->headingDeg = int(CePlayUnitHeadingDegFromYaw(u->GetCurrentOrientation().mYaw) + 0.5f) % 360;
@@ -4156,6 +4186,8 @@ void RestoreWorldDrawState(LPDIRECT3DDEVICE9 dev, int viewpoint)
 	dev->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
 	dev->SetRenderState(D3DRS_COLORWRITEENABLE, 15);
 	LT.InvalidateAllStates();
+	LT.SetModulate(0);
+	RENDERINFO.Apply();
 }
 
 void DrawWeaponAdditiveTris(LPDIRECT3DDEVICE9 dev, int viewpoint, const CeWorldTriVert *fv, int nf)
@@ -5544,6 +5576,47 @@ void CePlayUnitUpdate()
 	AnswerTake();
 }
 
+struct PlayUnitControllerStackAccess : CController
+{
+	static SPtrSet<CActiveReader<IController> > CController::*StackField() { return &PlayUnitControllerStackAccess::mToControlStack; }
+};
+
+void UnwindLevelEndController()
+{
+	if (!gControllerPending) return;
+	if (CCONTROLLER *controller = GAME.GetController(0))
+	{
+		IController *pilot = Pilot();
+		if (controller->GetToControl() == pilot)
+		{
+			controller->RelinquishControl();
+		}
+		else
+		{
+			SPtrSet<CActiveReader<IController> > &stack = controller->*PlayUnitControllerStackAccess::StackField();
+			int depth = -1, idx = 0;
+			ListIterator<CActiveReader<IController> > it(&stack);
+			for (CActiveReader<IController> *r = it.First(); r && idx < 8; r = it.Next(), ++idx)
+				if (r->ToRead() == pilot) { depth = idx; break; }
+			if (depth > 0)
+			{
+				IController *above[8];
+				int popped = 0;
+				while (popped < depth && controller->GetToControl() && controller->GetToControl() != pilot)
+				{
+					above[popped++] = controller->GetToControl();
+					controller->RelinquishControl();
+				}
+				if (controller->GetToControl() == pilot)
+					controller->RelinquishControl();
+				for (int i = popped - 1; i >= 0; --i)
+					if (above[i]) controller->SetToControl(above[i]);
+			}
+		}
+	}
+	gControllerPending = false;
+}
+
 void CePlayUnitLevelEnd()
 {
     SelectionWorldEnded();
@@ -5553,7 +5626,15 @@ void CePlayUnitLevelEnd()
 	if (gDriving) Release("the level is ending");
 	CePlayUnitNoticeClear();
 	ReconcileController();
+	UnwindLevelEndController();
 	ReconcileCamera();
+	if (gCamera)
+	{
+		if (GAME.GetCurrentCamera(0) == gCamera)
+			GAME.SetCurrentCamera(0, NULL, TRUE);
+		else if (GAME.GetCamera(0) != gCamera && GAME.mRemoteCamera != gCamera && GAME.mOldRemoteCamera != gCamera)
+			gCamera = NULL;
+	}
 	CePlayUnitTextures::ReleaseAll();
 	Reset();
 	gLevel = -1;

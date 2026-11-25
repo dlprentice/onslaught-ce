@@ -235,6 +235,8 @@ bool gMirrorPass = false;
 float gMessageBoxX = 0, gMessageBoxY = 0, gMessageBoxWidth = 0, gMessageTextY = 0;
 CeHudScope::CeHudScope(int, float, float, float, float) : mPreviousScale(1), mPreviousX(0), mPreviousY(0), mPreviousActive(false) {}
 CeHudScope::~CeHudScope() {}
+static float gHudScale = 1.0f;
+float CeHudScaleFactor() { return gHudScale; }
 static unsigned long long gTicks = 50000;
 extern "C" unsigned PortPresentCount(void) { return 1; }
 extern "C" unsigned long long CE_ScreenshotTicks(void) { return gTicks; }
@@ -242,6 +244,24 @@ extern "C" bool PortCeMuseumVisitActive(void) { return true; }
 extern "C" void PortCeMuseumVisitFrame(void) {}
 extern "C" bool PortCeMuseumCinemaCue(char *, unsigned, char *, unsigned) { return false; }
 extern "C" void PortCeMuseumCinemaView(const float *, unsigned) {}
+static bool gAimingControl = false;
+static bool gInteractiveCardOn = false;
+extern "C" bool PortCeMuseumInteractiveAim(void) { return gAimingControl; }
+extern "C" bool PortCeMuseumInteractiveCard(float, float, float, float,
+                                            char *title, unsigned titleCap,
+                                            char *line, unsigned lineCap,
+                                            char *note, unsigned noteCap) {
+    if (!gInteractiveCardOn) return false;
+    std::snprintf(title, titleCap, "XF-28 Venom");
+    if (gAimingControl) {
+        std::snprintf(line, lineCap, "Forseti Advanced Interceptor");
+        std::snprintf(note, noteCap, "Turntable rotating. Press Fire to pause rotation.");
+    } else {
+        std::snprintf(line, lineCap, "Mach 2 successor to the F-24 Valkyrie, banked on the western coastal showcase pylon.");
+        std::snprintf(note, noteCap, "Forseti Advanced Interceptor - aim at the brass stud to pause rotation.");
+    }
+    return true;
+}
 int CeMuseumHallSignLabel(float, float, int, int *n) { if (n) *n = 0; return -1; }
 bool CeMuseumHallFacesExit(float, float, float, float, bool) { return false; }
 static void Need(bool ok, const char *why) { if (!ok) { std::fprintf(stderr, "FAIL: %s\n", why); std::exit(2); } }
@@ -271,6 +291,20 @@ int main() {
     gFakeBars.clear(); gFakeTexts.clear();
     PortCeMuseumLabelsRender();
     Need(!gFakeBars.empty() && !gFakeTexts.empty(), "unpausing restores active museum HUD capsule");
+
+    // Interactive exhibit plaque when NOT aiming at a stud: shows Name + Class + Fact, suppressing "aim at" hint!
+    PortCeMuseumLabelsClear();
+    PortCeMuseumLabelsAdd("Dummy", "Class", "Fact", 900.0f, 900.0f, -2.0f, 1.0f);
+    gInteractiveCardOn = true;
+    gAimingControl = false;
+    gTicks += 400; gFakeBars.clear(); gFakeTexts.clear();
+    PortCeMuseumLabelsRender();
+    Need(gFakeTexts.size() >= 3u, "interactive plaque draws name, class and fact rows");
+    Need(gFakeTexts[0].text == L"XF-28 Venom", "plaque row 0 is exhibit name");
+    Need(gFakeTexts[1].text == L"Forseti Advanced Interceptor", "plaque row 1 is exhibit class");
+    Need(gFakeTexts[2].text.find(L"Mach 2 successor") != std::wstring::npos, "plaque row 2 is exhibit fact");
+    for (const FakeText &ft : gFakeTexts)
+        Need(ft.text.find(L"aim at") == std::wstring::npos, "control hint suppressed when not aiming at stud");
     return 0;
 }
 """
@@ -292,6 +326,112 @@ int main() {
             mutated = text.replace(old, new)
             code, out = visit_frames(name, mutated if path == LABEL else label_text, mutated if path == PLACES else places_text)
             check("behaviour mutant " + name + " is killed by '" + killer + "'", code == 2 and ("FAIL: " + killer) in out, out)
+    # The Museum's one caption rule (ce_museum_label_rules.h), as arithmetic, with mutants; then what a frame draws under it.
+    caption_driver = r"""
+#include "ce_museum_label_rules.h"
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+static void Need(bool ok, const char *why) { if (!ok) { std::fprintf(stderr, "FAIL: %s\n", why); std::exit(2); } }
+static bool Near(float a, float b) { return std::fabs(a - b) < 0.01f; }
+int main() {
+    // A short title: fully open it is the text plus 70, and the text clears both bracket caps (half the bar's height each).
+    CeMuseumCaptionFit f = CeMuseumCaptionLayout(200.0f, 46.0f, 1280.0f, 1.0f, 1.0f, 0.0f);
+    Need(Near(f.fullWidth, 270.0f) && Near(f.barWidth, 270.0f) && Near(f.scaleX, 1.0f) && !f.overflow, "a short title is its text plus 70");
+    Need(f.textRoom >= 200.0f && Near(f.textRoom, 270.0f - 46.0f), "its text clears both bracket caps");
+    Need(Near(CeMuseumCaptionCapInset(46.0f), 23.0f) && Near(CeMuseumCaptionCapInset(60.0f), 30.0f), "a cap reaches half the bar's height inward");
+    // While opening, the bar is never narrower than the text plus the two caps, and never wider than when open.
+    float last = 0.0f;
+    for (float open = 0.45f; open <= 1.0f; open += 0.05f) {
+        const CeMuseumCaptionFit o = CeMuseumCaptionLayout(200.0f, 46.0f, 1280.0f, 1.0f, open, 0.0f);
+        Need(o.barWidth >= 200.0f + 2.0f * 23.0f - 0.01f, "an opening bar always holds its text between the caps");
+        Need(o.barWidth <= o.fullWidth + 0.01f && o.barWidth >= last - 0.01f, "an opening bar only grows, up to its full width");
+        last = o.barWidth;
+    }
+    Need(Near(CeMuseumCaptionLayout(200.0f, 46.0f, 1280.0f, 1.0f, 0.45f, 0.0f).barWidth, 246.0f), "first visible: text plus two caps");
+    // The bar is never wider than 60% of the view ON SCREEN, whatever the HUD scale and however long the text.
+    const float views[4] = {640.0f, 1280.0f, 1920.0f, 3440.0f};
+    const float scales[4] = {1.0f, 1.5f, 2.25f, 3.0f};
+    for (int v = 0; v < 4; ++v) for (int k = 0; k < 4; ++k) for (float widest = 20.0f; widest < 2400.0f; widest += 37.0f) {
+        const CeMuseumCaptionFit c = CeMuseumCaptionLayout(widest, 46.0f, views[v], scales[k], 1.0f, 0.0f);
+        Need(c.barWidth * scales[k] <= views[v] * 0.60f + 0.05f, "the bar is at most 60 percent of the view on screen");
+        Need(c.scaleX <= 1.0f && c.scaleX >= kCeMuseumCaptionMinSqueeze - 1e-4f, "text is squeezed at most to the floor");
+        Need(c.overflow == (widest > c.textRoom), "overflow says exactly when the text needs wrapping or squeezing");
+        if (!c.overflow) Need(Near(c.scaleX, 1.0f) && widest <= c.textRoom + 0.01f, "text that fits is not squeezed");
+        else if (c.scaleX > kCeMuseumCaptionMinSqueeze + 1e-3f)
+            Need(widest * c.scaleX <= c.textRoom + 0.05f, "squeezed text fits between the caps");
+    }
+    // A larger HUD scale leaves less room in the caption's own units: the same title wraps sooner, it does not spill.
+    Need(CeMuseumCaptionLayout(500.0f, 46.0f, 1280.0f, 1.0f, 1.0f, 0.0f).fullWidth >
+         CeMuseumCaptionLayout(500.0f, 46.0f, 1280.0f, 2.0f, 1.0f, 0.0f).fullWidth, "the HUD scale divides the room");
+    Need(!CeMuseumCaptionLayout(500.0f, 46.0f, 1280.0f, 1.0f, 1.0f, 0.0f).overflow &&
+         CeMuseumCaptionLayout(500.0f, 46.0f, 1280.0f, 2.0f, 1.0f, 0.0f).overflow, "a title that fits at 1x overflows, and wraps, at 2x");
+    // A plaque keeps the radio's width for short text and grows for long text only as far as the rule allows.
+    Need(Near(CeMuseumCaptionLayout(60.0f, 60.0f, 1280.0f, 1.0f, 1.0f, 230.0f).fullWidth, 230.0f), "a short plaque keeps the radio's width");
+    Need(Near(CeMuseumCaptionLayout(400.0f, 60.0f, 1280.0f, 1.0f, 1.0f, 230.0f).fullWidth, 470.0f), "a longer plaque grows with its text");
+    Need(Near(CeMuseumCaptionLayout(4000.0f, 60.0f, 1280.0f, 1.0f, 1.0f, 230.0f).fullWidth, 768.0f), "a plaque stops at 60 percent of the view");
+    // Bad input draws nothing.
+    Need(CeMuseumCaptionLayout(-1.0f, 46.0f, 1280.0f, 1.0f, 1.0f, 0.0f).barWidth == 0.0f &&
+         CeMuseumCaptionLayout(100.0f, 46.0f, 0.0f, 1.0f, 1.0f, 0.0f).barWidth == 0.0f, "bad input gives an empty fit");
+    Need(Near(CeMuseumCaptionLayout(200.0f, 46.0f, 1280.0f, 0.0f, 1.0f, 0.0f).fullWidth, 270.0f), "a zero HUD scale is taken as 1");
+    // The break is the space nearest the middle; short text and text with no space are not broken.
+    Need(CeMuseumCaptionSplit("Walk past the Battle Engine to enter the Grand Atrium - hold Shift to sprint.") == 40, "a long line breaks at its middle space");
+    Need(CeMuseumCaptionSplit("aaaa bbbbbbbbbbbbbbbbbbbbbbbb") == 4 && CeMuseumCaptionSplit("aaaaaaaaaaaaaaaaaaaaaaaa bbbb") == 24,
+         "a lopsided line breaks at its only space");
+    Need(CeMuseumCaptionSplit("short one") == -1 && CeMuseumCaptionSplit("nospacesinthislongline") == -1 &&
+         CeMuseumCaptionSplit(" leadingspaceonlyhere") == -1 && CeMuseumCaptionSplit((const char *)0) == -1 &&
+         CeMuseumCaptionSplit(L"") == -1, "nothing to break: -1");
+    Need(CeMuseumCaptionSplit(L"Central rotunda and living battle dioramas.") == 19, "wide text breaks the same way");
+    return 0;
+}
+"""
+    caption_mutants = [
+        ("pad-too-thin", "static const float kCeMuseumCaptionPad = 70.0f;", "static const float kCeMuseumCaptionPad = 48.0f;"),
+        ("cap-inset-ignored", "return barHeight > 0.0f ? barHeight * 0.5f : 0.0f;", "return barHeight > 0.0f ? 12.0f : 0.0f;"),
+        ("hud-scale-ignored", "fit.most = viewWidth * kCeMuseumCaptionViewShare / scale;", "fit.most = viewWidth * kCeMuseumCaptionViewShare;"),
+        ("no-view-cap", "if (full > fit.most)\n\t\tfull = fit.most;", "if (false)\n\t\tfull = fit.most;"),
+        ("view-share-too-wide", "static const float kCeMuseumCaptionViewShare = 0.60f;", "static const float kCeMuseumCaptionViewShare = 0.90f;"),
+        ("opening-bar-cuts-text", "float closed = widest * fit.scaleX + 2.0f * inset;", "float closed = widest * fit.scaleX + 24.0f;"),
+        ("squeeze-unbounded", "if (fit.scaleX < kCeMuseumCaptionMinSqueeze)\n\t\t\tfit.scaleX = kCeMuseumCaptionMinSqueeze;", "(void)kCeMuseumCaptionMinSqueeze;"),
+        ("split-at-first-space", "if (away < bestAway)", "if (best < 0)"),
+        ("min-width-dropped", "if (full < minWidth)\n\t\tfull = minWidth;", "(void)minWidth;"),
+    ]
+    rules_text = RULES.read_text()
+    with tempfile.TemporaryDirectory() as folder:
+        folder = Path(folder)
+        (folder / "caption.cpp").write_text(caption_driver)
+        built, out = run(["g++", "-std=c++14", "-O1", "-Wall", "-Wextra", "-Werror", "-I" + str(GAME),
+                          str(folder / "caption.cpp"), "-o", str(folder / "caption")])
+        check("the caption rule driver builds", built, out)
+        if built:
+            good, out = run([str(folder / "caption")])
+            check("captions keep text between the bracket caps and inside 60% of the view at every HUD scale", good, out)
+        for label, old, new in caption_mutants:
+            if rules_text.count(old) != 1:
+                check("caption mutant " + label + " applies", False, "source text not found once: " + old)
+                continue
+            mdir = folder / label
+            mdir.mkdir()
+            (mdir / RULES.name).write_text(rules_text.replace(old, new))
+            built, out = run(["g++", "-std=c++14", "-O1", "-I" + str(mdir), "-I" + str(GAME),
+                              str(folder / "caption.cpp"), "-o", str(mdir / "caption")])
+            if not built:
+                check("caption mutant " + label + " is caught", False, out)
+                continue
+            caught, _ = run([str(mdir / "caption")], 2)
+            check("caption mutant " + label + " is caught", caught)
+
+    label_src = LABEL.read_text()
+    check("both caption bars use the one rule, read the HUD scale, and wrap before they squeeze",
+          label_src.count("CeMuseumCaptionLayout(") >= 4 and label_src.count("CeHudScaleFactor()") == 2
+          and label_src.count("WrapLine(font,") == 2 and "widest + 48.0f" not in label_src and "viewW - 36.0f" not in label_src)
+    check("the exhibit marker is the brass diamond, not a font letter",
+          'L"v"' not in label_src and "PortCeMuseumDrawExhibitMarker(pixel.x, pixel.y - size * 1.6f, size);" in label_src
+          and 'extern "C" void PortCeMuseumDrawExhibitMarker(float cx, float cy, float size) {' in (GAME / "ce_museum_hall.cpp").read_text())
+    check("a plaque shows name, class and one fact; a control hint only while the visitor aims at the control",
+          "ExhibitCapsule(label, label.line, gInspecting ? label.detail : NULL," in label_src
+          and "if (PortCeMuseumInteractiveAim && PortCeMuseumInteractiveAim())\n\t\t\t\tCopy(card.note, inote);" in label_src)
+
     # The visit engine runs the place tracking: armed when the hall of displays is built, stepped once a visit frame, dropped at the end.
     engine = VISIT_ENGINE.read_text()
     frame = engine[engine.find("extern \"C\" void PortCeMuseumVisitFrame(void)"):engine.find("bool CeMuseumVisit::GenerateInstalled()")]

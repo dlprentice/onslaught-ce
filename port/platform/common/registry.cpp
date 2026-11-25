@@ -144,10 +144,11 @@ extern "C" LONG WINAPI PortRegQueryValueExA(HKEY key, LPCSTR name, LPDWORD, LPDW
 			if (*p == ':')
 				p++;
 			DWORD n = 0;
-			while (p[0] && p[1] && p[0] != '\n')
+			while (p[0] && p[1] && p[0] != '\n' && p[0] != '\r')
 			{
-				unsigned int b;
-				sscanf(p, "%2x", &b);
+				unsigned int b = 0;
+				if (sscanf(p, "%2x", &b) != 1)
+					break;
 				if (data && size && n < *size)
 					data[n] = (BYTE)b;
 				n++;

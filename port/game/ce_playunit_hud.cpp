@@ -29,6 +29,7 @@
 extern "C" unsigned long long CE_ScreenshotTicks(void);		// ce_screenshot.cpp: SDL's milliseconds
 extern "C" float PortCeLivingSandboxHudTopBottom(float viewportW, float viewportH) __attribute__((weak));
 extern "C" float PortCeCarrierClashHudTopBottom(float viewportW, float viewportH) __attribute__((weak));
+extern "C" float PortCeFlagshipDuelHudTopBottom(float viewportW, float viewportH) __attribute__((weak));
 
 namespace
 {
@@ -109,6 +110,11 @@ float ModeTopHudBottom(float w, float h)
 		const float cc = PortCeCarrierClashHudTopBottom(w, h);
 		if (cc > bottom) bottom = cc;
 	}
+	if (PortCeFlagshipDuelHudTopBottom)
+	{
+		const float fd = PortCeFlagshipDuelHudTopBottom(w, h);
+		if (fd > bottom) bottom = fd;
+	}
 	return bottom;
 }
 
@@ -168,6 +174,10 @@ void OverlayStates()
 
 void RestoreStates()
 {
+	LT.SetModulate(0);
+	LT.SRS(D3DRS_CULLMODE, D3DCULL_CCW);
+	LT.SRS(D3DRS_ALPHATESTENABLE, FALSE);
+	LT.SRS(D3DRS_ALPHABLENDENABLE, FALSE);
 	LT.SRS(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
 	LT.SRS(D3DRS_ZWRITEENABLE, TRUE);
 	LT.SRS(D3DRS_ZENABLE, TRUE);
@@ -268,7 +278,7 @@ void DrawHudLineText(CDXBitmapFont *font, float x, float y, unsigned colour, con
 
 unsigned LerpArgb(unsigned c0, unsigned c1, float t)
 {
-	if (t <= 0.f) return c0;
+	if (!(t > 0.f)) return c0;
 	if (t >= 1.f) return c1;
 	const auto ch = [t](unsigned a, unsigned b) -> unsigned {
 		const float v = float(a) + (float(b) - float(a)) * t;
@@ -301,10 +311,15 @@ void BeginHudUntextured()
 
 void EndHudUntextured()
 {
+	LT.SRS(D3DRS_CULLMODE, D3DCULL_CCW);
 	LT.STS(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+	LT.STS(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
 	LT.STS(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
 	LT.STS(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+	LT.STS(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
 	LT.STS(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
+	LT.SRS(D3DRS_ALPHATESTENABLE, TRUE);
+	LT.SRS(D3DRS_ALPHAREF, 8);
 }
 
 void DrawNineSliceGlassFill(LPDIRECT3DDEVICE9 dev, CeHudTriBatch &batch, const CePlayUnitNineSlice &ns,

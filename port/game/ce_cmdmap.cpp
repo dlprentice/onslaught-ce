@@ -103,6 +103,33 @@ bool PortRecording();
 
 namespace
 {
+struct ControllerStackAccess : CController
+{
+	static SPtrSet<CActiveReader<IController> > CController::*StackField() { return &ControllerStackAccess::mToControlStack; }
+};
+
+void RelinquishBuriedController(CCONTROLLER *controller, IController *target)
+{
+	if (!controller || !target) return;
+	SPtrSet<CActiveReader<IController> > &stack = controller->*ControllerStackAccess::StackField();
+	int depth = -1, idx = 0;
+	ListIterator<CActiveReader<IController> > it(&stack);
+	for (CActiveReader<IController> *r = it.First(); r && idx < 8; r = it.Next(), ++idx)
+		if (r->ToRead() == target) { depth = idx; break; }
+	if (depth <= 0) return;
+	IController *above[8];
+	int popped = 0;
+	while (popped < depth && controller->GetToControl() && controller->GetToControl() != target)
+	{
+		above[popped++] = controller->GetToControl();
+		controller->RelinquishControl();
+	}
+	if (controller->GetToControl() == target)
+		controller->RelinquishControl();
+	for (int i = popped - 1; i >= 0; --i)
+		if (above[i]) controller->SetToControl(above[i]);
+}
+
 unsigned OpenKey() { return (unsigned)PortCeActionKey(CeControlAction::Commander); }
 unsigned gCloseKey = 0;
 const int kMouseUp = 3, kMouseDown = 4;			// mouse.cpp: what the key trap is told of a button (key 0 left, 1 middle, 2 right; 3 and 4 the wheel)
@@ -848,6 +875,7 @@ void Text(float x, float y, DWORD colour, const char *text, float maxWidth = 0.f
 	if (centred) x -= float(extent.cx) * scale * 0.5f;
 	LT.STS(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
 	gFont->DrawTextWithShadow(x, y, colour, w, 0, 0.f, scale, scale);
+	LT.SetModulate(0);
 }
 
 float LineHeight() { return float(gFont->GetHeight()) * L.s; }
@@ -856,11 +884,12 @@ void BeginDraw()
 {
 	RENDERINFO.SetFogEnabled(false);
 	RENDERINFO.SetLightingEnabled(false);
+	LT.SRS(D3DRS_CULLMODE, D3DCULL_CCW);
 	LT.SRS(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
 	LT.SRS(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
 	LT.STS(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
 	LT.STS(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
-	LT.STS(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+	LT.SetModulate(0);
 	LT.SRS(D3DRS_ALPHATESTENABLE, TRUE);
 	LT.SRS(D3DRS_ALPHAREF, 8);
 	LT.SRS(D3DRS_ALPHABLENDENABLE, TRUE);
@@ -872,6 +901,9 @@ void BeginDraw()
 
 void EndDraw()
 {
+	LT.SetModulate(0);
+	LT.SRS(D3DRS_ALPHATESTENABLE, FALSE);
+	LT.SRS(D3DRS_ALPHABLENDENABLE, FALSE);
 	LT.SRS(D3DRS_CULLMODE, D3DCULL_CCW);
 	LT.SRS(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
 	LT.SRS(D3DRS_ZWRITEENABLE, TRUE);
@@ -981,6 +1013,7 @@ bool DrawTerrainFromTexture()
 	// by frame against the cells, 99,676 of 307,200 pixels differed). The quad stays on the map's pixels, and its texture coordinates start a hair under one
 	// pixel along (0.999 of a pixel, in the units of the map's side) so that every boundary falls on the floor, as the cells' do.
 	const float shiftU = 0.999f / L.mapSide, shiftV = 0.999f / L.mapSide;
+	LT.SetModulate(0);
 	CSPRITERENDERER::mBatch = TRUE;
 	CSPRITERENDERER::DrawSprite(L.mapX, L.mapY, 0.001f, gTerrainTexture, SA_TOP_LEFT, SPT_NONE, 1.f, 0.f, 0xffffffff, L.mapSide / gTerrainTexture->GetRealWidth(),
 								L.mapSide / gTerrainTexture->GetRealHeight(), shiftU, 1.f + shiftU, shiftV, 1.f + shiftV);
@@ -1011,6 +1044,7 @@ void DrawTerrain()
 {
 	if (DrawTerrainFromTexture()) return;
 	const float cell = L.mapSide / float(kGrid);
+	LT.SetModulate(0);
 	CSPRITERENDERER::mBatch = TRUE;
 	for (int j = 0; j < kGrid; ++j)
 	{
@@ -1313,7 +1347,7 @@ bool SpreadRound(int n, const float *sx, const float *sy, float wx, float wy, fl
 	return true;
 }
 
-bool Order(int verb, float wx, float wy)
+bool Order(int verb, float wx, float wy, CeCmdVoiceCue voiceOverride = CE_VOICE_NONE)
 {
 	if (!ByOrdinal(gSelected)) { Note("Pick a squad first."); return false; }
 	int ids[kCeSelMax], n = 0;
@@ -1379,7 +1413,8 @@ bool Order(int verb, float wx, float wy)
 	gOrderNs = Ns();
 	if (StrategicLive())
 	{
-		const CeCmdVoiceCue cue = verb == CE_CMD_ADVANCE ? CE_VOICE_ATTACK :
+		const CeCmdVoiceCue cue = voiceOverride != CE_VOICE_NONE ? voiceOverride :
+		                          verb == CE_CMD_ADVANCE ? CE_VOICE_ATTACK :
 		                          verb == CE_CMD_MOVE ? CE_VOICE_MOVE :
 		                          verb == CE_CMD_HOLD ? CE_VOICE_HOLD :
 		                          verb == CE_CMD_FALLBACK ? CE_VOICE_FALLBACK : CE_VOICE_CANCEL;
@@ -1722,8 +1757,18 @@ void FormatSquadCardShortName(const char* rawName, bool plural, int allegiance, 
     out[0] = 0;
     const char* src = (rawName && rawName[0]) ? rawName : "Squad";
     const char* picked = NULL;
-    if (CmdAsciiContainsNoCase(src, "gun walker") || CmdAsciiContainsNoCase(src, "walker"))
+    if (CmdAsciiContainsNoCase(src, "broadsword"))
+        picked = plural ? "Broadswords" : "Broadsword";
+    else if (CmdAsciiContainsNoCase(src, "crab") && CmdAsciiContainsNoCase(src, "mech"))
+        picked = plural ? "Crab Walkers" : "Crab Walker";
+    else if (CmdAsciiContainsNoCase(src, "arachn"))
+        picked = plural ? "Arachnodrones" : "Arachnodrone";
+    else if (CmdAsciiContainsNoCase(src, "gun walker") || CmdAsciiContainsNoCase(src, "walker"))
         picked = plural ? "Gun Walkers" : "Gun Walker";
+    else if (CmdAsciiContainsNoCase(src, "beam") && CmdAsciiContainsNoCase(src, "tank"))
+        picked = plural ? "Beam Tanks" : "Beam Tank";
+    else if (CmdAsciiContainsNoCase(src, "mortar") && CmdAsciiContainsNoCase(src, "tank"))
+        picked = plural ? "Mortar Tanks" : "Mortar Tank";
     else if (CmdAsciiContainsNoCase(src, "heavy") && CmdAsciiContainsNoCase(src, "tank"))
         picked = plural ? "Heavy Tanks" : "Heavy Tank";
     else if (CmdAsciiContainsNoCase(src, "light") && CmdAsciiContainsNoCase(src, "tank"))
@@ -1811,6 +1856,7 @@ void BuildRtsHudModel(char* summaryOut, unsigned summaryRoom) {
         pl = CeCmdPlacard{};
         pl.kind = CE_PLACARD_UNIT;
         pl.id = int(gUnitNative[i].key.id);
+        pl.hasValidId = true;
         snprintf(pl.name, sizeof(pl.name), "%s", gUnitNative[i].name);
         CeCmdHudShortName(gUnitNative[i].name, false, false, pl.shortName, sizeof(pl.shortName));
         pl.count = 1;
@@ -2129,6 +2175,13 @@ void StrategicTitle(char* out, unsigned room) {
         snprintf(out, room, "Commander   Bases %d to %d", gMatch.buildings[0], gMatch.buildings[1]);
     else snprintf(out, room, "Commander");
 }
+void StrategicTitleDisplay(char* out, unsigned room) {
+    if (gMatch.nodes > 0)
+        snprintf(out, room, "Commander   Battle Line %d of %d   Bases %d - %d", gMatch.held, gMatch.nodes, gMatch.buildings[0], gMatch.buildings[1]);
+    else if (gMatch.buildings[0] > 0 || gMatch.buildings[1] > 0)
+        snprintf(out, room, "Commander   Bases %d - %d", gMatch.buildings[0], gMatch.buildings[1]);
+    else snprintf(out, room, "Commander");
+}
 // Compact top-right utility prompt (keeps full bottom bar clear for RTS placards and command card).
 void StrategicPrompt(char* out, unsigned room) {
     const char* const action[5] = {"Right Click Move", "H Hold", "C Focus", "F1 Help", "Esc Cockpit"};
@@ -2171,7 +2224,7 @@ bool StrategicPanelAt(float x, float y) {
     if (FactoryCardAt(x,y) >= 0 || UnitPanelAt(x,y)) return true;
     const float u = L.s;
     char text[160];
-    StrategicTitle(text, sizeof text);
+    StrategicTitleDisplay(text, sizeof text);
     if (y < 30.f * u && x < 48.f * u + TextWidth(text, u)) return true;
     StrategicPrompt(text, sizeof text);
     if (y < 30.f * u && x >= L.w - (44.f * u + TextWidth(text, u))) return text[0] != 0;
@@ -2192,7 +2245,7 @@ bool StrategicRectClearsHud(float x0, float y0, float x1, float y1) {
     const float u = L.s;
     const float pad = 2.f * u;
     char text[160];
-    StrategicTitle(text, sizeof text);
+    StrategicTitleDisplay(text, sizeof text);
     if (StrategicRectsOverlap(x0, y0, x1, y1, 16.f * u - pad, 4.f * u, 48.f * u + TextWidth(text, u) + pad, 30.f * u + pad))
         return false;
     StrategicPrompt(text, sizeof text);
@@ -2934,7 +2987,7 @@ void RtsHudOrderFollowBe() {
     }
     if (!ByOrdinal(gSelected)) { Note("Pick a squad first."); return; }
     gHudFollowSquad = gSelected;
-    if (Order(CE_CMD_ADVANCE, rx, ry)) CeCmdVoicePlay(CE_VOICE_FOLLOW, Ns());
+    Order(CE_CMD_ADVANCE, rx, ry, CE_VOICE_FOLLOW);
 }
 
 void RtsHudTakeControl() {
@@ -3108,10 +3161,10 @@ bool RtsHudPointerDown(float px, float py, bool shift) {
             if (dbl) StartStrategicFocus(*sq);
             return true;
         }
-        if (pl.kind == CE_PLACARD_UNIT && pl.id > 0) {
+        if (pl.kind == CE_PLACARD_UNIT && (pl.hasValidId || uint32_t(pl.id) != 0u)) {
             int foundIdx = -1;
             for (int i = 0; i < gUnitNativeCount; ++i) {
-                if (gUnitNative[i].key.id == uint32_t(pl.id)) { foundIdx = i; break; }
+                if (uint32_t(gUnitNative[i].key.id) == uint32_t(pl.id)) { foundIdx = i; break; }
             }
             if (foundIdx >= 0) {
                 if (dbl) {
@@ -3607,6 +3660,7 @@ void SwitchView(bool strategic) {
     Close();
     if (!gOpen) Open(strategic);
     memcpy(gDown, held, sizeof(gDown));
+    gShift = gDown[DIK_LSHIFT] || gDown[DIK_RSHIFT];
 }
 
 bool StrategicTrap(WORD key, int event) {
@@ -3998,14 +4052,32 @@ void DrawStrategicHints() {
 
     // the title panel, top left
     char text[160];
-    StrategicTitle(text, sizeof text);
-    // the title in the HUD's capsule, top left: "Commander" in white, the battle's state after it in grey
+    StrategicTitleDisplay(text, sizeof text);
+    // the title in the HUD's capsule, top left: "Commander" in white, Battle Line in grey, and "Bases X - Y" in faction colours
     CapsuleBar(16.f * u, 6.f * u, TextWidth(text, u) + 32.f * u, 22.f * u, 1.f, false, hudAllegiance);
     {
-        char head[24] = "Commander";
-        const float headW = TextWidth(head, u);
-        Text(32.f * u, 10.f * u, kText, head);
-        if (strlen(text) > strlen(head)) Text(32.f * u + headW, 10.f * u, kQuiet, text + strlen(head));
+        float px = 32.f * u;
+        const float ty = 10.f * u;
+        Text(px, ty, kText, "Commander");
+        px += TextWidth("Commander", u);
+        if (gMatch.nodes > 0) {
+            char lineSeg[64];
+            snprintf(lineSeg, sizeof lineSeg, "   Battle Line %d of %d", gMatch.held, gMatch.nodes);
+            Text(px, ty, kQuiet, lineSeg);
+            px += TextWidth(lineSeg, u);
+        }
+        if (gMatch.nodes > 0 || gMatch.buildings[0] > 0 || gMatch.buildings[1] > 0) {
+            char b0[16], b1[16];
+            snprintf(b0, sizeof b0, "%d", gMatch.buildings[0]);
+            snprintf(b1, sizeof b1, "%d", gMatch.buildings[1]);
+            Text(px, ty, kQuiet, "   Bases ");
+            px += TextWidth("   Bases ", u);
+            Text(px, ty, 0xff76e6ffu, b0);
+            px += TextWidth(b0, u);
+            Text(px, ty, kQuiet, " - ");
+            px += TextWidth(" - ", u);
+            Text(px, ty, 0xffff8c66u, b1);
+        }
     }
 
     // compact top-right utility hint (F1 Help / Esc Cockpit)
@@ -4231,17 +4303,18 @@ unsigned gTestFrameCount = 0, gTestOpenedAt = 0;		// frames seen by PortCeCmdFra
 #endif
 void Close()
 {
-    BeginNativeReturn();
-    ResetStrategicGesture();
-    CeFactoryLeaveSelection();
-    CeCmdVoiceStop();
     const bool wasStrategic = gStrategic;
     const bool ownedStrategicInput = LT.GetKeytrap() == (pKeyTrapper)Trap;
+    BeginNativeReturn();
     if (gOpen && wasStrategic) {
         if (gStrategicOwner.Leave(StrategicContext()) == CeCommanderCameraResult::RestorePending) {
+            CancelNativeReturn();
             Note("Press Esc again."); return;
         }
     }
+    ResetStrategicGesture();
+    CeFactoryLeaveSelection();
+    CeCmdVoiceStop();
 
 	if (!gOpen) return;
 	CePlayUnitMapBoundary();
@@ -4275,7 +4348,10 @@ void Close()
 #endif
 	if (LT.GetKeytrap() == (pKeyTrapper)Trap) LT.SetKeytrap(NULL);
 	if (CCONTROLLER *controller = GAME.GetController(0))
+	{
 		if (controller->GetToControl() == &gSink) controller->RelinquishControl();
+		else RelinquishBuriedController(controller, &gSink);
+	}
 	if (!wasStrategic) { GAME.*GameAccess::PauseField() = FALSE; }
 	if (!wasStrategic || ownedStrategicInput) { InitMouse(); }
 #ifdef CE_COMMANDER_TEST

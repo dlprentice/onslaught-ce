@@ -85,6 +85,8 @@ CASES = (
     "--ce-hotplug-enumeration",
     "--ce-hotplug-cached-default",
     "window-focus-cycle", "window-minimize-cycle",
+    "mouse-buttons-no-focus", "mouse-release-focus-loss",
+    "pad-focus-neutral", "pad-rebind-per-device",
 )
 FAITHFUL_CASES = (
     'window-minimize-isolated-key',
@@ -188,7 +190,7 @@ def main():
         for name, path in {"WINDOW_CPP": out / "window.cpp", "DINPUT_CPP": out / "dinput.cpp",
                            "PORTLOG_CPP": out / "portlog.cpp", "INVENTORY_CPP": out / "inventory.cpp", "CALLERS_INC": calls}.items():
             driver = driver.replace(name, str(path))
-        edge_test = any(case == "pad-quick-tap" or case.startswith("pad-edge-") for case in (args.case or CASES))
+        edge_test = any(case in ("pad-quick-tap", "pad-focus-neutral") or case.startswith("pad-edge-") for case in (args.case or CASES))
         edge_source = ""
         if edge_test and not args.faithful:
             gamepad = build.network_view((args.source_root / "port/game/ce_gamepad.cpp").read_text(), off=True)

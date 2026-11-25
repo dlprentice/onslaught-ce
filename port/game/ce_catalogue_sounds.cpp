@@ -20,6 +20,7 @@ const size_t SOUND_NAME_BYTES = CE_CATALOGUE_SOUND_NAME_MAX, SOUND_ROWS = 4096;
 std::vector<std::string> names;
 bool collecting; // the visitor accepts names only while Open is asking for them
 bool started;    // this controller started a preview and has not stopped it since
+char problem[160];
 
 unsigned char Fold(char c) {
     return static_cast<unsigned char>(c >= 'A' && c <= 'Z' ? c + ('a' - 'A') : c);
@@ -72,6 +73,7 @@ void StopOwned() {
 
 void PortCeCatalogueSoundsOpen() {
     StopOwned();
+    problem[0] = 0;
     names.clear();
     collecting = true;
     PortCeCatalogueSoundVisit(Collect, &names);
@@ -81,6 +83,7 @@ void PortCeCatalogueSoundsStop() { StopOwned(); }
 
 void PortCeCatalogueSoundsClose() {
     StopOwned();
+    problem[0] = 0;
     std::vector<std::string>().swap(names);
 }
 unsigned PortCeCatalogueSoundsCount() { return static_cast<unsigned>(names.size()); }
@@ -91,12 +94,12 @@ const char* PortCeCatalogueSoundsName(unsigned index) {
 bool PortCeCatalogueSoundsPlay(unsigned index) {
     if (index >= names.size()) return false;
     StopOwned();
+    problem[0] = 0;
     started = PortCeCatalogueSoundStart(names[index].c_str());
     return started;
 }
 // Live playback of the owned preview: never the remembered result of a start.
 bool PortCeCatalogueSoundsPlaying() { return started && PortCeCatalogueSoundActive(); }
-namespace { char problem[160]; }
 bool PortCeCatalogueSoundsPlayFile(const char* game_path) {
     StopOwned();
     problem[0] = 0;

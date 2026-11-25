@@ -17,7 +17,10 @@
 #include	"tweak.h"
 #include	"chunker.h"
 #include	"mathsconst.h"
+#include	<stdint.h>
 #include	"../platform/common/portlog.h"
+
+extern "C" uint64_t	PortCeD3dDeviceGeneration(void) __attribute__((weak));
 
 extern CTweakSLONG	USE_MODULATE_2X;
 extern const WCHAR	FONT_CHARACTERS[];		// a bitmap font's characters, in cell order
@@ -281,18 +284,26 @@ void	CrispUpsample(const void *src, int srcPitch, int w, int h, int cell, void *
 struct CrispFont
 {
 	const CDXBitmapFont	*font;
-	IDirect3DDevice9	*device;		// the device the copy was made for: after the device is made again it is made again
-	IDirect3DTexture9	*texture;		// NULL: the copy could not be made, the game's texture is used
+	IDirect3DDevice9	*device;		// paired with generation so address reuse never aliases a retired device
+	uint64_t			generation;
+	IDirect3DTexture9	*texture;		// NULL: not yet built or last attempt failed; retried on subsequent eligible draws
+	bool				loggedFailure;
 };
 CrispFont		gCrispFonts[16];
 int				gNumCrisp;
 
-// The texture four times as large, or NULL when the game's is not a lockable A8R8G8B8 texture of the font's size. Made once
-// per font, the first time text of a size that wants it is drawn; the session log says so (and why, when it is not made).
-IDirect3DTexture9	*BuildCrispTexture(CDXBitmapFont *font)
+uint64_t	CurrentCrispDeviceGen()
 {
+	return PortCeD3dDeviceGeneration ? PortCeD3dDeviceGeneration() : 0u;
+}
+
+// The texture four times as large, or NULL when the game's is not a lockable A8R8G8B8 texture of the font's size. Made once
+// per font and device generation, retrying if a previous attempt failed; failure is logged at most once per generation.
+IDirect3DTexture9	*BuildCrispTexture(CDXBitmapFont *font, bool *loggedFailure)
+{
+	IDirect3DDevice9	*device = LT.GetDevice();
 	IDirect3DTexture9	*src = font->mTexture ? font->mTexture->GetTexture() : NULL;
-	if (!src)
+	if (!device || !src)
 		return NULL;
 	D3DSURFACE_DESC	desc;
 	const char		*why = NULL;
@@ -304,37 +315,62 @@ IDirect3DTexture9	*BuildCrispTexture(CDXBitmapFont *font)
 		why = "its size is not the font's";
 	else if (font->mHeight < 4 || font->mHeight > 128)
 		why = "the character cells are an unusual size";
+	else if (desc.Width == 0 || desc.Height == 0 || desc.Width > 4096 || desc.Height > 4096)
+		why = "its dimensions exceed the upsample limit";
 	if (why)
 	{
-		PortSessionLog(PORT_SESSION_VIDEO, false, "font copy not made: %s; the game's texture is drawn", why);
+		if (!*loggedFailure)
+		{
+			*loggedFailure = true;
+			PortSessionLog(PORT_SESSION_VIDEO, false, "font copy not made: %s; the game's texture is drawn", why);
+		}
 		return NULL;
 	}
 	const DWORD		began = GetTickCount();
 	D3DLOCKED_RECT	in;
-	if (FAILED(src->LockRect(0, &in, NULL, D3DLOCK_READONLY)))
+	if (FAILED(src->LockRect(0, &in, NULL, D3DLOCK_READONLY)) || !in.pBits)
 	{
-		PortSessionLog(PORT_SESSION_VIDEO, true, "font copy not made: the font texture could not be locked");
+		if (in.pBits)
+			src->UnlockRect(0);
+		if (!*loggedFailure)
+		{
+			*loggedFailure = true;
+			PortSessionLog(PORT_SESSION_VIDEO, true, "font copy not made: the font texture could not be locked");
+		}
 		return NULL;
 	}
 	IDirect3DTexture9	*dst = NULL;
-	if (FAILED(LT.GetDevice()->CreateTexture(desc.Width * CRISP_SCALE, desc.Height * CRISP_SCALE, 1, 0, D3DFMT_A8R8G8B8,
-											 D3DPOOL_MANAGED, &dst, NULL)))
+	if (FAILED(device->CreateTexture(desc.Width * CRISP_SCALE, desc.Height * CRISP_SCALE, 1, 0, D3DFMT_A8R8G8B8,
+									 D3DPOOL_MANAGED, &dst, NULL)) || !dst)
 	{
+		if (dst)
+			dst->Release();
 		src->UnlockRect(0);
-		PortSessionLog(PORT_SESSION_VIDEO, true, "font copy not made: the larger texture could not be created");
+		if (!*loggedFailure)
+		{
+			*loggedFailure = true;
+			PortSessionLog(PORT_SESSION_VIDEO, true, "font copy not made: the larger texture could not be created");
+		}
 		return NULL;
 	}
 	D3DLOCKED_RECT	out;
-	if (FAILED(dst->LockRect(0, &out, NULL, 0)))
+	if (FAILED(dst->LockRect(0, &out, NULL, 0)) || !out.pBits)
 	{
+		if (out.pBits)
+			dst->UnlockRect(0);
 		src->UnlockRect(0);
 		dst->Release();
-		PortSessionLog(PORT_SESSION_VIDEO, true, "font copy not made: the larger texture could not be locked");
+		if (!*loggedFailure)
+		{
+			*loggedFailure = true;
+			PortSessionLog(PORT_SESSION_VIDEO, true, "font copy not made: the larger texture could not be locked");
+		}
 		return NULL;
 	}
 	CrispUpsample(in.pBits, in.Pitch, (int)desc.Width, (int)desc.Height, (int)font->mHeight, out.pBits, out.Pitch);
 	dst->UnlockRect(0);
 	src->UnlockRect(0);
+	*loggedFailure = false;
 	PortSessionLog(PORT_SESSION_VIDEO, false, "font copy made: %ux%u texture, cells of %d, in %lu ms", (unsigned)desc.Width,
 				   (unsigned)desc.Height, (int)font->mHeight, (unsigned long)(GetTickCount() - began));
 	return dst;
@@ -346,25 +382,46 @@ IDirect3DTexture9	*CrispTexture(CDXBitmapFont *font, float scale)
 	if (!CrispWanted(font->mSysFont, scale, PortWideActive()))
 		return NULL;
 	IDirect3DDevice9	*device = LT.GetDevice();
+	if (!device)
+		return NULL;
+	const uint64_t		generation = CurrentCrispDeviceGen();
 	for (int i = 0; i < gNumCrisp; i++)
 		if (gCrispFonts[i].font == font)
 		{
-			if (gCrispFonts[i].device != device)
+			if (gCrispFonts[i].device != device || gCrispFonts[i].generation != generation)
 			{
-				// a copy made for a device that is gone (a Reset keeps a managed texture; a new device does not)
+				// a copy made for a device generation that is gone (a Reset keeps a managed texture; a new device does not)
 				if (gCrispFonts[i].texture)
 					gCrispFonts[i].texture->Release();
 				gCrispFonts[i].device = device;
-				gCrispFonts[i].texture = BuildCrispTexture(font);
+				gCrispFonts[i].generation = generation;
+				gCrispFonts[i].texture = NULL;
+				gCrispFonts[i].loggedFailure = false;
 			}
+			if (!gCrispFonts[i].texture)
+				gCrispFonts[i].texture = BuildCrispTexture(font, &gCrispFonts[i].loggedFailure);
 			return gCrispFonts[i].texture;
 		}
-	if (gNumCrisp == (int)(sizeof(gCrispFonts) / sizeof(gCrispFonts[0])))
-		return NULL;
-	gCrispFonts[gNumCrisp].font = font;
-	gCrispFonts[gNumCrisp].device = device;
-	gCrispFonts[gNumCrisp].texture = BuildCrispTexture(font);
-	return gCrispFonts[gNumCrisp++].texture;
+	int	slot = -1;
+	if (gNumCrisp < (int)(sizeof(gCrispFonts) / sizeof(gCrispFonts[0])))
+		slot = gNumCrisp++;
+	else
+	{
+		for (int i = 0; i < gNumCrisp; i++)
+			if (!gCrispFonts[i].texture)
+			{
+				slot = i;
+				break;
+			}
+		if (slot < 0)
+			return NULL;
+	}
+	gCrispFonts[slot].font = font;
+	gCrispFonts[slot].device = device;
+	gCrispFonts[slot].generation = generation;
+	gCrispFonts[slot].loggedFailure = false;
+	gCrispFonts[slot].texture = BuildCrispTexture(font, &gCrispFonts[slot].loggedFailure);
+	return gCrispFonts[slot].texture;
 }
 
 void	ReleaseCrispTexture(const CDXBitmapFont *font)
@@ -484,16 +541,30 @@ void	CDXBitmapFont::InitFromSysFont()
 	mTextScale = 1.f;
 	mTexWidth = mTexHeight = mHeight > 40 ? 1024 : mHeight > 20 ? 512 : 256;
 
+	IDirect3DDevice9	*dev = LT.GetDevice();
+	if (!dev)
+		return;
 	D3DCAPS9	caps;
-	LT.GetDevice()->GetDeviceCaps(&caps);
-	if (mTexWidth > caps.MaxTextureWidth)
+	if (FAILED(dev->GetDeviceCaps(&caps)))
+		return;
+	DWORD	maxEdge = caps.MaxTextureWidth < caps.MaxTextureHeight ? caps.MaxTextureWidth : caps.MaxTextureHeight;
+	if (!maxEdge)
+		return;
+	if (mTexWidth > maxEdge)
 	{
-		mTextScale = (FLOAT)caps.MaxTextureWidth / (FLOAT)mTexWidth;
-		mTexWidth = mTexHeight = caps.MaxTextureWidth;
+		mTextScale = (FLOAT)maxEdge / (FLOAT)mTexWidth;
+		mTexWidth = mTexHeight = maxEdge;
 	}
 
 	mTexture = new(MEMTYPE_TEXTURE) CDXTexture;
-	mTexture->InitEmpty(mTexWidth, mTexHeight, TEXFMT_A8R8G8B8, 1, 0, 1);
+	if (!mTexture)
+		return;
+	if (!mTexture->InitEmpty(mTexWidth, mTexHeight, TEXFMT_A8R8G8B8, 1, 0, 1) || !mTexture->GetTexture())
+	{
+		mTexture->Release();
+		mTexture = NULL;
+		return;
+	}
 
 	BITMAPINFO	info;
 	ZeroMemory(&info.bmiHeader, sizeof(BITMAPINFOHEADER));
@@ -504,59 +575,113 @@ void	CDXBitmapFont::InitFromSysFont()
 	info.bmiHeader.biCompression = BI_RGB;
 	info.bmiHeader.biBitCount = 32;
 
-	DWORD	*pixels;
+	DWORD	*pixels = NULL;
 	HDC		dc = CreateCompatibleDC(NULL);
-	HBITMAP	bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, (VOID **)&pixels, NULL, 0);
-	SetMapMode(dc, MM_TEXT);
+	HBITMAP	bitmap = NULL;
+	HFONT	font = NULL;
+	HGDIOBJ	oldBitmap = NULL;
+	HGDIOBJ	oldFont = NULL;
+	bool	bitmapSelected = false;
+	bool	fontSelected = false;
+	bool	ok = false;
 
-	INT		height = -MulDiv(mHeight, (INT)(GetDeviceCaps(dc, LOGPIXELSY) * mTextScale), 72);
-	HFONT	font = CreateFont(height, 0, 0, 0, (mFlags & 1) ? FW_BOLD : FW_NORMAL, (mFlags & 2) ? TRUE : FALSE, FALSE, FALSE,
-							  DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, VARIABLE_PITCH,
-							  ToTCHAR(mFontName));
-	SelectObject(dc, bitmap);
-	SelectObject(dc, font);
-	SetTextColor(dc, RGB(255, 255, 255));
-	SetBkColor(dc, 0x00000000);
-	SetTextAlign(dc, TA_TOP);
-
-	DWORD	x = 0;
-	DWORD	y = 0;
-	TCHAR	one[2];
-	strcpy(one, ToTCHAR("x"));
-	for (char c = 32; c < 127; c++)
+	if (dc)
+		bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, (VOID **)&pixels, NULL, 0);
+	if (dc && bitmap && pixels)
 	{
-		one[0] = c;
-		SIZE	extent;
-		GetTextExtentPoint32(dc, one, 1, &extent);
-		if ((DWORD)(x + extent.cx + 1) > mTexWidth)
+		SetMapMode(dc, MM_TEXT);
+		INT	height = -MulDiv(mHeight, (INT)(GetDeviceCaps(dc, LOGPIXELSY) * mTextScale), 72);
+		font = CreateFont(height, 0, 0, 0, (mFlags & 1) ? FW_BOLD : FW_NORMAL, (mFlags & 2) ? TRUE : FALSE, FALSE, FALSE,
+						  DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, VARIABLE_PITCH,
+						  ToTCHAR(mFontName));
+		if (font)
 		{
-			x = 0;
-			y += extent.cy + 1;
+			oldBitmap = SelectObject(dc, bitmap);
+			if (oldBitmap && oldBitmap != (HGDIOBJ)(intptr_t)-1)
+			{
+				bitmapSelected = true;
+				oldFont = SelectObject(dc, font);
+				if (oldFont && oldFont != (HGDIOBJ)(intptr_t)-1)
+					fontSelected = true;
+			}
 		}
-		ExtTextOut(dc, x, y, ETO_OPAQUE, NULL, one, 1, NULL);
-
-		int		cell = RemapChar(c);
-		mTexCoords[cell][0] = ((FLOAT)x) / mTexWidth;
-		mTexCoords[RemapChar(c)][1] = ((FLOAT)y) / mTexHeight;
-		mTexCoords[RemapChar(c)][2] = ((FLOAT)(x + extent.cx)) / mTexWidth;
-		mTexCoords[RemapChar(c)][3] = ((FLOAT)(y + extent.cy)) / mTexHeight;
-		x += extent.cx + 1;
 	}
 
-	D3DLOCKED_RECT	lr;
-	if (SUCCEEDED(mTexture->GetTexture()->LockRect(0, &lr, 0, D3DLOCK_NOSYSLOCK)))
+	if (bitmapSelected && fontSelected)
 	{
-		DWORD	*out = (DWORD *)lr.pBits;
-		for (DWORD n = 0; n < mTexWidth * mTexHeight; n++)
+		SetTextColor(dc, RGB(255, 255, 255));
+		SetBkColor(dc, 0x00000000);
+		SetTextAlign(dc, TA_TOP);
+
+		DWORD	x = 0;
+		DWORD	y = 0;
+		TCHAR	one[2];
+		strcpy(one, ToTCHAR("x"));
+		bool	measured = true;
+		for (char c = 32; c < 127; c++)
 		{
-			BYTE	ink = (BYTE)(pixels[n] & 0xff);
-			out[n] = ink > 0 ? ((DWORD)ink << 24) | 0x00ffffff : 0x00000000;
+			one[0] = c;
+			SIZE	extent;
+			extent.cx = extent.cy = 0;
+			if (!GetTextExtentPoint32(dc, one, 1, &extent) || extent.cx < 0 || extent.cy < 0)
+			{
+				measured = false;
+				break;
+			}
+			if ((DWORD)(x + extent.cx + 1) > mTexWidth)
+			{
+				x = 0;
+				y += (DWORD)extent.cy + 1;
+			}
+			if (y + (DWORD)extent.cy <= mTexHeight)
+				ExtTextOut(dc, x, y, ETO_OPAQUE, NULL, one, 1, NULL);
+
+			int		cell = RemapChar(c);
+			mTexCoords[cell][0] = ((FLOAT)x) / mTexWidth;
+			mTexCoords[RemapChar(c)][1] = ((FLOAT)y) / mTexHeight;
+			mTexCoords[RemapChar(c)][2] = ((FLOAT)(x + extent.cx)) / mTexWidth;
+			mTexCoords[RemapChar(c)][3] = ((FLOAT)(y + extent.cy)) / mTexHeight;
+			x += (DWORD)extent.cx + 1;
 		}
-		mTexture->GetTexture()->UnlockRect(0);
-		DeleteObject(bitmap);
-		DeleteDC(dc);
+
+		D3DLOCKED_RECT	lr;
+		if (measured && SUCCEEDED(mTexture->GetTexture()->LockRect(0, &lr, 0, D3DLOCK_NOSYSLOCK)))
+		{
+			if (lr.pBits && lr.Pitch >= (INT)(mTexWidth * sizeof(DWORD)))
+			{
+				for (DWORD row = 0; row < mTexHeight; row++)
+				{
+					DWORD		*out = (DWORD *)((BYTE *)lr.pBits + (size_t)row * (size_t)lr.Pitch);
+					const DWORD	*in = pixels + (size_t)row * (size_t)mTexWidth;
+					for (DWORD col = 0; col < mTexWidth; col++)
+					{
+						BYTE	ink = (BYTE)(in[col] & 0xff);
+						out[col] = ink > 0 ? ((DWORD)ink << 24) | 0x00ffffff : 0x00000000;
+					}
+				}
+				strcpy(mTexture->mName, "SystemFont");
+				ok = true;
+			}
+			mTexture->GetTexture()->UnlockRect(0);
+		}
+	}
+
+	// Deselect owned GDI objects before deletion; keep explicit ownership because Linux SelectObject returns its input.
+	if (fontSelected)
+		SelectObject(dc, oldFont);
+	if (bitmapSelected)
+		SelectObject(dc, oldBitmap);
+	if (font)
 		DeleteObject(font);
-		strcpy(mTexture->mName, "SystemFont");
+	if (bitmap)
+		DeleteObject(bitmap);
+	if (dc)
+		DeleteDC(dc);
+
+	if (!ok && mTexture)
+	{
+		mTexture->Release();
+		mTexture = NULL;
 	}
 }
 
@@ -567,9 +692,14 @@ static void	PrepareFont(CDXBitmapFont *font)
 		font->InitFromSysFont();
 	else
 		font->InitFromTexture();
+	if (!font->mTexture)
+		return;
 	font->mVBufTexture = CVBufTexture::GetOrCreate(font->mTexture, 0);
-	font->mVBufTexture->SetupV(GLYPH_FVF, D3DUSAGE_WRITEONLY | D3DUSAGE_DYNAMIC, sizeof(GlyphVertex), D3DPT_TRIANGLELIST, D3DPOOL_DEFAULT);
-	font->mVBufTexture->SetupI(D3DFMT_INDEX16, D3DUSAGE_WRITEONLY | D3DUSAGE_DYNAMIC, 2, D3DPOOL_DEFAULT);
+	if (font->mVBufTexture)
+	{
+		font->mVBufTexture->SetupV(GLYPH_FVF, D3DUSAGE_WRITEONLY | D3DUSAGE_DYNAMIC, sizeof(GlyphVertex), D3DPT_TRIANGLELIST, D3DPOOL_DEFAULT);
+		font->mVBufTexture->SetupI(D3DFMT_INDEX16, D3DUSAGE_WRITEONLY | D3DUSAGE_DYNAMIC, 2, D3DPOOL_DEFAULT);
+	}
 }
 
 // Draws text from (x, y), scaled; '\n' starts a new line under the first, '\r' is skipped. flags 8 keeps the depth
@@ -577,11 +707,13 @@ static void	PrepareFont(CDXBitmapFont *font)
 // colour per drawn character. More than 2500 characters draw nothing.
 HRESULT	CDXBitmapFont::DrawTextScaled(float x, float y, float z, float scalex, float scaley, DWORD colour, WCHAR *text, int flags, DWORD *colours)
 {
+	if (!text)
+		return S_OK;
 	int		glyphs = 0;
 	for (WCHAR *p = text; *p; p++)
 		if (*p != '\r' && *p != '\n')
 			glyphs++;
-	if (!glyphs)
+	if (!glyphs || glyphs > 2500)
 		return S_OK;
 
 	FASTVB.Create();
@@ -602,18 +734,24 @@ HRESULT	CDXBitmapFont::DrawTextScaled(float x, float y, float z, float scalex, f
 	}
 	if (!mTexture)
 		PrepareFont(this);
+	if (!mTexture || !mTexture->GetTexture())
+		return S_OK;
 
 	bool	depthTest = (flags & 8) != 0;
+	DWORD	priorZ = TRUE;
 	if (!depthTest)
+	{
+		priorZ = LT.mRenderStates[D3DRS_ZENABLE];
+		if (priorZ == INVALID_STATE && (!LT.GetDevice() || FAILED(LT.GetDevice()->GetRenderState(D3DRS_ZENABLE, &priorZ))))
+			priorZ = TRUE;
 		LT.SRS(D3DRS_ZENABLE, FALSE);
+	}
 	if (!(flags & 0x10))
 		y = floorf(y);
 	float	penX = floorf(x);
 	float	penY = y;
 	float	lineStart = penX;
 	float	lineHeight = (mTexCoords[0][3] - mTexCoords[0][1]) * mTexHeight;
-	if (glyphs > 2500)
-		return S_OK;
 
 	GlyphVertex	*v;
 	if (FASTVB.LockAligned((void **)&v, glyphs * 4) != 0xffff)
@@ -659,7 +797,7 @@ HRESULT	CDXBitmapFont::DrawTextScaled(float x, float y, float z, float scalex, f
 	}
 
 	if (!depthTest)
-		LT.SRS(D3DRS_ZENABLE, TRUE);
+		LT.SRS(D3DRS_ZENABLE, priorZ);
 	return S_OK;
 }
 

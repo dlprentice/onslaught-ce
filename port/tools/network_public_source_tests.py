@@ -46,13 +46,13 @@ PUBLIC_CONTEXT_PATCHES = frozenset(("0065-network-world.patch", "0067-network-se
 # The mandatory public HUD feature also guards its calls into the optional network layer.
 # Device recovery (0085) is mandatory in the public build as well: its recovery block and its changed reset and zero-delta lines are not guarded; only the lines
 # that touch the network session (the observation the session service reads, and the yield an active session leaves to its own boundary) are.
-# Commander (0235, 0278), play-unit HUD (0285), quit status (0262), hook level-begin (0303), and surface-point order (0338) retain existing network guards as context.
+# Commander (0235, 0278), play-unit HUD (0285), quit status (0262), hook level-begin (0303), surface-point order (0338), and multi-BE controller slots (0369) retain existing network guards as context.
 # The editor and museum lifecycles (0206, 0207), Full models (0208) and the Dodge Button (0220) guard their calls into the network session the same way.
 PUBLIC_GUARDED_PATCHES = frozenset(("0190-ce-hud-4k.patch", "0085-public-device-recovery.patch", "0206-native-editor-lifecycle.patch",
                                     "0207-ce-museum-visit-lifecycle.patch", "0208-ce-full-models.patch", "0220-ce-dodge-assist.patch",
                                     "0235-ce-commander-one-screen.patch", "0262-ce-normal-quit-status.patch", "0278-ce-commander-unit-orders.patch",
                                     "0285-ce-playunit-hud.patch", "0303-ce-hook-level-begin.patch", "0338-surface-point-order.patch",
-                                    "0381-ce-perf-surf-museum-fixes.patch"))
+                                    "0369-ce-multibe-controller-slots.patch", "0381-ce-perf-surf-museum-fixes.patch"))
 
 
 def strip(text):

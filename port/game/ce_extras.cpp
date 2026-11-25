@@ -28,6 +28,7 @@
 #include "MenuItem.h"
 #include "MenuOptionsList.h"
 #include "FEMessBox.h"
+#include "ltshell.h"
 #include "mouse.h"
 #include "text.h"
 #include "data/MissionScripts/text/text.stf"
@@ -88,7 +89,8 @@ const DWORD	kWhite = 0xffffffff;		// the empty-list line
 const DWORD	kCream = 0xff7f6f5f;		// the hint: the colour of the original's own description text (253, 221, 189 on the screen)
 const DWORD	kGrey = 0xff545454;			// the second hint line and notes: 0xa8 on the screen
 const DWORD	kRowGrey = 0xff404040;		// a list box row that is not highlighted, as the Load Game list's
-const DWORD	kRowDim = 0xff242424;		// a row that is not available yet
+const DWORD	kRowGreySmall = 0xff505050;	// a small-face list box row that is not highlighted: raised for thin-stroke legibility
+const DWORD	kRowDim = 0xff323232;		// a row that is not available yet
 const DWORD	kBad = 0xff6e1e1e;			// the guide's failed state (220, 60, 60 on the screen), halved once for the font's doubling stage
 const DWORD	kGood = 0xff175818;			// the message box's green, for a good state (always with its word)
 
@@ -135,6 +137,7 @@ int				sPage = XP_HUB;
 float			sPageTime;				// when the page showing opened: it takes no Select for 0.4 s
 float			sMoveTime;				// the last move sound from the pointer
 int				sPointerX = -1, sPointerY = -1;	// where the pointer was at the last draw: it highlights a row only by moving (a resting pointer must not undo the keys)
+bool			sDragging = false;		// pointer captured in the list box scrollbar track while left button stays held
 SCeScrollList	sLists[XP_COUNT];
 
 const SCeListPage	*ListPage(int page)
@@ -439,6 +442,7 @@ public:
 		sPageTime = PLATFORM.GetSysTimeFloat();
 		sPointerX = MOUSE_X;
 		sPointerY = MOUSE_Y;
+		sDragging = false;
 		if (const SCeListPage *list = ListPage(page))
 		{
 			if (list->mOpen)
@@ -465,6 +469,7 @@ public:
 	{
 		if (sound)
 			CFrontEnd::PlaySound(FES_BACK);
+		sDragging = false;
 		const SCeListPage *list = ListPage(sPage);
 		if (list && list->mClose)
 			list->mClose();
@@ -477,7 +482,16 @@ public:
 		}
 		sPage = ((sPage == XP_GOODIES) && PortCeGoodiesFromCatalogue()) ? XP_CATALOGUE : kParent[sPage];
 		sPageTime = PLATFORM.GetSysTimeFloat();
-		if (!ListPage(sPage) && !ReadPage(sPage))
+		sPointerX = MOUSE_X;
+		sPointerY = MOUSE_Y;
+		if (const SCeListPage *parent = ListPage(sPage))
+		{
+			Shape(parent, &sLists[sPage]);
+			sLists[sPage].mCount = parent->mCount();
+			CeListClamp(&sLists[sPage]);
+			SkipHeadings(parent, &sLists[sPage], 1);
+		}
+		else if (!ReadPage(sPage))
 			mPage = (sPage == XP_RECORD) ? LIST_RECORD : LIST_HUB;
 	}
 
@@ -605,19 +619,47 @@ public:
 
 		list->mCount = page->mCount();
 		CeListClamp(list);
+		const bool wasDragging = sDragging;
 		if (list->mCount > 0)
 		{
-			// the wheel moves the view; the pointer held in the track moves it to where the bar would be
-			if (MOUSE_WHEEL)
+			// the wheel moves the view; a press in the track captures dragging until release
+			int scrollDir = 0;
+			if (!FEMESSBOX.IsInteractive())
 			{
-				const int notches = (MOUSE_WHEEL > 0) ? (MOUSE_WHEEL + 119) / 120 : -((-MOUSE_WHEEL + 119) / 120);
-				MOUSE_WHEEL = 0;
-				CeListScroll(list, -notches * 3);
+				if (MOUSE_WHEEL)
+				{
+					const int notches = (MOUSE_WHEEL > 0) ? (MOUSE_WHEEL + 119) / 120 : -((-MOUSE_WHEEL + 119) / 120);
+					MOUSE_WHEEL = 0;
+					const int delta = -notches * 3;
+					if (CeListScroll(list, delta))
+						scrollDir = (delta < 0) ? -1 : 1;
+				}
+				const bool trackPress = MOUSE_BUTTONS[0].mDown && !LT.GetKeytrap() &&
+						(float(MOUSE_X) >= track) && (float(MOUSE_X) < edge) &&
+						(float(MOUSE_Y) >= boxTop) && (float(MOUSE_Y) < bottom);
+				if (trackPress)
+					sDragging = true;
+				else if (!MOUSE_HELD[0] || LT.GetKeytrap())
+					sDragging = false;
+				if (sDragging)
+				{
+					const int beforeTop = list->mTop;
+					CeListDrag(list, float(MOUSE_Y));
+					if (list->mTop != beforeTop)
+						scrollDir = (list->mTop < beforeTop) ? -1 : 1;
+					if (!MOUSE_HELD[0])
+						sDragging = false;
+				}
 			}
-			if (FRONTEND.GetCursorStateInRect(track, boxTop, edge, bottom) && MOUSE_HELD[0])
-				CeListDrag(list, float(MOUSE_Y));
-			SkipHeadings(page, list, 1);		// the wheel and the bar move the view, and the cursor with it
+			else
+				sDragging = false;
+			SkipHeadings(page, list, (scrollDir < 0) ? -1 : 1);		// the wheel and the bar move the view, and the cursor with it
 		}
+		else
+			sDragging = false;
+		if (wasDragging && !sDragging)
+			MOUSE_BUTTONS[0].mReleased = FALSE;
+		const bool dragBusy = sDragging || wasDragging;
 
 		const float now = PLATFORM.GetSysTimeFloat();
 		const bool pointerMoved = (MOUSE_X != sPointerX) || (MOUSE_Y != sPointerY);
@@ -629,7 +671,7 @@ public:
 			const float y = CeListRowY(list, i);
 			const bool heading = page->mHeading && page->mHeading(i);
 			// the pointer highlights the row it moves onto and chooses the row it clicks (a group's heading is neither)
-			if (!heading && pointerMoved && FRONTEND.MouseOverRect(kCeListLeft, y, track, y + kCeListPitch) && (list->mCursor != i))
+			if (!dragBusy && !heading && pointerMoved && FRONTEND.MouseOverRect(kCeListLeft, y, track, y + kCeListPitch) && (list->mCursor != i))
 			{
 				list->mCursor = i;
 				if (now - sMoveTime > 0.1f)
@@ -638,7 +680,7 @@ public:
 					sMoveTime = now;
 				}
 			}
-			if (!heading && FRONTEND.MouseClickedInRect(kCeListLeft, y, track, y + kCeListPitch))
+			if (!dragBusy && !heading && FRONTEND.MouseClickedInRect(kCeListLeft, y, track, y + kCeListPitch))
 			{
 				list->mCursor = i;
 				clicked = i;
@@ -648,14 +690,12 @@ public:
 			memset(&row, 0, sizeof(row));
 			page->mRow(i, &row);
 			const bool focus = !heading && (i == list->mCursor);
-			DWORD colour = heading ? kCream : row.mDim ? kRowDim : kRowGrey;
+			DWORD colour = heading ? kCream : row.mDim ? kRowDim : (page->mSmallFace ? kRowGreySmall : kRowGrey);
 			if (focus)
 			{
-				// the Load Game list's highlight: white, pulsing
-				// the Load Game list's pulse, with its trough raised: that list has two rows and a long list has many, so at the trough
-				// (grey 0x64 against the other rows' 0x80) the highlight must not fall below them
-				const int pulse = int(cosf((FRONTEND.GetCounter() * 3.14f) * (1.f / 30.f)) * -20.f);
-				colour = 0xff6c6c6c - pulse * 0x010101;
+				// Narrow white pulse (0x77..0x7f before doubling -> luma 238..254) so focused rows stay strictly brighter than kCream (0x7f6f5f -> luma 228) at every phase.
+				const int pulse = int(cosf((FRONTEND.GetCounter() * 3.14f) * (1.f / 30.f)) * -4.f);
+				colour = 0xff7b7b7b - pulse * 0x010101;
 			}
 			// the right-hand word, ending a little before the scroll track
 			float right = track - 8.f;
@@ -679,13 +719,45 @@ public:
 			font->GetTextExtent(row.mLeft, &size);
 			const float scale = (page->mScale > 0.f) ? page->mScale : 1.f;
 			int length = int(wcslen(row.mLeft));
+			if ((float(size.cx) * scale > right - kCeListLeft) && !wcsstr(row.mLeft, L"..."))
+			{
+				for (int c = length - 1; c > 1; c--)
+				{
+					if (row.mLeft[c] != WCHAR(' '))
+						continue;
+					int cut = c;
+					while ((cut > 1) && (wcschr(L" .,;:", row.mLeft[cut - 1]) != NULL))
+						cut--;
+					WCHAR trial[sizeof(row.mLeft) / sizeof(*row.mLeft)];
+					if ((cut <= 0) || (cut + 3 >= int(sizeof(row.mLeft) / sizeof(*row.mLeft))))
+						continue;
+					memcpy(trial, row.mLeft, size_t(cut) * sizeof(WCHAR));
+					trial[cut] = '.';
+					trial[cut + 1] = '.';
+					trial[cut + 2] = '.';
+					trial[cut + 3] = 0;
+					SIZE ts;
+					font->GetTextExtent(trial, &ts);
+					if (float(ts.cx) * scale <= right - kCeListLeft)
+					{
+						wcscpy(row.mLeft, trial);
+						size = ts;
+						length = cut + 3;
+						break;
+					}
+				}
+			}
 			while ((float(size.cx) * scale > right - kCeListLeft) && (length > 4))
 			{
 				length--;
-				row.mLeft[length - 3] = '.';
-				row.mLeft[length - 2] = '.';
-				row.mLeft[length - 1] = '.';
-				row.mLeft[length] = 0;
+				int cut = length - 3;
+				while ((cut > 1) && ((row.mLeft[cut - 1] == WCHAR(' ')) || (row.mLeft[cut - 1] == WCHAR('.'))))
+					cut--;
+				row.mLeft[cut] = '.';
+				row.mLeft[cut + 1] = '.';
+				row.mLeft[cut + 2] = '.';
+				row.mLeft[cut + 3] = 0;
+				length = cut + 3;
 				font->GetTextExtent(row.mLeft, &size);
 			}
 			font->DrawTextDynamic(kCeListLeft, y + lift, FO(100), scale, 1.f, colour, row.mLeft, 1000.f, 0, 0);
@@ -701,10 +773,13 @@ public:
 		}
 		else
 		{
-			float top, foot;
-			CeListBar(list, &top, &foot);
 			FRONTEND.DrawBox(track, boxTop, edge, bottom, box, 2.f, 0.5f);
-			FRONTEND.DrawBox(track + 5.f, top, edge - 5.f, foot, 0xffffffff, 5.f, 0.5f);
+			if (CeListHasBar(list))
+			{
+				float top, foot;
+				CeListBar(list, &top, &foot);
+				FRONTEND.DrawBox(track + 5.f, top, edge - 5.f, foot, 0xffffffff, 5.f, 0.5f);
+			}
 
 			static WCHAR help[200], extra[200];
 			help[0] = extra[0] = 0;
@@ -731,7 +806,7 @@ public:
 			if (extra[0] && extraMax > 0)
 				next = LinesMax(extra, next, kGrey, extraMax);
 			if (page->mPane)
-				page->mPane(list->mCursor, edge + 10.f, boxTop, 556.f, bottom);
+				page->mPane(list->mCursor, edge + 10.f, boxTop, 550.f, bottom);
 			if (page->mDraw)
 				page->mDraw(next + 4.f);
 		}
@@ -741,6 +816,13 @@ public:
 
 	void	Draw()
 	{
+		if (!FEMESSBOX.IsInteractive() && !LT.GetKeytrap() && MOUSE_BUTTONS[2].mDown)
+		{
+			MOUSE_BUTTONS[2].mDown = FALSE;
+			ReceiveButtonAction(NULL, BUTTON_FRONTEND_MENU_BACK, 1.f);
+			if (!sActive)
+				return;
+		}
 		if (const SCeListPage *page = ListPage(sPage))
 			DrawListBox(page, &sLists[sPage]);
 		else if (const SCeReadPage *read = ReadPage(sPage))
@@ -755,6 +837,7 @@ CCeExtrasMenu	*sMenu;
 // Every page's own state is let go: the Extras pages are closing without their Back.
 void	CloseAll()
 {
+	sDragging = false;
 	for (int page = 0; page < XP_COUNT; page++)
 	{
 		const SCeListPage *list = ListPage(page);
@@ -807,6 +890,7 @@ void	PortCeExtrasOpenPage(int page, int startRow)
 
 void	PortCeExtrasHide()
 {
+	sDragging = false;
 	sActive = false;
 }
 

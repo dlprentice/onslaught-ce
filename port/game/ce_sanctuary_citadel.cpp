@@ -13,6 +13,7 @@
 #include "game.h"
 #include "player.h"
 #include "BattleEngine.h"
+#include "Camera.h"
 #include "world.h"
 #include "unit.h"
 #include "d3dx9.h"
@@ -116,7 +117,8 @@ static const MaterialSpec kMaterials[kMatCount] = {
     {CE_MUSEUM_TEX_COUNT,            1.0f, 0xff62e8f6, 0.22f, 0.80f, 0.92f, 0.70f, 0.95f, 1.00f, 32.0f, true},  // aqua pool rim
 };
 
-// Coastal afternoon sunlight direction matching Living Sandbox (from SE; native -Z is UP).
+// The Citadel stands under a starfield: its key light is the moon, low in the
+// south-east (the direction Living Sandbox lights its terrain from; native -Z is UP).
 constexpr float kSunDirX =  0.620f;
 constexpr float kSunDirY = -0.500f;
 constexpr float kSunDirZ = -0.604f;
@@ -194,7 +196,8 @@ struct CitadelState {
     bool active;
     bool built;
     bool texturesLoaded;
-    bool insideCinema;
+    bool insideCinema;        // the camera is inside the sealed Cinema (drives the outdoor-draw skip)
+    bool playerInsideCinema;  // the player's machine is inside it (the camera may still trail outside)
     bool overflow;
     float floorZ;
     float animTime;
@@ -299,8 +302,61 @@ static void RegisterAoBox(float x0, float y0, float x1, float y1, float h) {
     gCitadel->aoBoxes[gCitadel->aoBoxCount++] = AoBox{x0, y0, x1, y1, h};
 }
 
+// Pools of lantern light baked into the terrace's vertex colours: warm amber
+// around every lantern-bearing pier, the dais glow ring and the signal mast,
+// cool cyan under the four shield emitter pylons and the Forseti colonnade,
+// ember amber along the Muspell colonnade. `radius` is where a pool fades out
+// on the floor; walls catch it up to about a storey and a half.
+struct LightPool {
+    float x, y, radius;
+    float r, g, b;
+};
+
+static const LightPool kLightPools[] = {
+    // Overlook portal pylons and the Cinema portal: warm lantern amber
+    { 95.0f, 375.5f, 9.0f, 0.60f, 0.42f, 0.18f},
+    {129.0f, 375.5f, 9.0f, 0.60f, 0.42f, 0.18f},
+    {108.9f, 408.9f, 6.5f, 0.54f, 0.38f, 0.16f},
+    {115.1f, 408.9f, 6.5f, 0.54f, 0.38f, 0.16f},
+    { 99.0f, 408.9f, 5.5f, 0.44f, 0.31f, 0.13f},
+    {125.0f, 408.9f, 5.5f, 0.44f, 0.31f, 0.13f},
+    // Archive dais glow ring and the signal mast lantern
+    {kCenterX, kCenterY, 9.5f, 0.50f, 0.37f, 0.17f},
+    {kSignalMastX, kSignalMastY, 11.0f, 0.58f, 0.41f, 0.17f},
+    // Shield emitter pylons: cool cyan
+    {103.5f, 383.5f, 6.5f, 0.08f, 0.30f, 0.42f},
+    {120.5f, 383.5f, 6.5f, 0.08f, 0.30f, 0.42f},
+    {103.5f, 400.5f, 6.5f, 0.08f, 0.30f, 0.42f},
+    {120.5f, 400.5f, 6.5f, 0.08f, 0.30f, 0.42f},
+    // West Forseti colonnade (cyan) and East Muspell colonnade (ember)
+    { 82.0f, 374.0f, 4.8f, 0.06f, 0.22f, 0.32f}, {142.0f, 374.0f, 4.8f, 0.40f, 0.20f, 0.05f},
+    { 82.0f, 382.0f, 4.8f, 0.06f, 0.22f, 0.32f}, {142.0f, 382.0f, 4.8f, 0.40f, 0.20f, 0.05f},
+    { 82.0f, 390.0f, 4.8f, 0.06f, 0.22f, 0.32f}, {142.0f, 390.0f, 4.8f, 0.40f, 0.20f, 0.05f},
+    { 82.0f, 398.0f, 4.8f, 0.06f, 0.22f, 0.32f}, {142.0f, 398.0f, 4.8f, 0.40f, 0.20f, 0.05f},
+    { 82.0f, 406.0f, 4.8f, 0.06f, 0.22f, 0.32f}, {142.0f, 406.0f, 4.8f, 0.40f, 0.20f, 0.05f},
+    { 82.0f, 414.0f, 4.8f, 0.06f, 0.22f, 0.32f}, {142.0f, 414.0f, 4.8f, 0.40f, 0.20f, 0.05f},
+};
+
+static void AddLightPools(float wx, float wy, float lz, bool isFloor, bool isVertical,
+                          float *ioR, float *ioG, float *ioB) {
+    if (!isFloor && !isVertical) return;
+    // Walls and piers catch a pool up to ~5.5 m; the paving takes all of it.
+    const float reach = isFloor ? 1.0f : (lz < 0.0f ? 0.0f : 1.0f - SmoothStep(0.6f, 5.5f, lz));
+    if (reach <= 0.0f) return;
+    for (unsigned i = 0; i < sizeof(kLightPools) / sizeof(kLightPools[0]); ++i) {
+        const LightPool &lp = kLightPools[i];
+        const float d = std::hypot(wx - lp.x, wy - lp.y);
+        if (d >= lp.radius) continue;
+        const float fall = 1.0f - SmoothStep(lp.radius * 0.12f, lp.radius, d);
+        const float w = fall * fall * reach;
+        *ioR += lp.r * w;
+        *ioG += lp.g * w;
+        *ioB += lp.b * w;
+    }
+}
+
 // Deep baked hemisphere ambient occlusion + floor/wall creases + cinema interior shade
-// + Forseti/Muspell alcove bounce + warm golden coastal afternoon sunlight.
+// + Forseti/Muspell alcove bounce + cool moonlight with warm lantern pools.
 static DWORD BakeVertexColour(float wx, float wy, float wz,
                               float nx, float ny, float nz,
                               Material m, DWORD baseCol) {
@@ -315,7 +371,7 @@ static DWORD BakeVertexColour(float wx, float wy, float wz,
                            lz >= -0.1f && lz <= 9.8f);
 
     float ao = 1.0f;
-    float lightR = 1.06f, lightG = 1.02f, lightB = 0.94f; // warm coastal afternoon sunlight
+    float lightR = 0.56f, lightG = 0.64f, lightB = 0.84f; // cool moonlight under the starfield
 
     if (inCinema) {
         // Moody acoustic theater interior with warm screen proscenium wash
@@ -356,11 +412,11 @@ static DWORD BakeVertexColour(float wx, float wy, float wz,
                 }
             }
             ao *= obsAo;
-            // Subtle sunlit focal lift on central rotunda medallion & overlook promenade
+            // Moonlit focal lift on the central rotunda medallion
             const float rotundaPool = 1.0f - SmoothStep(3.0f, 14.0f, std::hypot(wx - kCenterX, wy - kCenterY));
-            lightR += 0.08f * rotundaPool;
-            lightG += 0.06f * rotundaPool;
-            lightB += 0.02f * rotundaPool;
+            lightR += 0.04f * rotundaPool;
+            lightG += 0.05f * rotundaPool;
+            lightB += 0.06f * rotundaPool;
         } else if (isVertical) {
             // Floor-crease AO at base of walls, piers, dais, and retaining cliff
             if (lz >= 0.0f) {
@@ -373,14 +429,15 @@ static DWORD BakeVertexColour(float wx, float wy, float wz,
                 // Retaining bastion cliff below floorZ darkens toward lower valley rock
                 ao *= (0.52f + 0.48f * SmoothStep(-10.0f, 0.0f, lz));
             }
-            // Directional sun/sky hemisphere tinting across vertical facets
+            // Moon-side facets pick up a silver edge; the far side sinks into deeper blue shade
             const float sunDot = nx * kSunDirX + ny * kSunDirY;
             if (sunDot > 0.0f) {
-                lightR += 0.10f * sunDot;
-                lightG += 0.06f * sunDot;
+                lightR += 0.05f * sunDot;
+                lightG += 0.07f * sunDot;
+                lightB += 0.10f * sunDot;
             } else {
-                lightB += 0.10f * (-sunDot);
-                ao *= (0.86f + 0.14f * (1.0f + sunDot));
+                lightB += 0.04f * (-sunDot);
+                ao *= (0.80f + 0.20f * (1.0f + sunDot));
             }
         } else if (isCeiling) {
             ao *= 0.72f;
@@ -407,6 +464,9 @@ static DWORD BakeVertexColour(float wx, float wy, float wz,
             lightG += 0.06f * mGlow;
             lightB *= (1.0f - 0.22f * mGlow);
         }
+
+        // Lantern and emitter light pools: the terrace's warmth at night.
+        AddLightPools(wx, wy, lz, isFloor, isVertical, &lightR, &lightG, &lightB);
     }
 
     return ModulateRgb(baseCol, Clamp01(ao * lightR), Clamp01(ao * lightG), Clamp01(ao * lightB));
@@ -836,6 +896,7 @@ static void BuildCitadelArchitecture() {
     RegisterAoBox(139.5f, 383.5f, 142.5f, 400.5f, 7.8f); // East Muspell apse
     RegisterAoBox(87.0f, 390.5f, 90.0f, 393.5f, 1.2f);   // Forseti honor plinth
     RegisterAoBox(134.0f, 390.5f, 137.0f, 393.5f, 1.2f); // Muspell honor plinth
+    RegisterAoBox(kSignalMastX - 1.3f, kSignalMastY - 1.3f, kSignalMastX + 1.3f, kSignalMastY + 1.3f, 9.2f); // Signal mast
     RegisterAoBox(96.0f, 365.0f, 102.0f, 377.0f, 0.8f);  // West reflecting pool
     RegisterAoBox(122.0f, 365.0f, 128.0f, 377.0f, 0.8f); // East reflecting pool
     const float colY[6] = {374.0f, 382.0f, 390.0f, 398.0f, 406.0f, 414.0f};
@@ -931,6 +992,45 @@ static void BuildCitadelArchitecture() {
         // Sculpted stone-and-brass water obelisk in each pool
         EmitOctagonTier(pcx, pcy, 0.72f, 0.28f, 0.60f, kMatPierBase, kSlateCol, true);
         EmitOctagonTier(pcx, pcy, 0.44f, 0.60f, 1.00f, kMatBrass, kBrassCol, true);
+    }
+
+    // Forseti signal mast on the south-east bastion corner: one tall, off-axis
+    // silhouette (25.9 m against 9-10 m colonnades) that reads as a frontline
+    // fortress from the valley below. A stepped slate-and-cobalt shaft, a long
+    // signal yard reaching in over the terrace with two hanging lamps, a short
+    // counter-yard, a warm lantern crow's nest and a cyan beacon tip.
+    {
+        const float mx = kSignalMastX, my = kSignalMastY;
+        const float bh = kSignalMastBaseHalf;
+        AddContactShadow(mx, my, bh + 0.10f, bh + 0.10f, 1.40f, 0.044f, 0.70f);
+        EmitBox(mx - bh - 0.08f, my - bh - 0.08f, 0.02f, mx + bh + 0.08f, my + bh + 0.08f, 0.14f, kMatPierLine, kIronCol);
+        EmitBox(mx - bh, my - bh, 0.14f, mx + bh, my + bh, 0.90f, kMatPierBase, kSlateCol);
+        EmitBox(mx - bh - 0.06f, my - bh - 0.06f, 0.90f, mx + bh + 0.06f, my + bh + 0.06f, 1.02f, kMatBrass, kBrassCol);
+        // Lower slate shaft with limestone pilaster strips
+        EmitBox(mx - 0.78f, my - 0.78f, 1.02f, mx + 0.78f, my + 0.78f, 8.00f, kMatSlatePier, kSlateCol);
+        EmitBox(mx - 0.83f, my - 0.30f, 1.14f, mx + 0.83f, my + 0.30f, 7.88f, kMatLimestone, 0xfff4efe6);
+        EmitBox(mx - 0.30f, my - 0.83f, 1.14f, mx + 0.30f, my + 0.83f, 7.87f, kMatLimestone, 0xfff4efe6);
+        EmitBox(mx - 0.90f, my - 0.90f, 8.00f, mx + 0.90f, my + 0.90f, 8.25f, kMatBrass, kBrassCol);
+        EmitBox(mx - 0.82f, my - 0.82f, 8.26f, mx + 0.82f, my + 0.82f, 8.46f, kMatForsetiGlow, 0xff80ecff);
+        // Cobalt mid shaft
+        EmitBox(mx - 0.52f, my - 0.52f, 8.47f, mx + 0.52f, my + 0.52f, 16.00f, kMatForsetiTrim, 0xfff2f8ff);
+        // Long signal yard reaching north-west over the terrace, two hanging lamps
+        EmitBox(mx - 4.10f, my - 0.14f, 15.20f, mx + 0.52f, my + 0.14f, 15.48f, kMatBrass, kBrassCol);
+        EmitBox(mx - 3.86f, my - 0.20f, 14.52f, mx - 3.46f, my + 0.20f, 15.19f, kMatForsetiGlow, 0xff80ecff);
+        EmitBox(mx - 2.36f, my - 0.20f, 14.72f, mx - 1.96f, my + 0.20f, 15.19f, kMatForsetiGlow, 0xff80ecff);
+        EmitBox(mx - 0.62f, my - 0.62f, 16.00f, mx + 0.62f, my + 0.62f, 16.20f, kMatBrass, kBrassCol);
+        // Forged-iron upper shaft and a short counter-yard on the valley side
+        EmitBox(mx - 0.30f, my - 0.30f, 16.21f, mx + 0.30f, my + 0.30f, 22.00f, kMatForgedIron, kIronCol);
+        EmitBox(mx - 0.12f, my - 1.90f, 19.00f, mx + 0.12f, my + 0.30f, 19.22f, kMatBrass, kBrassCol);
+        EmitBox(mx - 0.18f, my - 1.86f, 18.52f, mx + 0.18f, my - 1.50f, 18.99f, kMatWarmGlow, kLightCol);
+        // Lantern crow's nest, spire and beacon tip
+        EmitBox(mx - 0.95f, my - 0.95f, 22.00f, mx + 0.95f, my + 0.95f, 22.18f, kMatBrass, kBrassCol);
+        EmitBox(mx - 0.42f, my - 0.42f, 22.19f, mx + 0.42f, my + 0.42f, 23.30f, kMatWarmGlow, kLightCol);
+        EmitBox(mx - 0.56f, my - 0.56f, 23.31f, mx + 0.56f, my + 0.56f, 23.50f, kMatBrass, kBrassCol);
+        EmitBox(mx - 0.10f, my - 0.10f, 23.51f, mx + 0.10f, my + 0.10f, 25.60f, kMatForgedIron, kIronCol);
+        EmitBox(mx - 0.16f, my - 0.16f, 25.61f, mx + 0.16f, my + 0.16f, kSignalMastHeight, kMatForsetiGlow, 0xff80ecff);
+        // Soft warm halo rising from the lantern
+        AddEmitterBeam(mx, my, 22.30f, mx, my, 27.60f, 0.46f, 1.30f, 0x5cffd08au, 0x00ffb050u);
     }
 
     // -------------------------------------------------------------------------
@@ -1342,8 +1442,10 @@ static void BuildDomeGroundCollar() {
 }
 
 static void SetupCitadelLightRig(IDirect3DDevice9 *dev) {
-    // Calibrated 3-point coastal sunlight rig.
-    dev->SetRenderState(D3DRS_AMBIENT, D3DCOLOR_XRGB(34, 40, 50));
+    // Night rig for the starfield sky: a cool moon key, a deep blue sky fill and a
+    // faint warm lantern bounce, over a low ambient. The lantern pools themselves
+    // are baked into the vertex colours (kLightPools), so they stay warm under it.
+    dev->SetRenderState(D3DRS_AMBIENT, D3DCOLOR_XRGB(20, 25, 38));
 
     auto setDirLight = [&](DWORD idx, float dx, float dy, float dz,
                            float dr, float dg, float db,
@@ -1360,17 +1462,17 @@ static void SetupCitadelLightRig(IDirect3DDevice9 *dev) {
         dev->LightEnable(idx, TRUE);
     };
 
-    // Light 0: Warm golden SE afternoon sun key
+    // Light 0: Cool moon key from the south-east
     setDirLight(0, -kSunDirX, -kSunDirY, -kSunDirZ,
-                1.08f, 0.94f, 0.72f,
-                1.00f, 0.90f, 0.70f);
-    // Light 1: Cool coastal azure opposite sky fill
+                0.66f, 0.76f, 0.98f,
+                0.60f, 0.70f, 0.92f);
+    // Light 1: Deep blue night-sky fill from the opposite quarter
     setDirLight(1,  0.76f, -0.48f,  0.42f,
-                0.30f, 0.44f, 0.64f,
-                0.24f, 0.36f, 0.54f);
-    // Light 2: Warm limestone up-bounce onto soffits & ceiling coffers
+                0.13f, 0.19f, 0.33f,
+                0.08f, 0.12f, 0.22f);
+    // Light 2: Faint warm lantern up-bounce onto soffits & ceiling coffers
     setDirLight(2,  0.18f,  0.26f, -0.94f,
-                0.26f, 0.24f, 0.20f,
+                0.22f, 0.16f, 0.09f,
                 0.00f, 0.00f, 0.00f);
 
     for (DWORD i = 3; i < 8; ++i) dev->LightEnable(i, FALSE);
@@ -1718,10 +1820,18 @@ static void EnforceInteriorUnitCollisions() {
         FVector vel = t->GetVelocity();
         float x = pos.X, y = pos.Y;
         float vx = vel.X, vy = vel.Y;
-        if (ResolveInteriorCollision(gCitadel->solids, &x, &y, pos.Z, fz,
-                                     radius, height, cofg, &vx, &vy)) {
-            t->MoveTo(FVector(x, y, pos.Z));
-            t->SetVelocity(FVector(vx, vy, vel.Z));
+        // The Cinema roof is a floor, not a wall: its rule moves the body in height
+        // only, and it runs first, so a Jet-mode landing settles on the slab (clear
+        // of the wall boxes beneath it) instead of sinking through or being shoved
+        // off sideways.
+        float z = pos.Z;
+        float vz = vel.Z;
+        const RoofClamp roof = ResolveCinemaRoofHeight(x, y, &z, fz, height, cofg, &vz);
+        const bool pushed = ResolveInteriorCollision(gCitadel->solids, &x, &y, z, fz,
+                                                     radius, height, cofg, &vx, &vy);
+        if (pushed || roof != kRoofClampNone) {
+            t->MoveTo(FVector(x, y, z));
+            t->SetVelocity(FVector(vx, vy, vz));
         }
     };
 
@@ -1739,6 +1849,44 @@ static void EnforceInteriorUnitCollisions() {
         if (!std::isfinite(r) || r < 0.75f || r > 1.80f) r = kBattleEngineCollisionRadius;
         resolveThing(u, r, kBattleEngineCollisionHeight);
     }
+}
+
+// Where the camera and the player's machine are, read now. The outdoor-draw skip
+// asks before the world is drawn and the weapon gate asks when the trigger is
+// pulled, so neither works from the frame before: a machine stepping through the
+// doorway never gets one frame of fire or of outdoor world into the hall.
+static void RefreshCinemaOccupancy() {
+    if (!gCitadel || !gCitadel->active) return;
+    const float fz = gCitadel->floorZ;
+    if (CCamera *cam = ENGINE.GetCameraForViewpoint(0)) {
+        const FVector eye = cam->GetPos();
+        if (IsFinite3(eye.X, eye.Y, eye.Z))
+            gCitadel->insideCinema = IsInsideCinema(eye.X, eye.Y, eye.Z, fz);
+    }
+    // The player's machine is the unit they are piloting, when they pilot one (Play
+    // Any Unit): a Battle Engine left parked in the hall must not disarm a tank the
+    // player is driving outside, and a piloted unit inside it must be disarmed.
+    bool playerInside = false;
+    CUnit *driven = NULL;
+    if (PortCePlayUnitIsDriven) {
+        ListIterator<CUnit> it(&WORLD.GetUnitNB());
+        for (CUnit *u = it.First(); u; u = it.Next()) {
+            if (u && !u->IsDying() && !u->IsShuttingDown() && PortCePlayUnitIsDriven(u)) {
+                driven = u;
+                break;
+            }
+        }
+    }
+    if (driven) {
+        const FVector pos = driven->GetPos();
+        playerInside = IsInsideCinema(pos.X, pos.Y, pos.Z, fz);
+    } else if (CPlayer *pl = GAME.GetPlayer(0)) {
+        if (CBattleEngine *be = pl->GetBattleEngine()) {
+            const FVector pos = be->GetPos();
+            playerInside = IsInsideCinema(pos.X, pos.Y, pos.Z, fz);
+        }
+    }
+    gCitadel->playerInsideCinema = playerInside;
 }
 
 } // namespace
@@ -1809,9 +1957,6 @@ void RuntimeUpdate(float dtSeconds, bool paused,
         if (gCitadel->animTime > 6283.1853f) gCitadel->animTime -= 6283.1853f;
     }
     StepRipples(&gCitadel->ripples, dtSeconds, paused);
-    if (!paused) {
-        EnforceInteriorUnitCollisions();
-    }
 
     if (IsFinite3(eyeX, eyeY, eyeZ)) {
         gCitadel->eyeX = eyeX;
@@ -1834,6 +1979,15 @@ void RuntimeUpdate(float dtSeconds, bool paused,
                             &lAimX, &lAimY, &lAimZ);
     CeArchivePedestal::RuntimeUpdate(CeMuseumTour::kWingAtrium, dtSeconds, paused,
                                      lEyeX, lEyeY, lEyeZ, lAimX, lAimY, lAimZ);
+}
+
+// The simulation's share of the Citadel, once per game tick while unpaused:
+// units are pushed out of solid masonry, bodies on or under the Cinema roof are
+// held at its height, and the player's Cinema occupancy is brought up to date.
+void RuntimeTickSim() {
+    if (!gCitadel || !gCitadel->active) return;
+    EnforceInteriorUnitCollisions();
+    RefreshCinemaOccupancy();
 }
 
 bool RuntimeHandleKey(unsigned dik, bool repeat) {
@@ -1884,7 +2038,8 @@ bool RuntimeHandleFire(bool release, float value) {
     if (!gCitadel || !gCitadel->active) return false;
     if (CeArchivePedestal::RuntimeHandleFire(release, value))
         return true;
-    if (gCitadel->insideCinema)
+    RefreshCinemaOccupancy();
+    if (CinemaDisarmsWeapons(gCitadel->playerInsideCinema, gCitadel->insideCinema))
         return true;
     return false;
 }
@@ -2187,6 +2342,10 @@ void RuntimeDrawDomeFx() {
 
     const float cx = kCenterX, cy = kCenterY, cz = gCitadel->floorZ;
     const float t = gCitadel->animTime;
+    // Seen from inside, the glass overhead nearly vanishes and the ribs drop to
+    // 40%, so nothing bright crosses the reticle; the horizon band and the impact
+    // ripples keep their strength (DomeShellGain / DomeRibGain).
+    const float insideBlend = DomeViewerInsideBlend(gCitadel->eyeX, gCitadel->eyeY, gCitadel->eyeZ, cz);
 
     // -------------------------------------------------------------------------
     // Pass 1: Translucent Shimmering Cyan-Gold Fresnel Geodesic Shell (Alpha Blend)
@@ -2204,7 +2363,8 @@ void RuntimeDrawDomeFx() {
             const float shimmer = 0.5f + 0.5f * std::sin(t * 1.45f + az * 3.0f - vPhase * 6.5f);
 
             // Subtle crystal-clear shell overhead (~0.045 alpha), richer cyan-gold rim near horizon & skirt (~0.18 alpha)
-            const float baseA = 0.042f + 0.135f * (fresnel * fresnel) + 0.030f * shimmer;
+            const float baseA = (0.042f + 0.135f * (fresnel * fresnel) + 0.030f * shimmer) *
+                                DomeShellGain(elev, insideBlend);
             const float goldMix = Clamp01((0.35f - elev) * 2.2f) * 0.45f;
             const float rCol = 0.30f + 0.58f * goldMix + 0.10f * shimmer;
             const float gCol = 0.78f + 0.12f * goldMix + 0.08f * shimmer;
@@ -2252,7 +2412,8 @@ void RuntimeDrawDomeFx() {
             const float az = std::atan2(e.ny, e.nx);
             const float vPhase = -0.5f * (e.az + e.bz) / kDomeVisualRadius;
             const float pulse = 0.5f + 0.5f * std::sin(t * 2.1f - vPhase * 7.0f + az * 2.0f);
-            const float alpha = 0.16f + 0.24f * (1.0f - elev) + 0.12f * pulse;
+            const float alpha = (0.16f + 0.24f * (1.0f - elev) + 0.12f * pulse) *
+                                DomeRibGain(elev, insideBlend);
             const float gold = Clamp01((0.30f - elev) * 2.5f) * 0.55f;
             const DWORD col = MakeArgb(alpha, 0.36f + 0.58f * gold, 0.86f + 0.08f * pulse, 1.00f - 0.38f * gold);
 
@@ -2443,7 +2604,11 @@ extern "C" bool PortCeSanctuaryActive(void) {
 }
 
 extern "C" bool PortCeSanctuarySkipOutdoorWorld(void) {
-    if (!SanctuarySessionOpen() || !CeSanctuaryCitadel::gCitadel->insideCinema)
+    if (!SanctuarySessionOpen())
+        return false;
+    // Asked before each outdoor pass of the frame being drawn: read the camera now.
+    CeSanctuaryCitadel::RefreshCinemaOccupancy();
+    if (!CeSanctuaryCitadel::gCitadel->insideCinema)
         return false;
     if (PortCePhotoOn())
         return false;
@@ -2530,6 +2695,7 @@ namespace CeSanctuaryCitadel {
 void RuntimeInit(float) {}
 void RuntimeShutdown() {}
 void RuntimeUpdate(float, bool, float, float, float, float, float, float) {}
+void RuntimeTickSim() {}
 void RuntimeDrawWorld() {}
 void RuntimeDrawDomeFx() {}
 bool RuntimeHandleKey(unsigned, bool) { return false; }

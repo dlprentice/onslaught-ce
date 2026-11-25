@@ -5,6 +5,9 @@
 // (port/d3dx/tests: tex_corpus.py, texcase.h, fakedev.c, tex_compare.py); see port/d3dx/README.md for what is
 // measured and what is not.
 #include <d3dx9.h>
+#include <limits.h>
+#include <new>
+#include <stdint.h>
 #include <stdio.h>
 #include "bc.h"
 #include <stdlib.h>
@@ -70,8 +73,69 @@ const Format *Find(D3DFORMAT f)
     return NULL;
 }
 
-UINT RowBytes(const Format *f, UINT w) { return f->kind == K_DXT ? (w + 3) / 4 * f->bits / 8 : w * f->bits / 8; }
-UINT Rows(const Format *f, UINT h) { return f->kind == K_DXT ? (h + 3) / 4 : h; }
+struct Color
+{
+    float r, g, b, a;
+};
+
+// Practical 32-bit-safe ceiling: up to 16384 per edge, 16M pixels per level (256 MiB of Color), 256 MiB total packed data.
+const UINT kMaxDimension = 16384u;
+const UINT kMaxMipCount = 32u;
+const uint64_t kMaxLevelPixels = 16ull * 1024ull * 1024ull;
+const uint64_t kMaxLevelBytes = 64ull * 1024ull * 1024ull;
+const uint64_t kMaxTotalImageBytes = 256ull * 1024ull * 1024ull;
+const size_t kMaxFileBytes = 256u * 1024u * 1024u;
+
+struct LevelLayout
+{
+    size_t rowBytes;
+    size_t rows;
+    size_t levelBytes;
+    size_t pixels;
+};
+
+bool ComputeLayout(const Format *f, UINT w, UINT h, LevelLayout &out)
+{
+    if (!f || w == 0 || h == 0 || w > kMaxDimension || h > kMaxDimension)
+        return false;
+    uint64_t pixels = (uint64_t)w * (uint64_t)h;
+    if (pixels == 0 || pixels > kMaxLevelPixels || pixels > (uint64_t)(SIZE_MAX / sizeof(Color)))
+        return false;
+    uint64_t rowBytes, rows;
+    if (f->kind == K_DXT)
+    {
+        uint64_t bw = ((uint64_t)w + 3ull) / 4ull;
+        uint64_t bh = ((uint64_t)h + 3ull) / 4ull;
+        rowBytes = bw * (uint64_t)(f->bits / 8u);
+        rows = bh;
+    }
+    else
+    {
+        rowBytes = (uint64_t)w * (uint64_t)(f->bits / 8u);
+        rows = (uint64_t)h;
+    }
+    if (rows == 0 || rowBytes == 0 || rowBytes > kMaxLevelBytes / rows)
+        return false;
+    uint64_t levelBytes = rowBytes * rows;
+    if (rowBytes > UINT_MAX || rows > UINT_MAX || levelBytes > SIZE_MAX)
+        return false;
+    out.rowBytes = (size_t)rowBytes;
+    out.rows = (size_t)rows;
+    out.levelBytes = (size_t)levelBytes;
+    out.pixels = (size_t)pixels;
+    return true;
+}
+
+bool RoundPow2(UINT v, UINT *out)
+{
+    if (v == 0 || v > 0x80000000u)
+        return false;
+    UINT p = 1;
+    while (p < v)
+        p <<= 1;
+    *out = p;
+    return true;
+}
 
 // Retail's choice of texture format: for each requested format, the formats it accepts in order of preference; the
 // device's best-ranked supported one wins, and none fails with D3DERR_NOTAVAILABLE. Measured from
@@ -155,7 +219,7 @@ struct Image
 
 DWORD Read32(const unsigned char *p) { return p[0] | p[1] << 8 | p[2] << 16 | (DWORD)p[3] << 24; }
 
-bool ParseDds(const unsigned char *p, UINT size, Image &img)
+bool ParseDds(const unsigned char *p, size_t size, Image &img)
 {
     if (size < 128 || Read32(p) != MAKEFOURCC('D', 'D', 'S', ' ') || Read32(p + 4) != 124)
         return false;
@@ -177,19 +241,26 @@ bool ParseDds(const unsigned char *p, UINT size, Image &img)
         return false;
     if (mips == 0)
         mips = 1;
+    if (mips > kMaxMipCount)
+        return false;
     img.format = f;
-    UINT pos = 128, w = width, h = height;
+    size_t pos = 128;
+    UINT w = width, h = height;
+    uint64_t totalBytes = 0;
     for (UINT i = 0; i < mips; i++)
     {
-        UINT n = RowBytes(f, w) * Rows(f, h);
-        if (pos + n > size)
+        LevelLayout lay;
+        if (!ComputeLayout(f, w, h, lay) || lay.levelBytes > size - pos)
+            return false;
+        totalBytes += lay.levelBytes;
+        if (totalBytes > kMaxTotalImageBytes)
             return false;
         Level l;
         l.width = w;
         l.height = h;
-        l.data.assign(p + pos, p + pos + n);
-        img.levels.push_back(l);
-        pos += n;
+        l.data.assign(p + pos, p + pos + lay.levelBytes);
+        img.levels.push_back(std::move(l));
+        pos += lay.levelBytes;
         w = w > 1 ? w / 2 : 1;
         h = h > 1 ? h / 2 : 1;
     }
@@ -203,7 +274,7 @@ bool ParseDds(const unsigned char *p, UINT size, Image &img)
     return true;
 }
 
-bool ParseTga(const unsigned char *p, UINT size, Image &img)
+bool ParseTga(const unsigned char *p, size_t size, Image &img)
 {
     if (size < 18)
         return false;
@@ -222,40 +293,46 @@ bool ParseTga(const unsigned char *p, UINT size, Image &img)
         f = Find((desc & 15) ? D3DFMT_A8R8G8B8 : D3DFMT_X8R8G8B8);
     else
         f = NULL;
-    if (!f)
+    LevelLayout lay;
+    if (!f || !ComputeLayout(f, width, height, lay) || (size_t)idLength > size - 18u)
         return false;
-    UINT bpp = (bits + 7) / 8, pos = 18 + idLength, n = width * height;
-    std::vector<unsigned char> pixels(n * bpp);
+    size_t bpp = (bits + 7u) / 8u, pos = 18u + (size_t)idLength;
+    uint64_t rawBytes64 = (uint64_t)lay.pixels * (uint64_t)bpp;
+    if (rawBytes64 > kMaxLevelBytes || rawBytes64 > SIZE_MAX)
+        return false;
+    size_t rawBytes = (size_t)rawBytes64;
+    std::vector<unsigned char> pixels(rawBytes);
     if (type == 2 || type == 3)
     {
-        if (pos + n * bpp > size)
+        if (rawBytes > size - pos)
             return false;
-        memcpy(pixels.data(), p + pos, n * bpp);
+        memcpy(pixels.data(), p + pos, rawBytes);
     }
     else
     {
-        UINT i = 0;
-        while (i < n)
+        size_t i = 0;
+        while (i < lay.pixels)
         {
             if (pos >= size)
                 return false;
-            UINT head = p[pos++], count = (head & 0x7f) + 1;
-            if (i + count > n)
+            size_t head = p[pos++], count = (head & 0x7fu) + 1u;
+            if (count > lay.pixels - i)
                 return false;
-            if (head & 0x80)
+            if (head & 0x80u)
             {
-                if (pos + bpp > size)
+                if (bpp > size - pos)
                     return false;
-                for (UINT k = 0; k < count; k++)
+                for (size_t k = 0; k < count; k++)
                     memcpy(&pixels[(i + k) * bpp], p + pos, bpp);
                 pos += bpp;
             }
             else
             {
-                if (pos + count * bpp > size)
+                size_t runBytes = count * bpp;
+                if (runBytes > size - pos)
                     return false;
-                memcpy(&pixels[i * bpp], p + pos, count * bpp);
-                pos += count * bpp;
+                memcpy(&pixels[i * bpp], p + pos, runBytes);
+                pos += runBytes;
             }
             i += count;
         }
@@ -263,18 +340,20 @@ bool ParseTga(const unsigned char *p, UINT size, Image &img)
     Level l;
     l.width = width;
     l.height = height;
-    l.data.resize(n * (f->bits / 8));
+    size_t dstBpp = f->bits / 8u;
+    l.data.resize(lay.levelBytes);
     for (UINT y = 0; y < height; y++)
     {
         UINT sy = (desc & 0x20) ? y : height - 1 - y;
         for (UINT x = 0; x < width; x++)
         {
             UINT sx = (desc & 0x10) ? width - 1 - x : x;
-            memcpy(&l.data[(y * width + x) * (f->bits / 8)], &pixels[(sy * width + sx) * bpp], f->bits / 8);
+            memcpy(&l.data[((size_t)y * (size_t)width + (size_t)x) * dstBpp],
+                   &pixels[((size_t)sy * (size_t)width + (size_t)sx) * bpp], dstBpp);
         }
     }
     img.format = f;
-    img.levels.push_back(l);
+    img.levels.push_back(std::move(l));
     img.info.Width = width;
     img.info.Height = height;
     img.info.Depth = 1;
@@ -286,11 +365,6 @@ bool ParseTga(const unsigned char *p, UINT size, Image &img)
 }
 
 // ---- pixels as floats
-
-struct Color
-{
-    float r, g, b, a;
-};
 
 float Channel(DWORD v, DWORD mask)
 {
@@ -311,7 +385,7 @@ DWORD Pack(float v, DWORD mask)
     while (!(mask >> shift & 1))
         shift++;
     DWORD max = mask >> shift;
-    if (v <= 0.0f)
+    if (!(v > 0.0f))
         return 0;
     if (v >= 1.0f)
         return mask;
@@ -345,14 +419,17 @@ void DecodeDxtColors(const unsigned char *b, bool dxt1, Color out[4])
 }
 
 // Decodes a level into floats, one Color per pixel.
-void Decode(const Format *f, const Level &l, std::vector<Color> &out)
+bool Decode(const Format *f, const Level &l, std::vector<Color> &out)
 {
-    out.assign(l.width * l.height, Color());
+    LevelLayout lay;
+    if (!ComputeLayout(f, l.width, l.height, lay) || l.data.size() < lay.levelBytes)
+        return false;
+    out.assign(lay.pixels, Color());
     if (f->kind == K_DXT)
     {
-        UINT bw = (l.width + 3) / 4, bh = (l.height + 3) / 4, bs = f->bits / 8;
-        for (UINT by = 0; by < bh; by++)
-            for (UINT bx = 0; bx < bw; bx++)
+        size_t bw = ((size_t)l.width + 3u) / 4u, bh = ((size_t)l.height + 3u) / 4u, bs = f->bits / 8u;
+        for (size_t by = 0; by < bh; by++)
+            for (size_t bx = 0; bx < bw; bx++)
             {
                 const unsigned char *b = &l.data[(by * bw + bx) * bs];
                 const unsigned char *cb = f->format == D3DFMT_DXT1 ? b : b + 8;
@@ -362,7 +439,7 @@ void Decode(const Format *f, const Level &l, std::vector<Color> &out)
                 for (UINT py = 0; py < 4; py++)
                     for (UINT px = 0; px < 4; px++)
                     {
-                        UINT x = bx * 4 + px, y = by * 4 + py;
+                        UINT x = (UINT)(bx * 4u + px), y = (UINT)(by * 4u + py);
                         if (x >= l.width || y >= l.height)
                             continue;
                         Color c = pal[idx >> (2 * (py * 4 + px)) & 3];
@@ -396,16 +473,16 @@ void Decode(const Format *f, const Level &l, std::vector<Color> &out)
                             else
                                 c.r = c.g = c.b = 0.0f;
                         }
-                        out[y * l.width + x] = c;
+                        out[(size_t)y * (size_t)l.width + (size_t)x] = c;
                     }
             }
-        return;
+        return true;
     }
-    UINT bpp = f->bits / 8;
-    for (UINT i = 0; i < l.width * l.height; i++)
+    size_t bpp = f->bits / 8u;
+    for (size_t i = 0; i < lay.pixels; i++)
     {
         DWORD v = 0;
-        for (UINT k = 0; k < bpp; k++)
+        for (size_t k = 0; k < bpp; k++)
             v |= (DWORD)l.data[i * bpp + k] << (8 * k);
         Color c;
         if (f->kind == K_LUM)
@@ -419,23 +496,29 @@ void Decode(const Format *f, const Level &l, std::vector<Color> &out)
         c.a = f->a ? Channel(v, f->a) : 1.0f;
         out[i] = c;
     }
+    return true;
 }
 
-bool Encode(const Format *f, UINT w, UINT h, const std::vector<Color> &in, unsigned char *dst, UINT pitch)
+bool Encode(const Format *f, UINT w, UINT h, const std::vector<Color> &in, unsigned char *dst, size_t pitch)
 {
+    LevelLayout lay;
+    if (!dst || !ComputeLayout(f, w, h, lay) || in.size() < lay.pixels || pitch < lay.rowBytes)
+        return false;
     if (f->kind == K_DXT)
     {
         // retail's encoder diffuses error in colour and alpha and weights colour by luminance (bc.cpp)
         const unsigned flags = bc::DITHER_RGB | bc::DITHER_A;
-        UINT bw = (w + 3) / 4, bh = (h + 3) / 4, bs = f->bits / 8;
-        for (UINT by = 0; by < bh; by++)
-            for (UINT bx = 0; bx < bw; bx++)
+        size_t bw = ((size_t)w + 3u) / 4u, bh = ((size_t)h + 3u) / 4u, bs = f->bits / 8u;
+        for (size_t by = 0; by < bh; by++)
+            for (size_t bx = 0; bx < bw; bx++)
             {
                 bc::Color px[16];
                 for (UINT k = 0; k < 16; k++)
                 {
                     // a level smaller than a block repeats its pixels across the block
-                    const Color &c = in[((by * 4 + k / 4) % h) * w + (bx * 4 + k % 4) % w];
+                    size_t sy = (by * 4u + (size_t)(k / 4u)) % (size_t)h;
+                    size_t sx = (bx * 4u + (size_t)(k % 4u)) % (size_t)w;
+                    const Color &c = in[sy * (size_t)w + sx];
                     px[k] = {c.r, c.g, c.b, c.a};
                     if (f->format == D3DFMT_DXT2 || f->format == D3DFMT_DXT4)
                     {
@@ -454,42 +537,60 @@ bool Encode(const Format *f, UINT w, UINT h, const std::vector<Color> &in, unsig
             }
         return true;
     }
-    UINT bpp = f->bits / 8;
+    size_t bpp = f->bits / 8u;
     for (UINT y = 0; y < h; y++)
         for (UINT x = 0; x < w; x++)
         {
-            const Color &c = in[y * w + x];
+            const Color &c = in[(size_t)y * (size_t)w + (size_t)x];
             DWORD v;
             if (f->kind == K_LUM)
                 v = Pack(c.r * 0.2125f + c.g * 0.7154f + c.b * 0.0721f, f->r) | Pack(c.a, f->a);
             else
                 v = Pack(c.r, f->r) | Pack(c.g, f->g) | Pack(c.b, f->b) | Pack(c.a, f->a);
-            for (UINT k = 0; k < bpp; k++)
-                dst[y * pitch + x * bpp + k] = (unsigned char)(v >> (8 * k));
+            for (size_t k = 0; k < bpp; k++)
+                dst[(size_t)y * pitch + (size_t)x * bpp + k] = (unsigned char)(v >> (8 * k));
         }
     return true;
 }
 
 // Point and box resampling of a float image.
-void Resample(const std::vector<Color> &src, UINT sw, UINT sh, std::vector<Color> &dst, UINT dw, UINT dh, DWORD filter)
+bool Resample(const std::vector<Color> &src, UINT sw, UINT sh, std::vector<Color> &dst, UINT dw, UINT dh, DWORD filter)
 {
-    dst.assign(dw * dh, Color());
+    if (sw == 0 || sh == 0 || dw == 0 || dh == 0 || sw > kMaxDimension || sh > kMaxDimension ||
+        dw > kMaxDimension || dh > kMaxDimension)
+        return false;
+    uint64_t srcPixels = (uint64_t)sw * (uint64_t)sh;
+    uint64_t dstPixels = (uint64_t)dw * (uint64_t)dh;
+    if (srcPixels > kMaxLevelPixels || dstPixels > kMaxLevelPixels ||
+        dstPixels > (uint64_t)(SIZE_MAX / sizeof(Color)) || src.size() < (size_t)srcPixels)
+        return false;
+    dst.assign((size_t)dstPixels, Color());
     DWORD type = filter & 0xffff;
-    if (type == D3DX_FILTER_BOX && dw * 2 == sw && dh * 2 == sh)
+    if (type == D3DX_FILTER_BOX && (uint64_t)dw * 2ull == (uint64_t)sw && (uint64_t)dh * 2ull == (uint64_t)sh)
     {
         for (UINT y = 0; y < dh; y++)
             for (UINT x = 0; x < dw; x++)
             {
-                const Color &a = src[(2 * y) * sw + 2 * x], &b = src[(2 * y) * sw + 2 * x + 1];
-                const Color &c = src[(2 * y + 1) * sw + 2 * x], &d = src[(2 * y + 1) * sw + 2 * x + 1];
-                dst[y * dw + x] = {(a.r + b.r + c.r + d.r) * 0.25f, (a.g + b.g + c.g + d.g) * 0.25f,
-                                   (a.b + b.b + c.b + d.b) * 0.25f, (a.a + b.a + c.a + d.a) * 0.25f};
+                size_t y0 = (size_t)y * 2u, x0 = (size_t)x * 2u, stride = (size_t)sw;
+                const Color &a = src[y0 * stride + x0], &b = src[y0 * stride + x0 + 1u];
+                const Color &c = src[(y0 + 1u) * stride + x0], &d = src[(y0 + 1u) * stride + x0 + 1u];
+                dst[(size_t)y * (size_t)dw + (size_t)x] = {(a.r + b.r + c.r + d.r) * 0.25f,
+                                                            (a.g + b.g + c.g + d.g) * 0.25f,
+                                                            (a.b + b.b + c.b + d.b) * 0.25f,
+                                                            (a.a + b.a + c.a + d.a) * 0.25f};
             }
-        return;
+        return true;
     }
     for (UINT y = 0; y < dh; y++)
+    {
+        size_t sy = (size_t)(((uint64_t)y * (uint64_t)sh) / (uint64_t)dh);
         for (UINT x = 0; x < dw; x++)
-            dst[y * dw + x] = src[(y * sh / dh) * sw + x * sw / dw];
+        {
+            size_t sx = (size_t)(((uint64_t)x * (uint64_t)sw) / (uint64_t)dw);
+            dst[(size_t)y * (size_t)dw + (size_t)x] = src[sy * (size_t)sw + sx];
+        }
+    }
+    return true;
 }
 
 // ---- requirements
@@ -501,13 +602,20 @@ bool Supported(IDirect3D9 *d3d, const D3DDEVICE_CREATION_PARAMETERS &cp, D3DFORM
 
 HRESULT Requirements(IDirect3DDevice9 *device, UINT &w, UINT &h, UINT &levels, DWORD usage, D3DFORMAT &format)
 {
+    if (w == 0 || h == 0 || w > 0x80000000u || h > 0x80000000u)
+        return D3DERR_INVALIDCALL;
     D3DCAPS9 caps;
     D3DDEVICE_CREATION_PARAMETERS cp;
     D3DDISPLAYMODE mode;
     IDirect3D9 *d3d = NULL;
     if (FAILED(device->GetDeviceCaps(&caps)) || FAILED(device->GetCreationParameters(&cp)) ||
-        FAILED(device->GetDisplayMode(0, &mode)) || FAILED(device->GetDirect3D(&d3d)))
+        FAILED(device->GetDisplayMode(0, &mode)) || FAILED(device->GetDirect3D(&d3d)) || !d3d)
         return D3DERR_INVALIDCALL;
+    if (caps.MaxTextureWidth == 0 || caps.MaxTextureHeight == 0)
+    {
+        d3d->Release();
+        return D3DERR_NOTAVAILABLE;
+    }
     D3DFORMAT chosen = D3DFMT_UNKNOWN;
     for (const Preference &p : kPreferences)
         if (p.requested == (DWORD)format)
@@ -523,13 +631,8 @@ HRESULT Requirements(IDirect3DDevice9 *device, UINT &w, UINT &h, UINT &levels, D
     format = chosen;
     if (caps.TextureCaps & D3DPTEXTURECAPS_POW2)
     {
-        UINT p = 1;
-        while (p < w)
-            p <<= 1;
-        w = p;
-        for (p = 1; p < h; p <<= 1)
-            ;
-        h = p;
+        if (!RoundPow2(w, &w) || !RoundPow2(h, &h))
+            return D3DERR_INVALIDCALL;
     }
     if (w > caps.MaxTextureWidth)
         w = caps.MaxTextureWidth;
@@ -548,23 +651,38 @@ HRESULT Requirements(IDirect3DDevice9 *device, UINT &w, UINT &h, UINT &levels, D
 HRESULT LoadLevel(IDirect3DTexture9 *tex, UINT level, const Format *df, UINT dw, UINT dh, const std::vector<Color> *pixels,
                   const Level *raw, Level &written)
 {
-    UINT rb = RowBytes(df, dw), rows = Rows(df, dh);
+    LevelLayout lay;
+    if (!ComputeLayout(df, dw, dh, lay))
+        return E_OUTOFMEMORY;
     written.width = dw;
     written.height = dh;
     if (raw)
+    {
+        if (raw->data.size() < lay.levelBytes)
+            return D3DXERR_INVALIDDATA;
         written.data = raw->data;
+    }
     else
     {
-        written.data.assign(rb * rows, 0);
-        if (!Encode(df, dw, dh, *pixels, written.data.data(), rb))
+        if (!pixels)
+            return D3DERR_INVALIDCALL;
+        written.data.assign(lay.levelBytes, 0);
+        if (!Encode(df, dw, dh, *pixels, written.data.data(), lay.rowBytes))
             return E_NOTIMPL;
     }
     D3DLOCKED_RECT lr;
+    memset(&lr, 0, sizeof(lr));
     HRESULT hr = tex->LockRect(level, &lr, NULL, 0);
     if (FAILED(hr))
         return hr;
-    for (UINT r = 0; r < rows; r++)
-        memcpy((unsigned char *)lr.pBits + r * lr.Pitch, &written.data[r * rb], rb);
+    if (!lr.pBits || lr.Pitch < 0 || (size_t)lr.Pitch < lay.rowBytes ||
+        (lay.rows > 1 && (uint64_t)(lay.rows - 1u) * (uint64_t)(unsigned)lr.Pitch + lay.rowBytes > SIZE_MAX))
+    {
+        tex->UnlockRect(level);
+        return D3DERR_INVALIDCALL;
+    }
+    for (size_t r = 0; r < lay.rows; r++)
+        memcpy((unsigned char *)lr.pBits + r * (size_t)lr.Pitch, &written.data[r * lay.rowBytes], lay.rowBytes);
     tex->UnlockRect(level);
     return D3D_OK;
 }
@@ -584,58 +702,69 @@ HRESULT Create(IDirect3DDevice9 *device, const Image &img, UINT width, UINT heig
     const Format *df = Find(f);
     if (!df)
         return D3DERR_NOTAVAILABLE;
+    LevelLayout topLayout;
+    if (!ComputeLayout(df, w, h, topLayout))
+        return E_OUTOFMEMORY;
     IDirect3DTexture9 *tex = NULL, *staging = NULL;
     hr = device->CreateTexture(w, h, mips, usage, f, pool, &tex, NULL);
-    if (FAILED(hr))
-        return hr;
+    if (FAILED(hr) || !tex)
+    {
+        if (tex)
+            tex->Release();
+        return FAILED(hr) ? hr : D3DERR_INVALIDCALL;
+    }
     IDirect3DTexture9 *target = tex;
     if (pool == D3DPOOL_DEFAULT)
     {
         hr = device->CreateTexture(w, h, mips, 0, f, D3DPOOL_SYSTEMMEM, &staging, NULL);
-        if (FAILED(hr))
+        if (FAILED(hr) || !staging)
         {
+            if (staging)
+                staging->Release();
             tex->Release();
-            return hr;
+            return FAILED(hr) ? hr : D3DERR_INVALIDCALL;
         }
         target = staging;
     }
-    if (filter == D3DX_DEFAULT)
-        filter = D3DX_FILTER_TRIANGLE | D3DX_FILTER_DITHER;
-    if (mipFilter == D3DX_DEFAULT)
-        mipFilter = D3DX_FILTER_BOX;
-    std::vector<Color> src, next;
-    Level prev;
-    UINT cw = w, ch = h;
-    for (UINT i = 0; i < mips && SUCCEEDED(hr); i++)
+    try
     {
-        Level written;
-        // Retail copies a stored level, but decodes and re-encodes a DXT level narrower or shorter than a block.
-        if (i < img.levels.size() && img.levels[i].width == cw && img.levels[i].height == ch && img.format == df &&
-            (df->kind != K_DXT || (cw >= 4 && ch >= 4)))
-            hr = LoadLevel(target, i, df, cw, ch, NULL, &img.levels[i], written);
-        else
+        if (filter == D3DX_DEFAULT)
+            filter = D3DX_FILTER_TRIANGLE | D3DX_FILTER_DITHER;
+        if (mipFilter == D3DX_DEFAULT)
+            mipFilter = D3DX_FILTER_BOX;
+        std::vector<Color> src, next;
+        Level prev;
+        UINT cw = w, ch = h;
+        for (UINT i = 0; i < mips && SUCCEEDED(hr); i++)
         {
-            if (i < img.levels.size() && img.levels[i].width == cw && img.levels[i].height == ch)
-            {
-                Decode(img.format, img.levels[i], next);
-            }
-            else if (i < img.levels.size() && (i == 0 || img.levels[i].width == cw))
-            {
-                Decode(img.format, img.levels[i], src);
-                Resample(src, img.levels[i].width, img.levels[i].height, next, cw, ch, i == 0 ? filter : mipFilter);
-            }
+            Level written;
+            // Retail copies a stored level, but decodes and re-encodes a DXT level narrower or shorter than a block.
+            if (i < img.levels.size() && img.levels[i].width == cw && img.levels[i].height == ch && img.format == df &&
+                (df->kind != K_DXT || (cw >= 4 && ch >= 4)))
+                hr = LoadLevel(target, i, df, cw, ch, NULL, &img.levels[i], written);
             else
             {
-                Decode(df, prev, src);
-                Resample(src, prev.width, prev.height, next, cw, ch, mipFilter);
+                bool ok = false;
+                if (i < img.levels.size() && img.levels[i].width == cw && img.levels[i].height == ch)
+                    ok = Decode(img.format, img.levels[i], next);
+                else if (i < img.levels.size() && (i == 0 || img.levels[i].width == cw))
+                    ok = Decode(img.format, img.levels[i], src) &&
+                         Resample(src, img.levels[i].width, img.levels[i].height, next, cw, ch, i == 0 ? filter : mipFilter);
+                else
+                    ok = Decode(df, prev, src) &&
+                         Resample(src, prev.width, prev.height, next, cw, ch, mipFilter);
+                hr = ok ? LoadLevel(target, i, df, cw, ch, &next, NULL, written) : D3DXERR_INVALIDDATA;
             }
-            hr = LoadLevel(target, i, df, cw, ch, &next, NULL, written);
+            prev.width = written.width;
+            prev.height = written.height;
+            prev.data.swap(written.data);
+            cw = cw > 1 ? cw / 2 : 1;
+            ch = ch > 1 ? ch / 2 : 1;
         }
-        prev.width = written.width;
-        prev.height = written.height;
-        prev.data.swap(written.data);
-        cw = cw > 1 ? cw / 2 : 1;
-        ch = ch > 1 ? ch / 2 : 1;
+    }
+    catch (const std::bad_alloc &)
+    {
+        hr = E_OUTOFMEMORY;
     }
     if (SUCCEEDED(hr) && staging)
         hr = device->UpdateTexture(staging, tex);
@@ -659,21 +788,32 @@ extern "C" HRESULT WINAPI D3DXCreateTextureFromFileInMemoryEx(LPDIRECT3DDEVICE9 
 {
     (void)ColorKey;
     (void)pPalette;
+    if (ppTexture)
+        *ppTexture = NULL;
     if (!pDevice || !pSrcData || !ppTexture)
         return D3DERR_INVALIDCALL;
-    *ppTexture = NULL;
-    Image img;
-    const unsigned char *p = (const unsigned char *)pSrcData;
-    if (!ParseDds(p, SrcDataSize, img) && !ParseTga(p, SrcDataSize, img))
-        return D3DXERR_INVALIDDATA;
-    return Create(pDevice, img, Width, Height, MipLevels, Usage, Format, Pool, Filter, MipFilter, pSrcInfo, ppTexture);
+    try
+    {
+        Image img;
+        const unsigned char *p = (const unsigned char *)pSrcData;
+        if (!ParseDds(p, (size_t)SrcDataSize, img) && !ParseTga(p, (size_t)SrcDataSize, img))
+            return D3DXERR_INVALIDDATA;
+        return Create(pDevice, img, Width, Height, MipLevels, Usage, Format, Pool, Filter, MipFilter, pSrcInfo, ppTexture);
+    }
+    catch (const std::bad_alloc &)
+    {
+        *ppTexture = NULL;
+        return E_OUTOFMEMORY;
+    }
 }
 
 extern "C" HRESULT WINAPI D3DXCreateTextureFromFileExA(LPDIRECT3DDEVICE9 pDevice, LPCSTR pSrcFile, UINT Width,
     UINT Height, UINT MipLevels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, DWORD Filter, DWORD MipFilter,
     D3DCOLOR ColorKey, D3DXIMAGE_INFO *pSrcInfo, PALETTEENTRY *pPalette, LPDIRECT3DTEXTURE9 *ppTexture)
 {
-    if (!pSrcFile)
+    if (ppTexture)
+        *ppTexture = NULL;
+    if (!pDevice || !pSrcFile || !ppTexture)
         return D3DERR_INVALIDCALL;
 #ifndef _WIN32
     // Loose textures use the same game/user roots, separators and case matching as the game's other reads.
@@ -689,15 +829,34 @@ extern "C" HRESULT WINAPI D3DXCreateTextureFromFileExA(LPDIRECT3DDEVICE9 pDevice
 #endif
     if (!f)
         return D3DXERR_INVALIDDATA;
-    std::vector<unsigned char> data;
-    unsigned char buf[65536];
-    size_t n;
-    while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
-        data.insert(data.end(), buf, buf + n);
-    fclose(f);
-    return D3DXCreateTextureFromFileInMemoryEx(pDevice, data.data(), (UINT)data.size(), Width, Height, MipLevels,
-                                               Usage, Format, Pool, Filter, MipFilter, ColorKey, pSrcInfo, pPalette,
-                                               ppTexture);
+    try
+    {
+        std::vector<unsigned char> data;
+        unsigned char buf[65536];
+        size_t n;
+        while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
+        {
+            if (n > kMaxFileBytes - data.size())
+            {
+                fclose(f);
+                return E_OUTOFMEMORY;
+            }
+            data.insert(data.end(), buf, buf + n);
+        }
+        bool readErr = ferror(f) != 0;
+        fclose(f);
+        if (readErr || data.size() > UINT_MAX)
+            return D3DXERR_INVALIDDATA;
+        return D3DXCreateTextureFromFileInMemoryEx(pDevice, data.data(), (UINT)data.size(), Width, Height, MipLevels,
+                                                   Usage, Format, Pool, Filter, MipFilter, ColorKey, pSrcInfo, pPalette,
+                                                   ppTexture);
+    }
+    catch (const std::bad_alloc &)
+    {
+        fclose(f);
+        *ppTexture = NULL;
+        return E_OUTOFMEMORY;
+    }
 }
 
 extern "C" HRESULT WINAPI D3DXSaveSurfaceToFileA(LPCSTR pDestFile, D3DXIMAGE_FILEFORMAT DestFormat,

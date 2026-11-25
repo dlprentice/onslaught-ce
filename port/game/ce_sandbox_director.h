@@ -103,6 +103,7 @@ struct CeSandboxSpawnOrder {
 	float targetX, targetY, targetZ;
 	bool isHqRebuild;
 	bool isEscalation;
+	int platoonSize;   // ground line units arrive as one 2-3 unit platoon sharing a squad; 0 or 1 = a single unit
 };
 
 struct CeSandboxMoveOrder {
@@ -134,6 +135,119 @@ struct CeSandboxTrackedSample {
 	float life;
 	bool inCombat;
 	bool alive;
+	bool playerHeld;        // its squad has a player order, or the player pilots one of its members
+	CeEntityHandle squad;   // the platoon squad it belongs to (invalid: none); members share one waypoint
+};
+
+// Faction a banner speaks for (the strip colours it: Forseti cyan, Muspell crimson, amber for the strait).
+enum CeSandboxBannerTone {
+	CE_SB_TONE_NEUTRAL = 0,
+	CE_SB_TONE_FORSETI,
+	CE_SB_TONE_MUSPELL,
+	CE_SB_TONE_NAVAL,
+};
+
+// Where the tug-of-war stands, in the words the strip shows.
+enum CeSandboxFrontState {
+	CE_SB_FRONT_CONTESTED = 0,   // "FRONT: <node>"
+	CE_SB_FRONT_FORSETI_ADVANCING,
+	CE_SB_FRONT_MUSPELL_ADVANCING,
+	CE_SB_FRONT_LINE_HELD,
+};
+
+constexpr float kCeSandboxPipPulseSec = 0.4f;
+constexpr float kCeSandboxFrontTrendEnter = 1.6f;   // summed control points per second
+constexpr float kCeSandboxFrontTrendExit = 0.5f;
+constexpr double kCeSandboxPlayerOrderTimeoutSec = 180.0;
+
+// Ground line units fight as small platoons that share one squad: infantry in
+// threes, vehicles and walkers in pairs. Aircraft, ships, turrets and HQ cores
+// stay single.
+inline int CeSandboxPlatoonSizeFor(const char *unitName, CeSandboxUnitRole role) {
+	if (role != CE_SB_ROLE_LINE || !unitName) return 1;
+	using namespace CeSandboxWorld;
+	if (StrEqualsIgnoreCase(unitName, kUnitForsetiTrooper) ||
+	    StrEqualsIgnoreCase(unitName, kUnitMuspellGrunt) ||
+	    StrEqualsIgnoreCase(unitName, kUnitMuspellWarrior))
+		return 3;
+	return 2;
+}
+
+// The director's own ground platoons, by squad handle. A fixed table: no heap,
+// cleared with the level. The Commander asks it which squads the player may
+// order (friendly Forseti platoons), and the director asks it which squads the
+// player has taken over, so it stops steering them.
+class CeSandboxPlatoonRegistry {
+public:
+	static constexpr unsigned kMaxPlatoons = 128u;
+
+private:
+	struct Slot {
+		CeEntityHandle squad;
+		int allegiance;
+		double playerOrderUntilSec;   // 0: none
+	};
+	Slot slots_[kMaxPlatoons];
+	unsigned count_;
+
+	int Find(CeEntityHandle squad) const {
+		if (!CeEntityHandleIsValid(squad)) return -1;
+		for (unsigned i = 0; i < count_; ++i) {
+			if (slots_[i].squad == squad) return static_cast<int>(i);
+		}
+		return -1;
+	}
+
+public:
+	CeSandboxPlatoonRegistry() { Clear(); }
+
+	void Clear() { count_ = 0u; }
+	unsigned Count() const { return count_; }
+	CeEntityHandle At(unsigned index) const {
+		return index < count_ ? slots_[index].squad : kCeEntityHandleInvalid;
+	}
+
+	bool Register(CeEntityHandle squad, int allegiance) {
+		if (!CeEntityHandleIsValid(squad)) return false;
+		const int at = Find(squad);
+		if (at >= 0) {
+			slots_[at].allegiance = allegiance;
+			return true;
+		}
+		if (count_ >= kMaxPlatoons) return false;
+		slots_[count_++] = {squad, allegiance, 0.0};
+		return true;
+	}
+
+	bool Unregister(CeEntityHandle squad) {
+		const int at = Find(squad);
+		if (at < 0) return false;
+		slots_[at] = slots_[--count_];
+		return true;
+	}
+
+	bool Contains(CeEntityHandle squad) const { return Find(squad) >= 0; }
+
+	// Only the player's own (Forseti) ground platoons may be ordered.
+	bool IsCommandable(CeEntityHandle squad) const {
+		const int at = Find(squad);
+		return at >= 0 && slots_[at].allegiance == CeSandboxWorld::kAllegianceForseti;
+	}
+
+	// The Commander reports an order given to (active) or lifted from a platoon.
+	// A given order lapses on its own after three minutes, so a platoon the
+	// player forgot rejoins the front instead of standing idle for good.
+	bool SetPlayerOrder(CeEntityHandle squad, bool active, double nowSec) {
+		const int at = Find(squad);
+		if (at < 0 || slots_[at].allegiance != CeSandboxWorld::kAllegianceForseti) return false;
+		slots_[at].playerOrderUntilSec = active ? (nowSec + kCeSandboxPlayerOrderTimeoutSec) : 0.0;
+		return true;
+	}
+
+	bool HasPlayerOrder(CeEntityHandle squad, double nowSec) const {
+		const int at = Find(squad);
+		return at >= 0 && slots_[at].playerOrderUntilSec > 0.0 && nowSec < slots_[at].playerOrderUntilSec;
+	}
 };
 
 struct CeSandboxHudState {
@@ -152,6 +266,9 @@ struct CeSandboxHudState {
 	float nodeControl[CeSandboxWorld::kCaptureNodeCount]; // [-100..+100]
 	CeSandboxOwner nodeOwner[CeSandboxWorld::kCaptureNodeCount];
 	int activeFrontNode;
+	CeSandboxFrontState frontState;
+	CeSandboxBannerTone bannerTone;
+	uint32_t nodeFlipSerial[CeSandboxWorld::kCaptureNodeCount]; // +1 each time the node changes hands
 	double elapsedSec;
 	char headerLeft[32];
 	char headerMid[40];
@@ -204,6 +321,7 @@ struct CeSandboxHudLayout {
 	float glowPad;
 	CeSandboxHudRect panel;
 	CeSandboxHudRect nodePips[CeSandboxWorld::kCaptureNodeCount];
+	CeSandboxHudRect nodeTags[CeSandboxWorld::kCaptureNodeCount]; // one short tag centred under each pip
 	CeSandboxHudRect bannerBox;
 	CeSandboxHudRect cueBox;
 	bool showBanner;
@@ -223,7 +341,9 @@ inline CeSandboxHudLayout CeSandboxComputeHudLayout(float viewportW, float viewp
 	float panelW = floorf(480.0f * s);
 	if (panelW > maxPanelW) panelW = maxPanelW;
 	if (panelW < 280.0f) panelW = 280.0f;
-	const float panelH = floorf(46.0f * s);
+	const float tagH = floorf(11.0f * s);
+	const float tagGap = floorf(2.0f * s);
+	const float panelH = floorf(46.0f * s) + tagH + tagGap;
 	const float panelX = floorf((viewportW - panelW) * 0.5f);
 	const float panelY = safeTop > floorf(12.0f * s) ? safeTop : floorf(12.0f * s);
 
@@ -241,7 +361,7 @@ inline CeSandboxHudLayout CeSandboxComputeHudLayout(float viewportW, float viewp
 	const float pipW = floorf((pipAreaW - pipGap * float(CeSandboxWorld::kCaptureNodeCount - 1)) /
 	                          float(CeSandboxWorld::kCaptureNodeCount));
 	const float pipH = floorf(10.0f * s);
-	const float pipY = panelY + panelH - pipH - floorf(7.0f * s);
+	const float pipY = panelY + panelH - pipH - floorf(7.0f * s) - tagH - tagGap;
 	const float totalPipsW = pipW * float(CeSandboxWorld::kCaptureNodeCount) +
 	                         pipGap * float(CeSandboxWorld::kCaptureNodeCount - 1);
 	const float pipStartX = floorf(panelX + (panelW - totalPipsW) * 0.5f);
@@ -254,6 +374,7 @@ inline CeSandboxHudLayout CeSandboxComputeHudLayout(float viewportW, float viewp
 	out.panel = {panelX, panelY, panelW, panelH};
 	for (unsigned i = 0; i < CeSandboxWorld::kCaptureNodeCount; ++i) {
 		out.nodePips[i] = {pipStartX + float(i) * (pipW + pipGap), pipY, pipW, pipH};
+		out.nodeTags[i] = {out.nodePips[i].x, pipY + pipH + tagGap, pipW, tagH};
 	}
 
 	out.showBanner = showBanner;
@@ -340,6 +461,8 @@ public:
 		uint64_t totalHqRebuilds;
 		uint64_t totalPlayerRecalls;
 		uint64_t pressureThrottleSteps;
+		uint64_t totalPlatoons;
+		uint64_t playerHeldSamples;
 		int peakLiveUnits;
 		int peakTrackedUnits;
 	};
@@ -356,6 +479,10 @@ private:
 	float navalTimerSec_;
 	float bannerRemainSec_;
 	char bannerText_[64];
+	CeSandboxBannerTone bannerTone_;
+	uint32_t nodeFlipSerial_[CeSandboxWorld::kCaptureNodeCount];
+	float frontTrend_;              // smoothed change of summed node control, points per second
+	CeSandboxFrontState frontState_;
 
 	float nodeControl_[CeSandboxWorld::kCaptureNodeCount];
 	CeSandboxOwner nodeOwner_[CeSandboxWorld::kCaptureNodeCount];
@@ -377,9 +504,46 @@ private:
 	uint32_t waveSeq_;
 	Stats stats_;
 
-	void SetBanner(const char *raw, float durationSec = 5.5f) {
+	void SetBanner(const char *raw, float durationSec = 5.5f,
+	               CeSandboxBannerTone tone = CE_SB_TONE_NEUTRAL) {
 		CeSandboxSanitizeHudText(raw, bannerText_, sizeof(bannerText_));
 		bannerRemainSec_ = durationSec;
+		bannerTone_ = tone;
+	}
+
+	// The node the fight is over: the one nearest to changing hands.
+	int ActiveFrontNode() const {
+		int best = 2;
+		float bestAbs = 1e30f;
+		for (unsigned i = 0; i < CeSandboxWorld::kCaptureNodeCount; ++i) {
+			const float a = nodeControl_[i] < 0.0f ? -nodeControl_[i] : nodeControl_[i];
+			// The centre wins a tie, so a quiet opening names the Crossroads.
+			if (a < bestAbs - 1e-3f || (a < bestAbs + 1e-3f && i == 2u)) {
+				bestAbs = a;
+				best = static_cast<int>(i);
+			}
+		}
+		return best;
+	}
+
+	void UpdateFrontState(float sumBefore, float sumAfter, float stepDt) {
+		const float rate = stepDt > 0.0f ? (sumAfter - sumBefore) / stepDt : 0.0f;
+		frontTrend_ = frontTrend_ * 0.82f + rate * 0.18f;
+		int neutral = 0;
+		for (unsigned i = 0; i < CeSandboxWorld::kCaptureNodeCount; ++i) {
+			if (nodeOwner_[i] == CE_SB_OWNER_NEUTRAL) ++neutral;
+		}
+		// Enter "advancing" on a clear trend, leave it only once the trend has
+		// nearly stopped: the words on the strip never flicker.
+		if (frontTrend_ >= kCeSandboxFrontTrendEnter) {
+			frontState_ = CE_SB_FRONT_FORSETI_ADVANCING;
+		} else if (frontTrend_ <= -kCeSandboxFrontTrendEnter) {
+			frontState_ = CE_SB_FRONT_MUSPELL_ADVANCING;
+		} else if ((frontState_ == CE_SB_FRONT_FORSETI_ADVANCING && frontTrend_ < kCeSandboxFrontTrendExit) ||
+		           (frontState_ == CE_SB_FRONT_MUSPELL_ADVANCING && frontTrend_ > -kCeSandboxFrontTrendExit) ||
+		           frontState_ == CE_SB_FRONT_CONTESTED || frontState_ == CE_SB_FRONT_LINE_HELD) {
+			frontState_ = neutral > 0 ? CE_SB_FRONT_CONTESTED : CE_SB_FRONT_LINE_HELD;
+		}
 	}
 
 	int FindTrackedIndex(CeEntityHandle h) const {
@@ -500,8 +664,12 @@ private:
 		if (safe.role == CE_SB_ROLE_LINE || safe.role == CE_SB_ROLE_HQ || safe.role == CE_SB_ROLE_TURRET) {
 			safe.z = CeSandboxWorld::HeightAt(safe.x, safe.y);
 		}
+		const int fullSize = CeSandboxPlatoonSizeFor(safe.unitName, safe.role);
+		if (safe.platoonSize < 1) safe.platoonSize = 1;
+		if (safe.platoonSize > fullSize) safe.platoonSize = fullSize;
 		out.spawns[out.spawnCount++] = safe;
-		++stats_.totalSpawns;
+		stats_.totalSpawns += static_cast<uint64_t>(safe.platoonSize);
+		if (safe.platoonSize > 1) ++stats_.totalPlatoons;
 		return true;
 	}
 
@@ -524,7 +692,8 @@ private:
 		SetBanner(allegiance == CeSandboxWorld::kAllegianceMuspell
 		              ? "MUSPELL HQ SUPPRESSED - REBUILDING 60S"
 		              : "FORSETI HQ SUPPRESSED - REBUILDING 60S",
-		          6.0f);
+		          6.0f,
+		          allegiance == CeSandboxWorld::kAllegianceMuspell ? CE_SB_TONE_MUSPELL : CE_SB_TONE_FORSETI);
 	}
 
 	void EmitNavalEscalation(CeSandboxStepOutput &out, bool venturerAvailable) {
@@ -537,29 +706,29 @@ private:
 			if (EmitSpawn(out, {
 				forsetiShip, kAllegianceForseti, CE_SB_ROLE_NAVAL,
 				352.0f, 118.0f, forsetiZ, -1.35f,
-				418.0f, 136.0f, forsetiZ, false, true
+				418.0f, 136.0f, forsetiZ, false, true, 1
 			})) ++spawned;
 			if (EmitSpawn(out, {
 				kUnitWildcatJason, kAllegianceForseti, CE_SB_ROLE_AIR,
 				346.0f, 134.0f, -48.0f, -1.20f,
-				432.0f, 148.0f, -48.0f, false, true
+				432.0f, 148.0f, -48.0f, false, true, 1
 			})) ++spawned;
 		}
 		if (FindTrackedIndex(navalMuspellFlagship_) < 0) {
 			if (EmitSpawn(out, {
 				kUnitManticore, kAllegianceMuspell, CE_SB_ROLE_NAVAL,
 				444.0f, 154.0f, kWaterLevel, 1.85f,
-				372.0f, 132.0f, kWaterLevel, false, true
+				372.0f, 132.0f, kWaterLevel, false, true, 1
 			})) ++spawned;
 			if (EmitSpawn(out, {
 				kUnitMuspellAdvFighter, kAllegianceMuspell, CE_SB_ROLE_AIR,
 				448.0f, 166.0f, -50.0f, 1.90f,
-				360.0f, 124.0f, -50.0f, false, true
+				360.0f, 124.0f, -50.0f, false, true, 1
 			})) ++spawned;
 		}
 		if (spawned > 0) {
 			++stats_.totalNavalEscalations;
-			SetBanner("NAVAL ESCALATION - COASTAL STRAIT ENGAGED", 6.5f);
+			SetBanner("NAVAL ESCALATION - COASTAL STRAIT ENGAGED", 6.5f, CE_SB_TONE_NAVAL);
 		}
 	}
 
@@ -610,6 +779,8 @@ private:
 		}
 
 		// 3. Update 5-node tug-of-war capture state machine.
+		float controlSumBefore = 0.0f;
+		for (unsigned i = 0; i < kCaptureNodeCount; ++i) controlSumBefore += nodeControl_[i];
 		for (unsigned i = 0; i < kCaptureNodeCount; ++i) {
 			int diff = presence.forsetiWeight[i] - presence.muspellWeight[i];
 			if (diff > 6) diff = 6;
@@ -628,16 +799,21 @@ private:
 
 			if (next != prev) {
 				nodeOwner_[i] = next;
+				++nodeFlipSerial_[i];
 				if (next != CE_SB_OWNER_NEUTRAL) {
 					++stats_.totalNodeCaptures;
 					char msg[64] = {};
 					snprintf(msg, sizeof(msg), "%s CAPTURED %s",
 					         next == CE_SB_OWNER_FORSETI ? "FORSETI" : "MUSPELL",
 					         CaptureNode(i).name);
-					SetBanner(msg, 5.0f);
+					SetBanner(msg, 5.0f,
+					          next == CE_SB_OWNER_FORSETI ? CE_SB_TONE_FORSETI : CE_SB_TONE_MUSPELL);
 				}
 			}
 		}
+		float controlSumAfter = 0.0f;
+		for (unsigned i = 0; i < kCaptureNodeCount; ++i) controlSumAfter += nodeControl_[i];
+		UpdateFrontState(controlSumBefore, controlSumAfter, stepDt);
 
 		// 4. HQ suppression & 60 s regeneration timers (never ends the sandbox).
 		auto tickHq = [&](HqCoreState &hq, int allegiance, float hx, float hy, float hyaw) {
@@ -648,7 +824,7 @@ private:
 					allegiance == kAllegianceForseti ? kUnitForsetiHq : kUnitMuspellHq,
 					allegiance, CE_SB_ROLE_HQ,
 					hx, hy, HeightAt(hx, hy), hyaw,
-					hx, hy, HeightAt(hx, hy), true, false
+					hx, hy, HeightAt(hx, hy), true, false, 1
 				})) {
 					hq.rebuildTimerSec = 2.0f;
 					return;
@@ -657,7 +833,8 @@ private:
 				hq.rebuildTimerSec = 0.0f;
 				++hq.rebuildCount;
 				++stats_.totalHqRebuilds;
-				SetBanner(allegiance == kAllegianceForseti ? "FORSETI HQ ONLINE" : "MUSPELL HQ ONLINE", 5.0f);
+				SetBanner(allegiance == kAllegianceForseti ? "FORSETI HQ ONLINE" : "MUSPELL HQ ONLINE", 5.0f,
+				          allegiance == kAllegianceForseti ? CE_SB_TONE_FORSETI : CE_SB_TONE_MUSPELL);
 			}
 		};
 		tickHq(forsetiHq_, kAllegianceForseti, kForsetiHqX, kForsetiHqY, -0.7854f);
@@ -680,6 +857,17 @@ private:
 			}
 			tu.ageSec += stepDt;
 			if (tu.orderCooldownSec > 0.0f) tu.orderCooldownSec -= stepDt;
+
+			// A platoon the player has ordered, or is piloting in, is the player's:
+			// the director neither reaps it for holding still nor steers it away.
+			if (sm.playerHeld) {
+				tu.anchorX = sm.x;
+				tu.anchorY = sm.y;
+				tu.lastLife = sm.life;
+				tu.stuckSec = 0.0f;
+				++stats_.playerHeldSamples;
+				continue;
+			}
 
 			const bool exemptFromReap = (tu.role == CE_SB_ROLE_HQ || tu.role == CE_SB_ROLE_TURRET);
 			const float dx = sm.x - tu.anchorX;
@@ -725,8 +913,12 @@ private:
 				} else if (!sm.inCombat) {
 					float tx = (tu.allegiance == kAllegianceForseti) ? forsetiObjX : muspellObjX;
 					float ty = (tu.allegiance == kAllegianceForseti) ? forsetiObjY : muspellObjY;
-					const float spreadX = float(static_cast<int>((s + waveSeq_) % 5u) - 2) * 8.0f;
-					const float spreadY = float(static_cast<int>(((s + waveSeq_) / 5u) % 5u) - 2) * 8.0f;
+					// Platoon members share one waypoint (their squad keeps the formation);
+					// lone units fan out across the objective.
+					const unsigned spreadKey = CeEntityHandleIsValid(sm.squad)
+						? CeEntityHandleSlot(sm.squad) : s;
+					const float spreadX = float(static_cast<int>((spreadKey + waveSeq_) % 5u) - 2) * 8.0f;
+					const float spreadY = float(static_cast<int>(((spreadKey + waveSeq_) / 5u) % 5u) - 2) * 8.0f;
 					tx += spreadX;
 					ty += spreadY;
 					ClampOutsideCitadelKeepOut(tx, ty, kDirectorSteerClearRadius);
@@ -795,28 +987,32 @@ private:
 					if (!forsetiHq_.suppressed && headroom > 0) {
 						const char *def = kForsetiRoster[rIdx];
 						const bool air = IsAirDef(def);
+						const CeSandboxUnitRole role = air ? CE_SB_ROLE_AIR : CE_SB_ROLE_LINE;
+						int size = CeSandboxPlatoonSizeFor(def, role);
+						if (size > headroom) size = headroom;
 						float sx = 0.0f, sy = 0.0f, sz = 0.0f;
 						ChooseStagingPoint(kAllegianceForseti, baseIdx + static_cast<unsigned>(p), air, sx, sy, sz);
 						const float tz = air ? -46.0f : forsetiObjZ;
-						EmitSpawn(out, {
-							def, kAllegianceForseti, air ? CE_SB_ROLE_AIR : CE_SB_ROLE_LINE,
+						if (EmitSpawn(out, {
+							def, kAllegianceForseti, role,
 							sx, sy, sz, ComputeYaw(sx, sy, forsetiObjX, forsetiObjY),
-							forsetiObjX, forsetiObjY, tz, false, false
-						});
-						--headroom;
+							forsetiObjX, forsetiObjY, tz, false, false, size
+						})) headroom -= size;
 					}
 					if (!muspellHq_.suppressed && headroom > 0) {
 						const char *def = kMuspellRoster[rIdx];
 						const bool air = IsAirDef(def);
+						const CeSandboxUnitRole role = air ? CE_SB_ROLE_AIR : CE_SB_ROLE_LINE;
+						int size = CeSandboxPlatoonSizeFor(def, role);
+						if (size > headroom) size = headroom;
 						float sx = 0.0f, sy = 0.0f, sz = 0.0f;
 						ChooseStagingPoint(kAllegianceMuspell, baseIdx + static_cast<unsigned>(p), air, sx, sy, sz);
 						const float tz = air ? -48.0f : muspellObjZ;
-						EmitSpawn(out, {
-							def, kAllegianceMuspell, air ? CE_SB_ROLE_AIR : CE_SB_ROLE_LINE,
+						if (EmitSpawn(out, {
+							def, kAllegianceMuspell, role,
 							sx, sy, sz, ComputeYaw(sx, sy, muspellObjX, muspellObjY),
-							muspellObjX, muspellObjY, tz, false, false
-						});
-						--headroom;
+							muspellObjX, muspellObjY, tz, false, false, size
+						})) headroom -= size;
 					}
 				}
 			}
@@ -825,6 +1021,16 @@ private:
 
 public:
 	CeSandboxDirector() { Reset(); }
+
+	// The role the director gives a unit definition (what OnUnitSpawn records).
+	static CeSandboxUnitRole RoleForUnit(const char *unitName) {
+		if (!unitName) return CE_SB_ROLE_LINE;
+		if (IsHqDef(unitName)) return CE_SB_ROLE_HQ;
+		if (IsTurretDef(unitName)) return CE_SB_ROLE_TURRET;
+		if (IsNavalDef(unitName)) return CE_SB_ROLE_NAVAL;
+		if (IsAirDef(unitName)) return CE_SB_ROLE_AIR;
+		return CE_SB_ROLE_LINE;
+	}
 
 	void Reset(const CeSandboxDirectorConfig &cfg = CeSandboxDefaultConfig(false)) {
 		phase_ = CE_SB_INACTIVE;
@@ -838,9 +1044,13 @@ public:
 		navalTimerSec_ = 0.0f;
 		bannerRemainSec_ = 0.0f;
 		bannerText_[0] = '\0';
+		bannerTone_ = CE_SB_TONE_NEUTRAL;
+		frontTrend_ = 0.0f;
+		frontState_ = CE_SB_FRONT_CONTESTED;
 
 		for (unsigned i = 0; i < CeSandboxWorld::kCaptureNodeCount; ++i) {
 			const CeSandboxWorld::CaptureNodeSpec &ns = CeSandboxWorld::CaptureNode(i);
+			nodeFlipSerial_[i] = 0u;
 			nodeControl_[i] = ns.initialControl;
 			nodeOwner_[i] = ns.initialControl >= 50.0f ? CE_SB_OWNER_FORSETI
 			              : ns.initialControl <= -50.0f ? CE_SB_OWNER_MUSPELL
@@ -870,7 +1080,7 @@ public:
 	void BeginLevel(const CeSandboxDirectorConfig &cfg) {
 		Reset(cfg);
 		phase_ = CE_SB_ACTIVE;
-		SetBanner("LIVING SANDBOX - COMBINED-ARMS FRONT ACTIVE", 5.5f);
+		SetBanner("THE FRONT IS OPEN - HOLD THE CROSSROADS", 5.5f);
 	}
 
 	void EndLevel(bool keepArmed) {
@@ -903,7 +1113,7 @@ public:
 
 	void RecordPlayerRecall() {
 		++stats_.totalPlayerRecalls;
-		SetBanner("EMERGENCY RECALL - SANCTUARY CITADEL", 5.0f);
+		SetBanner("EMERGENCY RECALL - SANCTUARY CITADEL", 5.0f, CE_SB_TONE_FORSETI);
 	}
 
 	void TriggerNavalEscalationNow(CeSandboxStepOutput &out, bool venturerAvailable) {
@@ -1006,27 +1216,36 @@ public:
 		h.p0StasisActive = p0StasisActive_;
 		h.pressureThrottled = pressureThrottled_;
 		h.elapsedSec = elapsedSec_;
-		h.activeFrontNode = 2;
+		h.activeFrontNode = ActiveFrontNode();
+		h.frontState = frontState_;
+		h.bannerTone = bannerTone_;
 
 		for (unsigned i = 0; i < CeSandboxWorld::kCaptureNodeCount; ++i) {
 			h.nodeControl[i] = nodeControl_[i];
 			h.nodeOwner[i] = nodeOwner_[i];
+			h.nodeFlipSerial[i] = nodeFlipSerial_[i];
 			if (nodeOwner_[i] == CE_SB_OWNER_FORSETI) ++h.forsetiNodes;
 			else if (nodeOwner_[i] == CE_SB_OWNER_MUSPELL) ++h.muspellNodes;
-			else {
-				++h.contestedNodes;
-				h.activeFrontNode = static_cast<int>(i);
-			}
+			else ++h.contestedNodes;
 		}
 
+		// The middle of the strip says where the battle stands, in the world's own
+		// words: never a unit counter or an internal state name.
 		char leftRaw[32], midRaw[40], rightRaw[32];
 		snprintf(leftRaw, sizeof(leftRaw), "FORSETI %d", h.forsetiNodes);
 		if (h.regroupActive) {
-			snprintf(midRaw, sizeof(midRaw), "REGROUP - %d UNITS", h.liveUnits);
+			snprintf(midRaw, sizeof(midRaw), "BOTH SIDES REGROUPING");
 		} else if (h.p0StasisActive) {
-			snprintf(midRaw, sizeof(midRaw), "BE STASIS - %d UNITS", h.liveUnits);
+			snprintf(midRaw, sizeof(midRaw), "BATTLE ENGINE SHIELDED");
+		} else if (h.frontState == CE_SB_FRONT_FORSETI_ADVANCING) {
+			snprintf(midRaw, sizeof(midRaw), "FORSETI ADVANCING");
+		} else if (h.frontState == CE_SB_FRONT_MUSPELL_ADVANCING) {
+			snprintf(midRaw, sizeof(midRaw), "MUSPELL ADVANCING");
+		} else if (h.frontState == CE_SB_FRONT_LINE_HELD) {
+			snprintf(midRaw, sizeof(midRaw), "BATTLE LINE HELD");
 		} else {
-			snprintf(midRaw, sizeof(midRaw), "LIVING SANDBOX - %d", h.liveUnits);
+			snprintf(midRaw, sizeof(midRaw), "FRONT: %s",
+			         CeSandboxWorld::CaptureNode(static_cast<unsigned>(h.activeFrontNode)).name);
 		}
 		snprintf(rightRaw, sizeof(rightRaw), "%d MUSPELL", h.muspellNodes);
 
@@ -1072,6 +1291,12 @@ void PortCeLivingSandboxTickPre(void);
 void PortCeLivingSandboxDrawWorld(CPlayer *player, int viewpoint);
 void PortCeLivingSandboxDrawHud(CPlayer *player, int viewpoint);
 bool PortCeLivingSandboxKey(unsigned char key, bool repeat);
+// The Commander's seam to the director's ground platoons. Commandable: true for
+// a live squad the director formed for the player's own (Forseti) side.
+// PlayerOrder: the Commander reports an order given to (active != 0) or lifted
+// from such a squad; the director then leaves that platoon to the player.
+bool PortCeSandboxSquadCommandable(const void *squad);
+bool PortCeSandboxSquadPlayerOrder(const void *squad, int active);
 void PortCeLivingSandboxUnitSpawn(CUnit *unit, CInitThing *init);
 void PortCeLivingSandboxUnitDestroyed(CUnit *unit);
 void PortCeLivingSandboxFilterSave(CCareer *career, void *dest);

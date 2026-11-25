@@ -191,7 +191,7 @@ void DrawPreviewQuads(float x, float y, float w, float h, bool checker) {
 
     // Restore standard frontend 2D texture/blend state through LT's cache.
     LT.D3D_SetTexture(0, NULL);
-    LT.STS(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+    LT.SetModulate(0);
     LT.STS(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
     LT.SSS_NoCache(0, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
     LT.SSS_NoCache(0, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
@@ -553,19 +553,116 @@ extern "C" bool PortCeGoodieModelLoad(int goodie);
 extern "C" void PortCeGoodieModelFree();
 extern "C" bool PortCeGoodieModelDraw(float left, float top, float right, float bottom, float yaw);
 
+namespace { int sCurrentModelGoodie = -1; }
+
 bool PortCeCatalogueModelLoad(int goodie)
 {
-    return PortCeGoodieModelLoad(goodie);
+    const bool ok = PortCeGoodieModelLoad(goodie);
+    sCurrentModelGoodie = ok ? goodie : -1;
+    return ok;
 }
 void PortCeCatalogueModelFree()
 {
+    sCurrentModelGoodie = -1;
     PortCeGoodieModelFree();
 }
 bool PortCeCatalogueModelDraw(float left, float top, float right, float bottom, float yaw)
 {
-    FRONTEND.DrawPanel(left, top, right, bottom, 0.55f, 0xb80e1522);
+    FRONTEND.DrawPanel(left, top, right, bottom, 0.55f, 0xc80d1422);
     FRONTEND.DrawBox(left, top, right, bottom, 0x80ffffff, 2.f, 0.5f);
-    return PortCeGoodieModelDraw(left + 3.f, top + 3.f, right - 3.f, bottom - 3.f, yaw);
+    const float inLeft = left + 3.f, inTop = top + 3.f, inRight = right - 3.f, inBottom = bottom - 3.f;
+    IDirect3DDevice9* device = LT.GetDevice();
+    D3DVIEWPORT9 vp;
+    // Frame rotating 3D preview models cleanly centered and ~1.4x brighter while clipping strictly inside the pane.
+    // Goodie 76 (Team Photo) is a flat card already framed to fit the box.
+    if (sCurrentModelGoodie != 76 && device && SUCCEEDED(device->GetViewport(&vp)))
+    {
+        float sx = vp.Width / 640.f, sy = vp.Height / 480.f, ox = float(vp.X), oy = float(vp.Y);
+        if (PortWideActive()) { sx = sy = PortUiScale(); ox = PortUiLeft(); oy = PortUiTop(); }
+        int x0 = int(ox + inLeft * sx + 0.5f), y0 = int(oy + inTop * sy + 0.5f);
+        int x1 = int(ox + inRight * sx + 0.5f), y1 = int(oy + inBottom * sy + 0.5f);
+        const int wx0 = int(vp.X), wy0 = int(vp.Y);
+        const int wx1 = int(vp.X + vp.Width), wy1 = int(vp.Y + vp.Height);
+        if (x0 < wx0) x0 = wx0;
+        if (y0 < wy0) y0 = wy0;
+        if (x1 > wx1) x1 = wx1;
+        if (y1 > wy1) y1 = wy1;
+        if (x1 > x0 + 4 && y1 > y0 + 4)
+        {
+            const RECT clip = {LONG(x0), LONG(y0), LONG(x1), LONG(y1)};
+            if (SUCCEEDED(device->SetScissorRect(&clip)))
+            {
+                const float cx = (inLeft + inRight) * 0.5f;
+                const float cy = (inTop + inBottom) * 0.5f - 14.f;
+                const float kZoom = 1.26f;
+                const float hw = (inRight - inLeft) * 0.5f * kZoom;
+                const float hh = (inBottom - inTop) * 0.5f * kZoom;
+                LT.SRS(D3DRS_SCISSORTESTENABLE, TRUE);
+                const bool ok = PortCeGoodieModelDraw(cx - hw, cy - hh, cx + hw, cy + hh, yaw);
+                if (ok)
+                {
+                    struct BoostVertex { float x, y, z, rhw; DWORD color; };
+                    const float bx0 = float(x0) - 0.5f, by0 = float(y0) - 0.5f;
+                    const float bx1 = float(x1) - 0.5f, by1 = float(y1) - 0.5f;
+                    const DWORD kBoost = 0xff666666u;
+                    const BoostVertex quad[4] = {
+                        {bx0, by0, 0.f, 1.f, kBoost}, {bx1, by0, 0.f, 1.f, kBoost},
+                        {bx0, by1, 0.f, 1.f, kBoost}, {bx1, by1, 0.f, 1.f, kBoost},
+                    };
+                    device->SetVertexShader(NULL);
+                    device->SetPixelShader(NULL);
+                    RENDERINFO.SetFogEnabled(false);
+                    RENDERINFO.SetLightingEnabled(false);
+                    RENDERINFO.SetFVF(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
+                    RENDERINFO.Apply();
+                    LT.D3D_SetTexture(0, NULL);
+                    LT.SRS(D3DRS_ZENABLE, FALSE);
+                    LT.SRS(D3DRS_ZWRITEENABLE, FALSE);
+                    LT.SRS(D3DRS_CULLMODE, D3DCULL_NONE);
+                    LT.SRS(D3DRS_ALPHATESTENABLE, FALSE);
+                    LT.SRS(D3DRS_ALPHABLENDENABLE, TRUE);
+                    LT.SRS(D3DRS_SRCBLEND, D3DBLEND_DESTCOLOR);
+                    LT.SRS(D3DRS_DESTBLEND, D3DBLEND_ONE);
+                    LT.SRS(D3DRS_BLENDOP, D3DBLENDOP_ADD);
+                    LT.STS(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+                    LT.STS(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+                    LT.STS(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+                    LT.STS(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
+                    LT.STS(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+                    LT.STS(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+                    device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(BoostVertex));
+                    LT.SRS(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+                    LT.SRS(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+                    LT.SetModulate(0);
+                    LT.STS(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+                    LT.STS(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
+                    LT.STS(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+                    LT.SRS(D3DRS_ZENABLE, TRUE);
+                    LT.SRS(D3DRS_ZWRITEENABLE, TRUE);
+                    LT.SRS(D3DRS_CULLMODE, D3DCULL_CCW);
+                    LT.SRS(D3DRS_ALPHATESTENABLE, TRUE);
+                }
+                LT.SRS(D3DRS_SCISSORTESTENABLE, FALSE);
+                return ok;
+            }
+        }
+    }
+    return PortCeGoodieModelDraw(inLeft, inTop, inRight, inBottom, yaw);
+}
+
+int PortCeCatalogueSmallWidth(const char* text)
+{
+    if (!text || !*text) return 0;
+    CDXBitmapFont* font = PLATFORM.Font(FONT_SMALL);
+    if (!font) return 0;
+    WCHAR wide[160];
+    int i = 0;
+    for (; text[i] && i < 159; ++i)
+        wide[i] = WCHAR(static_cast<unsigned char>(text[i]));
+    wide[i] = 0;
+    SIZE size = {0, 0};
+    font->GetTextExtent(wide, &size);
+    return int(size.cx);
 }
 
 void PortCeCatalogueTextWords(void (*add)(const char* word, void* context), void* context)
@@ -638,4 +735,5 @@ int PortCeCatalogueGoodieModel(const char*) { return -1; }
 bool PortCeCatalogueModelLoad(int) { return false; }
 void PortCeCatalogueModelFree() {}
 bool PortCeCatalogueModelDraw(float, float, float, float, float) { return false; }
+int PortCeCatalogueSmallWidth(const char*) { return 0; }
 #endif

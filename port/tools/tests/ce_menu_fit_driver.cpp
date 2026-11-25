@@ -16,7 +16,9 @@ static int qualityRow;                          // stands for one of the rows ce
 bool PortCeQualityRow(const void *item) { return item == &qualityRow; }
 // Onslaught CE's own page (FEP_LANGUAGE_TEST's slot) counts as an options page, as ce_frontend.cpp answers.
 EFrontEndPage PortCeAsOptions(EFrontEndPage page) { return page == FEP_LANGUAGE_TEST ? FEP_OPTIONS : page; }
+WCHAR *PortCeValueFit(WCHAR *text, float x, float right, float *scale);
 WCHAR *PortCeValueFit(WCHAR *text, float x, float *scale);
+WCHAR *PortCeListFit(WCHAR *text, float x, float right);
 WCHAR *PortCeListFit(WCHAR *text, float x);
 int PortCeListWindow(const void *owner, float y, long rowh, int count, int selection, int page, float *top, int *first, int *shown);
 void PortCeListHover(int entry);
@@ -54,7 +56,8 @@ int main(int argc, char **argv)
     const std::string name = argv[1];
     // The page's edge is pinned here, apart from the header's constant, so a changed edge cannot move its own expectations.
     const float edge = 600.f;
-    Check(kCeValueRight == edge && kCeValueMinScale == 0.75f, "the column where a value ends and the smallest squeeze are the reviewed ones");
+    Check(kCeValueRight == edge && kCeValueRightArc == 544.f && kCeValueMinScale == 0.75f,
+          "the columns where a value ends and the smallest squeeze are the reviewed ones");
     const float x = 322.f;                       // where a value starts after its label (the middle of the page)
     const float room = edge - x;
     WCHAR text[160];
@@ -359,6 +362,37 @@ int main(int argc, char **argv)
         Check(PortCeCompactPitch(&qualityRow) == 0 && PortCeLabelLeft(FEP_OPTIONS) == 5.f &&
               PortCeLabelLeftAt(FEP_OPTIONS, 290.f) == 5.f && PortCeLabelLeftAt(FEP_OPTIONS, 140.f) == 5.f && PortCeValueGap() == 2.f,
               "outside the ordinary CE menus the list keeps its items' heights, label margin and colon gap");
+    }
+    else if (name == "arc-right")
+    {
+        Check(PortCeValueRightAt(FEP_MAIN, 290.f) == 600.f && PortCeValueRightAt(FEP_MAIN, 140.f) == 600.f,
+              "outside front-end options pages the arc-aware right edge keeps 600");
+        Check(PortCeValueRightAt(FEP_OPTIONS, 290.f) == 590.f && PortCeValueRightAt(FEP_LANGUAGE_TEST, 290.f) == 590.f,
+              "mid-screen options rows relax to 590 units where the right arc bows outward");
+        Check(PortCeValueRightAt(FEP_OPTIONS, 140.f) == 544.f && PortCeValueRightAt(FEP_OPTIONS, 100.f) == 544.f &&
+              PortCeValueRightAt(FEP_OPTIONS, 440.f) == 544.f && PortCeValueRightAt(FEP_OPTIONS, 470.f) == 544.f,
+              "top and bottom options rows clamp at kCeValueRightArc (544) to clear the right arc ends");
+        const float r220 = PortCeValueRightAt(FEP_OPTIONS, 220.f), r240 = PortCeValueRightAt(FEP_OPTIONS, 240.f), r340 = PortCeValueRightAt(FEP_OPTIONS, 340.f);
+        Check(r220 < 590.f && r220 > 579.f && r340 < 590.f && r340 > 584.f && r240 == r340 && r220 < r340,
+              "mid-screen y=220..340 rows relax smoothly and symmetrically to ~580..590 units");
+        Wide(text, "NVIDIA GeForce RTX 4060 Laptop GPU");    // 34 chars = 306 units; at x=326, y=322 right~587.9 (room~261.9)
+        const float right322 = PortCeValueRightAt(FEP_OPTIONS, 322.f);
+        WCHAR *drawn = PortCeValueFit(text, 326.f, right322, &scale);
+        Check(drawn == text && scale < 1.f && scale >= kCeValueMinScale && (float)Width(drawn) * scale <= right322 - 326.f + 0.01f,
+              "the Display Adapter row squeezes inside the arc-aware right edge without cutting");
+        Wide(text, "Yes (Recommended)");                     // 17 chars = 153 units; at x=326, y=390 right~569.6 (room~243.6)
+        const float right390 = PortCeValueRightAt(FEP_OPTIONS, 390.f);
+        drawn = PortCeValueFit(text, 326.f, right390, &scale);
+        Check(drawn == text && scale == 1.f && (float)Width(drawn) <= right390 - 326.f,
+              "Yes (Recommended) near y=390 fits inside the right arc at scale 1");
+        Wide(text, "NVIDIA GeForce RTX 4060 Laptop GPU");    // dropdown at y=170 right~560.6 (room~232.6 at x=328)
+        const float right170 = PortCeValueRightAt(FEP_OPTIONS, 170.f);
+        WCHAR *entry = PortCeListFit(text, 328.f, right170);
+        Check(entry != text && (float)Width(entry) <= right170 - 328.f + 0.01f,
+              "an expanded dropdown entry near the top arc cuts cleanly inside the arc-aware right edge");
+        layerOn = false;
+        Check(PortCeValueRightAt(FEP_OPTIONS, 290.f) == 600.f && PortCeValueRightAt(FEP_OPTIONS, 140.f) == 600.f,
+              "outside the ordinary CE menus the right edge stays 600");
     }
     else return 2;
     std::printf("menu-fit %s failures=%d\n", name.c_str(), failures);

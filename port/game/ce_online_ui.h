@@ -7,6 +7,18 @@
 #include <stdint.h>
 
 #ifdef __cplusplus
+// The front-end and the host model use the same supported bitmap glyphs.
+inline bool CeOnlineFontCharSafe(unsigned char c) {
+    if (c < 0x20u || c >= 0x7fu) return false;
+    switch (c) {
+    case '$': case '@': case '[': case '\\': case ']': case '^':
+    case '_': case '`': case '{': case '|': case '}': case '~':
+        return false;
+    default:
+        return true;
+    }
+}
+
 class ICeOnlineUiBackend;
 extern "C" {
 #endif
@@ -22,6 +34,7 @@ int  PortCeOnlineUiKey(uint16_t key, int eventType);
 void PortCeOnlineUiClose(void);
 
 // Internal frontend integration helpers (used by ce_netpages.cpp & patch 0380).
+int  PortCeOnlineUiOffered(void);
 int  PortCeOnlineUiTakePendingEntry(void);
 const char *PortCeOnlineUiTitleUtf8(void);
 void PortCeOnlineUiMultiplayerProcess(int active);

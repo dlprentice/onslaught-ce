@@ -108,6 +108,40 @@ int main(int argc, char **argv)
 			Check(identityHandles==identityCloses && !creates,"failed identity path leaked/closed twice or wrote");
 		}
 	}
+	else if(test=="findstart-shadow-fail" || test=="findstart-read-fail" || test=="findstart-both-fail" || test=="findstart-oom")
+	{
+		nativeFault = test;
+		splitRoots = true;
+		Add({'U'});
+		gameNativeNames.push_back({'G','.','b','e','s',0});
+		if (test == "findstart-oom")
+		{
+			Find *f = FindStart("savegames\\*.bes");
+			Check(f == nullptr, "FindStart did not return NULL on allocation failure");
+			FindFree(nullptr);
+			WCHAR requested[] = {'U', 0};
+			int index = 7;
+			Check(SaveFoldedNameAbsent(requested) == ERROR_NOT_ENOUGH_MEMORY, "SaveFoldedNameAbsent ignored FindStart OOM");
+			error = 0;
+			Check(PortSaveLookupUtf16(requested, &index) == ERROR_NOT_ENOUGH_MEMORY &&
+				GetLastError() == ERROR_NOT_ENOUGH_MEMORY && index == -1,
+				"LookupSave ignored FindStart OOM");
+		}
+		else if (test == "findstart-shadow-fail")
+		{
+			Find *f = FindStart("savegames\\*.bes");
+			Check(f && !f->error && f->count == 1 && !strcmp(f->entries[0].cFileName, "G.bes"),
+				"SHADOW Resolve failure skipped READ game scan");
+			FindFree(f);
+		}
+		else
+		{
+			Find *f = FindStart("savegames\\*.bes");
+			Check(f && f->count == 0 && f->entries == nullptr && f->error == ERROR_INVALID_NAME,
+				"READ Resolve failure exposed partial SHADOW entries or lost error");
+			FindFree(f);
+		}
+	}
 	else return 2;
 	return failures?1:0;
 }

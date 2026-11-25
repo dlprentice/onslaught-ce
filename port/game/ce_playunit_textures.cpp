@@ -10,8 +10,11 @@
 #include "ce_playunit_textures_data.h"
 #include "../platform/common/portlog.h"
 
+#include <stdint.h>
+
 extern "C" int uncompress(unsigned char *dest, unsigned long *destLen,
                           const unsigned char *source, unsigned long sourceLen);
+extern "C" uint64_t PortCeD3dDeviceGeneration(void) __attribute__((weak));
 
 namespace CePlayUnitTextures
 {
@@ -21,10 +24,17 @@ static_assert(static_cast<unsigned>(CE_PLAYUNIT_TEX_COUNT) == static_cast<unsign
               "CePlayUnitTexId must match CePlayUnitTexturesData::kCount");
 
 IDirect3DDevice9 *gDevice = NULL;
+uint64_t gDeviceGen = 0u;
 IDirect3DTexture9 *gTextures[CE_PLAYUNIT_TEX_COUNT] = {};
 bool gBadAsset[CE_PLAYUNIT_TEX_COUNT] = {};
 unsigned gRetryCooldown[CE_PLAYUNIT_TEX_COUNT] = {};
 bool gLoggedFail[CE_PLAYUNIT_TEX_COUNT] = {};
+bool gAtexitRegistered = false;
+
+uint64_t CurrentDeviceGen()
+{
+	return PortCeD3dDeviceGeneration ? PortCeD3dDeviceGeneration() : 0u;
+}
 } // namespace
 
 void ReleaseAll()
@@ -41,6 +51,7 @@ void ReleaseAll()
 		gLoggedFail[i] = false;
 	}
 	gDevice = NULL;
+	gDeviceGen = 0u;
 }
 
 IDirect3DTexture9 *Ensure(IDirect3DDevice9 *device, CePlayUnitTexId id)
@@ -48,10 +59,17 @@ IDirect3DTexture9 *Ensure(IDirect3DDevice9 *device, CePlayUnitTexId id)
 	const unsigned idx = static_cast<unsigned>(id);
 	if (!device || idx >= static_cast<unsigned>(CE_PLAYUNIT_TEX_COUNT))
 		return NULL;
-	if (gDevice != device)
+	const uint64_t gen = CurrentDeviceGen();
+	if (gDevice != device || (gen != 0u && gDeviceGen != gen))
 	{
 		ReleaseAll();
 		gDevice = device;
+		gDeviceGen = gen;
+	}
+	if (!gAtexitRegistered)
+	{
+		gAtexitRegistered = true;
+		atexit(ReleaseAll);
 	}
 	if (gTextures[idx])
 		return gTextures[idx];

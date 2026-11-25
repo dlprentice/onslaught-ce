@@ -93,6 +93,9 @@ def trial(root: Path, label: str, text: str, m32: bool,
         path = directory / f"{key}.inc"
         path.write_text(part + "\n")
         definitions.append(f'-DACTUAL_{key.upper()}="{path}"')
+    online_stubs = directory / "online-menu-stubs.h"
+    online_stubs.write_text("static bool sDirectFromOnline = false;\n"
+                            "static void (*PortCeOnlineUiOpen)() = nullptr;\n")
     flags = ["-m32"] if m32 else []
     sha = ROOT / "port/updater/sha256.c"
     obj = directory / "sha256.o"
@@ -109,7 +112,7 @@ def trial(root: Path, label: str, text: str, m32: bool,
     if result["sha_build_exit"]:
         return {**result, "passed": False}
     exe = directory / "test"
-    build = [cxx, *flags, "-std=c++17", "-Wall", "-Wextra", "-O1",
+    build = [cxx, *flags, "-std=c++17", "-Wall", "-Wextra", "-O1", "-include", str(online_stubs),
              "-I", str(ROOT / "port/platform/common"), *definitions,
              str(DRIVER), str(CODE), str(obj), "-o", str(exe)]
     result["build_exit"] = command(build, directory / "build.private.log")

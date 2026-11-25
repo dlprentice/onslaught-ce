@@ -11,17 +11,19 @@
 static int sDeferred;
 static bool sLogged[2];
 
-bool PortCeScriptDeferNested(int level, const char *entry)
+bool PortModLevelSupplied(int level)
 {
 	char path[64];
 	snprintf(path, sizeof(path), "data/resources/%03d_res_PC.aya", level);
-	bool supplied = PortModHas(path);
-	if (!supplied)
-	{
-		snprintf(path, sizeof(path), "data/worlds/world%03d.wrd", level);
-		supplied = PortModHas(path);
-	}
-	if (!supplied)
+	if (PortModHas(path))
+		return true;
+	snprintf(path, sizeof(path), "data/worlds/world%03d.wrd", level);
+	return PortModHas(path);
+}
+
+bool PortCeScriptDeferNested(int level, const char *entry)
+{
+	if (!PortModLevelSupplied(level))
 		return false;
 
 	sDeferred++;

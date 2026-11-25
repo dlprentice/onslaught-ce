@@ -22,6 +22,7 @@ port/tools/ce_backup_preview_tests.py	script	-	none	release	-	restore lane; host
 port/tools/ce_bonus_save_tests.py	script	-	none	release	-	
 port/tools/ce_bonus_tests.py	script	-	none	release	-	
 port/tools/ce_carrier_clash_tests.py	script	-	none	release	-	clean-room Carrier Clash ocean arena heightfield, version-50 world serializer, strict retail preflight, director state machine, 32-bit handles, HUD/glyph lint, long-session soak and causal mutants; host ASan/UBSan
+port/tools/ce_flagship_duel_tests.py	script	-	none	release	-	clean-room Level 888 Flagship Duel (1P solo + 2P split-screen) world serializer, 857 donor closure, strict retail preflight, 320m North-vs-South separation guard, 1P/2P outcome state machine, HUD/glyph lint, long-session soak and causal mutants; host ASan/UBSan
 port/tools/ce_career_backup_tests.py	script	-	none	release	-	restore lane; host build with the system compiler
 port/tools/ce_career_custody_ntfs_tests.py	script	--out {scratch}	deps+wine	release	-	cross-compiles standalone Windows Career Custody NTFS fixture (ce-career-custody-ntfs.exe) and verifies core cases and honest UNSUPPORTED_OR_DENIED reporting under Wine
 port/tools/ce_career_edit_tests.py	script	-	none	release	-	pure-byte career editor header and causal mutants; host build with the system compiler
@@ -137,11 +138,13 @@ port/tools/ce_playunit_sight_tests.py	script	-	none	release	-	the take key's sig
 port/tools/ce_playunit_tests.py	script	-	none	release	-	
 port/tools/ce_project_empty_variable_tests.py	script	-	none	release	-	the actual ce_project.cpp with BEA_CE_PROJECT unset, empty and set; needs g++
 port/tools/ce_project_tests.py	script	-	deps+game	release	-	
+port/tools/ce_ps2_import_tests.py	script	-	deps	release	180	native PS2 Level 888 importer (ISO9660/RCDF v100, streamed ZIP32/ZIP64, LVLR, P2VB->PMVB Fenrir conversion, atomic mod staging, ASan/UBSan and Windows cross-compile)
 port/tools/ce_quality_options_tests.py	script	-	none	release	-	
 port/tools/ce_race_branch_tests.py	script	-	deps	release	-	
 port/tools/ce_render_fence_tests.py	script	-	none	release	-	Commander render-fence shadow save/restore and causal mutants; host build with the system compiler
 port/tools/ce_rumble_tests.py	script	-	deps	release	-	
 port/tools/ce_sanctuary_citadel_tests.py	script	-	none	release	-	Sanctuary Museum Citadel, Archive Shield Dome ballistic & beam interception, impact ripples, sealed Cinema skip bounds, Archive Pedestal pose wiring, patch 0379 independence and causal mutants; host ASan/UBSan
+port/tools/ce_script_guard_self_replace_tests.py	script	-	none	release	-	mod-only script self-replacement guard (patch 0182) and causal mutants; host build with the system compiler
 port/tools/ce_setting_text_tests.py	script	-	none	release	-	
 port/tools/ce_settings_tests.py	script	-	none	release	-	
 port/tools/ce_surf_coordinates_tests.py	script	--causal-controls	deps	release	-	

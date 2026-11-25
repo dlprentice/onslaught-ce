@@ -12,6 +12,8 @@
 #include "d3dx9.h"
 #include "ce_asset_catalog.h"
 #include "ce_archive_pedestal.h"
+#include "ce_museum_art.h"
+#include "ce_museum_render_state.h"
 #include "ce_archive_scanner.h"
 #include "ce_museum_cinema.h"
 #include "ce_museum_world.h"
@@ -189,6 +191,23 @@ int UploadTextureCb(const unsigned char *dds, size_t bytes,
     return 1;
 }
 
+// A concept plate by its retail name: the exact catalogue key first, then the two
+// plates whose packed file names were cut short at the original 64-character limit
+// (goodie 95, the command room interior, and goodie 103, the research compound),
+// found by the Art Gallery's own truncated-name match. Without the second step
+// those two plates read as missing on the pedestal while hanging in the gallery.
+size_t ResolvePlateTexture(const CeAssetCatalog *catalog, const char *retailPath) {
+    if (!catalog || !retailPath || !*retailPath) return SIZE_MAX;
+    const size_t exact = PortCeAssetCatalogFindTexture(catalog, retailPath);
+    if (exact != SIZE_MAX) return exact;
+    const size_t total = PortCeAssetCatalogCount(catalog);
+    for (size_t k = 0; k < total; ++k) {
+        if (PortCeAssetCatalogKind(catalog, k) != CE_ASSET_TEXTURE) continue;
+        if (CeMuseumArt::MatchesTruncatedCatalogPath(PortCeAssetCatalogPath(catalog, k), retailPath)) return k;
+    }
+    return SIZE_MAX;
+}
+
 void EnsureCatalogAndCache(RuntimeData *d) {
     if (!d || d->catalogTried) return;
     d->catalogTried = true;
@@ -228,16 +247,26 @@ void EnsureCatalogAndCache(RuntimeData *d) {
         d->retailMeshes = static_cast<RetailMeshEntry *>(std::calloc(capped, sizeof(RetailMeshEntry)));
         if (d->retailMeshes) {
             unsigned at = 0;
+            unsigned skipped = 0;
             for (size_t i = 0; i < total && at < capped; ++i) {
                 if (PortCeAssetCatalogKind(d->catalog, i) != CE_ASSET_MODEL) continue;
-                RetailMeshEntry &e = d->retailMeshes[at++];
+                RetailMeshEntry &e = d->retailMeshes[at];
+                // A path that does not fit is left out of the archive: cut short it
+                // would open the wrong file, or be held back under a name no file has.
+                if (!CopyPathChecked(PortCeAssetCatalogPath(d->catalog, i), e.relPath, sizeof(e.relPath))) {
+                    ++skipped;
+                    continue;
+                }
                 e.catalogIndex = i;
-                const char *rel = PortCeAssetCatalogPath(d->catalog, i);
                 const char *rawTitle = PortCeAssetCatalogTitle(d->catalog, i);
-                std::snprintf(e.relPath, sizeof(e.relPath), "%s", rel ? rel : "");
                 FormatDisplayTitle(rawTitle ? rawTitle : e.relPath, e.title, sizeof(e.title));
+                ++at;
             }
             d->retailMeshCount = at;
+            if (skipped) {
+                PortSessionLog(PORT_SESSION_GAME, false,
+                               "archive pedestal: %u model paths too long to index were left out", skipped);
+            }
         }
     }
     d->state.counts[kCatRetailMeshes] = d->retailMeshCount;
@@ -265,7 +294,7 @@ void LoadMeshByRelPath(RuntimeData *d, const char *relPath, const char *displayT
 
     if (!relPath || !*relPath) {
         d->content = kContentUnavailable;
-        std::snprintf(d->activeNote, sizeof(d->activeNote), "Archival 3D mesh is unavailable in this install.");
+        std::snprintf(d->activeNote, sizeof(d->activeNote), "This model is not among your game files.");
         return;
     }
 
@@ -274,15 +303,14 @@ void LoadMeshByRelPath(RuntimeData *d, const char *relPath, const char *displayT
         d->content = kContentQuarantined;
         std::snprintf(d->activeReason, sizeof(d->activeReason), "%s", why ? why : "quarantined");
         std::snprintf(d->activeNote, sizeof(d->activeNote),
-                      "Quarantined by archive scan (%s). Press Next or Prev to browse other exhibits.",
-                      d->activeReason);
+                      "Withdrawn for conservation. Choose Next or Previous to keep browsing.");
         return;
     }
 
     const char *gameDir = PortGameDir();
     if (!gameDir || !*gameDir || !d->arena.base) {
         d->content = kContentUnavailable;
-        std::snprintf(d->activeNote, sizeof(d->activeNote), "Install directory unavailable.");
+        std::snprintf(d->activeNote, sizeof(d->activeNote), "The archive cannot reach your game files.");
         return;
     }
 
@@ -295,7 +323,7 @@ void LoadMeshByRelPath(RuntimeData *d, const char *relPath, const char *displayT
     size_t ayaSize = 0;
     if (!CeArchiveScanner::ReadWholeFileIntoArena(fullPath, &d->arena, &ayaBytes, &ayaSize, 2u * 1024u * 1024u)) {
         d->content = kContentUnavailable;
-        std::snprintf(d->activeNote, sizeof(d->activeNote), "Mesh archive file not found in this install.");
+        std::snprintf(d->activeNote, sizeof(d->activeNote), "This model is not among your game files.");
         return;
     }
 
@@ -308,8 +336,12 @@ void LoadMeshByRelPath(RuntimeData *d, const char *relPath, const char *displayT
         std::snprintf(d->activeTitle, sizeof(d->activeTitle), "%s", displayTitle);
         std::snprintf(d->activeLine, sizeof(d->activeLine), "%s", subtitle);
         std::snprintf(d->activeReason, sizeof(d->activeReason), "%s", reason);
+        // The reason stays in activeReason for the session log; the visitor reads
+        // the curator's words, not the parser's.
         std::snprintf(d->activeNote, sizeof(d->activeNote),
-                      "Mesh quarantined safely (%s). Zero memory leaked.", reason);
+                      "Too fragile to display. Choose Next or Previous to keep browsing.");
+        PortSessionLog(PORT_SESSION_GAME, false,
+                       "archive pedestal: model withdrawn from display (%s)", reason);
         return;
     }
 
@@ -344,8 +376,8 @@ void LoadCurrentExhibit(RuntimeData *d) {
     if (count == 0u) {
         d->content = kContentUnavailable;
         std::snprintf(d->activeTitle, sizeof(d->activeTitle), "%s", CategoryName(cat));
-        std::snprintf(d->activeLine, sizeof(d->activeLine), "No items available in this category.");
-        std::snprintf(d->activeNote, sizeof(d->activeNote), "Press Category or Tab to switch archive collections.");
+        std::snprintf(d->activeLine, sizeof(d->activeLine), "This collection is empty.");
+        std::snprintf(d->activeNote, sizeof(d->activeNote), "Choose Category to see another collection.");
         return;
     }
     const unsigned ord = d->state.selected[cat] % count;
@@ -357,7 +389,7 @@ void LoadCurrentExhibit(RuntimeData *d) {
         }
         const RetailMeshEntry &e = d->retailMeshes[ord];
         char sub[192];
-        std::snprintf(sub, sizeof(sub), "Retail 3D Mesh Archive (%u of %u)", ord + 1u, count);
+        std::snprintf(sub, sizeof(sub), "Field Archive Model %u of %u", ord + 1u, count);
         LoadMeshByRelPath(d, e.relPath, e.title, sub);
         return;
     }
@@ -371,12 +403,11 @@ void LoadCurrentExhibit(RuntimeData *d) {
             WideToAsciiClean(wideTitle, title, sizeof(title));
             if (!title[0] && meshName) FormatDisplayTitle(meshName, title, sizeof(title));
         }
-        if (!title[0]) std::snprintf(title, sizeof(title), "Goodie Model %u", ord + 1u);
+        if (!title[0]) std::snprintf(title, sizeof(title), "Collection Model %u", ord + 1u);
         char relPath[CeArchiveScanner::kPathCap] = {};
-        if (meshName && meshName[0])
-            std::snprintf(relPath, sizeof(relPath), "data/resources/meshes/m_%s.aya", meshName);
+        BuildGoodieMeshPath(meshName, relPath, sizeof(relPath));   // too long: left empty, shown as not available
         char sub[192];
-        std::snprintf(sub, sizeof(sub), "Goodie 3D Model (%u of %u)", ord + 1u, count);
+        std::snprintf(sub, sizeof(sub), "Collection Model %u of %u", ord + 1u, count);
         LoadMeshByRelPath(d, relPath, title, sub);
         return;
     }
@@ -392,11 +423,11 @@ void LoadCurrentExhibit(RuntimeData *d) {
         }
         if (!title[0]) std::snprintf(title, sizeof(title), "Concept Art Plate %u", ord + 1u);
         std::snprintf(d->activeTitle, sizeof(d->activeTitle), "%s", title);
-        std::snprintf(d->activeLine, sizeof(d->activeLine), "Concept Art Lightbox (%u of %u)", ord + 1u, count);
+        std::snprintf(d->activeLine, sizeof(d->activeLine), "Concept Art Plate %u of %u", ord + 1u, count);
 
         IDirect3DDevice9 *dev = LT.GetDevice();
         if (dev && d->catalog && picName && picName[0]) {
-            const size_t catIdx = PortCeAssetCatalogFindTexture(d->catalog, picName);
+            const size_t catIdx = ResolvePlateTexture(d->catalog, picName);
             if (catIdx != SIZE_MAX) {
                 TexUploadCtx ctx = {dev, &d->artTexture, &d->artSrcW, &d->artSrcH, kLightboxMaxEdge};
                 if (PortCeAssetCatalogReadTexture(d->catalog, catIdx, UploadTextureCb, &ctx) && d->artTexture) {
@@ -404,14 +435,14 @@ void LoadCurrentExhibit(RuntimeData *d) {
                     d->deviceGen = CurrentPedestalDeviceGen();
                     d->content = kContentArt;
                     std::snprintf(d->activeNote, sizeof(d->activeNote),
-                                  "%ux%u archival plate - aim at brass controls or use PgUp/PgDn and Tab.",
+                                  "Archive plate, %u by %u. Aim at the brass controls to browse.",
                                   d->artSrcW, d->artSrcH);
                     return;
                 }
             }
         }
         d->content = kContentUnavailable;
-        std::snprintf(d->activeNote, sizeof(d->activeNote), "Archival concept plate unavailable in this install.");
+        std::snprintf(d->activeNote, sizeof(d->activeNote), "This plate is not among your game files.");
         return;
     }
 
@@ -419,6 +450,10 @@ void LoadCurrentExhibit(RuntimeData *d) {
         const int gid = GoodieIdAt(kGoodieFmv, ord);
         char stem[128] = {};
         char title[128] = {};
+        // PortCeMuseumCinemaFilmName takes a film's position among the film goodies
+        // (it walks the goodie ids and counts the films), which is this category's
+        // own ordinal: goodie id 75 is film 0, 77 is film 1, 201 is film 2. The
+        // goodie id itself names the title below, when the film has no file name.
         if (PortCeMuseumCinemaFilmName(ord, stem, sizeof(stem)) && stem[0]) {
             FormatDisplayTitle(stem, title, sizeof(title));
         } else {
@@ -430,7 +465,7 @@ void LoadCurrentExhibit(RuntimeData *d) {
         if (!title[0]) std::snprintf(title, sizeof(title), "Archive Film %u", ord + 1u);
         d->content = kContentCinema;
         std::snprintf(d->activeTitle, sizeof(d->activeTitle), "%s", title);
-        std::snprintf(d->activeLine, sizeof(d->activeLine), "Cinema Archive Film (%u of %u)", ord + 1u, count);
+        std::snprintf(d->activeLine, sizeof(d->activeLine), "Archive Film %u of %u", ord + 1u, count);
         std::snprintf(d->activeNote, sizeof(d->activeNote), "%s",
                       d->state.pose.customWorldPose
                           ? "Head north into the Citadel Cinema Pavilion to watch archive films."
@@ -450,7 +485,7 @@ void LoadCurrentExhibit(RuntimeData *d) {
         d->content = kContentBonus;
         std::snprintf(d->activeTitle, sizeof(d->activeTitle), "%s", title);
         std::snprintf(d->activeLine, sizeof(d->activeLine),
-                      "Bonus Level Portal (%u of %u - Stage %d)", ord + 1u, count, lvl);
+                      "Bonus Level %u of %u - Stage %d", ord + 1u, count, lvl);
         std::snprintf(d->activeNote, sizeof(d->activeNote),
                       "Launch from the Extras - Bonus Levels menu to play this challenge.");
         return;
@@ -459,6 +494,18 @@ void LoadCurrentExhibit(RuntimeData *d) {
 
 struct FlatVert { float x, y, z; DWORD col; };
 struct TexVert { float x, y, z; DWORD col; float u, v; };
+
+// Draws one control glyph (ce_archive_pedestal.h builds its triangles) flat on a
+// block's top face, a few millimetres proud of it, in the engraving's dark tone.
+void EmitControlGlyph(IDirect3DDevice9 *dev, ControlGlyph glyph, float cx, float cy, float z, DWORD col) {
+    GlyphTriangles shape = {};
+    BuildControlGlyph(glyph, &shape);
+    if (!shape.count) return;
+    FlatVert verts[kMaxGlyphTriangles * 3u];
+    for (unsigned t = 0; t < shape.count * 3u; ++t)
+        verts[t] = FlatVert{cx + shape.xy[t][0], cy + shape.xy[t][1], z, col};
+    dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, shape.count, verts, sizeof(FlatVert));
+}
 
 void EmitBox(IDirect3DDevice9 *dev, float cx, float cy, float cz,
              float hx, float hy, float hz, DWORD topCol, DWORD sideCol) {
@@ -519,7 +566,15 @@ void DrawControlConsoleAndRing(IDirect3DDevice9 *dev, const RuntimeData *d, floa
         DWORD cap = hovered ? 0xfffff0a0 : kBtnIdleCol[i];
         if (i == kBtnPause && d->state.paused && !hovered) cap = 0xff5a98d0;
         const float r = hovered ? 0.14f : 0.115f;
-        EmitBox(dev, bx, railY, bz, r, 0.11f, hovered ? 0.065f : 0.05f, cap, 0xff6e582c);
+        const float hz = hovered ? 0.065f : 0.05f;
+        EmitBox(dev, bx, railY, bz, r, 0.11f, hz, cap, 0xff6e582c);
+        // An engraved glyph on the block's top face says what it does before any card
+        // is read: back, forward, the stacked collections, and pause (two bars) or,
+        // while the turntable is paused, play. The visitor stands south of the desk
+        // looking north, so +X is their right and +Y the far edge of the block.
+        const ControlGlyph glyph = (i == kBtnPause && d->state.paused) ? kGlyphPlay : GlyphForButton(static_cast<ControlButton>(i));
+        EmitControlGlyph(dev, glyph, bx, railY, bz - hz - 0.003f,
+                         i == kBtnCategory ? 0xff14303eu : 0xff3a2910u);
     }
 }
 
@@ -941,15 +996,7 @@ void RuntimeDraw(float floorZ, bool ownStateBlock) {
     if (saved) {
         saved->Apply();
         saved->Release();
-        LT.InvalidateAllStates();
-        RENDERINFO.mWorldChanged = true;
-        RENDERINFO.mViewChanged = true;
-        RENDERINFO.mProjectionChanged = true;
-        RENDERINFO.mFogStartChanged = true;
-        RENDERINFO.mFogEndChanged = true;
-        RENDERINFO.mFogDensityChanged = true;
-        RENDERINFO.mFVFChanged = true;
-        RENDERINFO.Apply();
+        CeMuseumRestoreEngineRenderState();
     }
 }
 

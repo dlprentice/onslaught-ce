@@ -419,6 +419,35 @@ class Launcher(unittest.TestCase):
                 self.assertEqual(r.returncode, 0, r.stderr)
                 self.assertIn("clock=shim", r.stderr, "spaced/BOM record_sessions=1 must trigger recording")
 
+    def test_ini_reader_rejects_oversize_symlink_fifo_and_truncated_values(self):
+        self.user.mkdir()
+        ini = self.user / "ce.ini"
+        # Overlong value (> sizeof opt in ce_launch.c) must fail closed rather than truncating into a match.
+        ini.write_bytes(b"record_sessions=" + b"1" * 128 + b"\nrecord_sessions=1\n")
+        r = self.run_launcher("--no-update-check", BEA_RECORD_ANSWER="record")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("env: rec= clock=", r.stderr)
+        # > 1 MiB ce.ini must be refused.
+        ini.write_bytes(b"record_sessions=1\n" + b"# pad\n" * ((1 << 20) // 6 + 4))
+        self.assertGreater(ini.stat().st_size, 1 << 20)
+        r = self.run_launcher("--no-update-check", BEA_RECORD_ANSWER="record")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("env: rec= clock=", r.stderr)
+        # Symlinked ce.ini must be refused.
+        real_ini = self.home / "real.ini"
+        real_ini.write_bytes(b"record_sessions=1\n")
+        ini.unlink()
+        ini.symlink_to(real_ini)
+        r = self.run_launcher("--no-update-check", BEA_RECORD_ANSWER="record")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("env: rec= clock=", r.stderr)
+        # FIFO ce.ini must open O_NONBLOCK and be refused as non-regular without hanging.
+        ini.unlink()
+        os.mkfifo(ini)
+        r = self.run_launcher("--no-update-check", BEA_RECORD_ANSWER="record")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("env: rec= clock=", r.stderr)
+
     def test_temp_symlink_does_not_overwrite_target(self):
         self.user.mkdir()
         ini = self.user / "ce.ini"

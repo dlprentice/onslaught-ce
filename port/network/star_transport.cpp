@@ -28,6 +28,8 @@ constexpr size_t kOuterHeaderBytes = 28;    // magic(4) + flags(1) + chan(1) + s
 constexpr size_t kAeadTagBytes = 16;
 constexpr size_t kMaxWirePacketBytes = kOuterHeaderBytes + CeStarWire::kFrameHeaderBytes + CE_STAR_MAX_FRAME_PAYLOAD + kAeadTagBytes;
 constexpr size_t kMaxEventQueue = 512;
+constexpr size_t kMaxChatEventQueue = 64;
+constexpr size_t kMaxAuxEventQueue = 8;
 
 constexpr uint8_t kFlagHandshake = 0x01u;
 constexpr uint8_t kFlagFromHost = 0x02u;
@@ -328,6 +330,23 @@ bool CeStarTransport::ReplayWindow::Accept(uint32_t seq) noexcept {
     return true;
 }
 
+bool CeStarTransport::ChatRateWindow::Allow(uint64_t now_ms) noexcept {
+    while (count > 0) {
+        const uint64_t oldest = timestamps[head];
+        if (now_ms >= oldest && now_ms - oldest >= kWindowMs) {
+            head = (head + 1u) % kMaxBurst;
+            --count;
+        } else {
+            break;
+        }
+    }
+    if (count >= kMaxBurst) return false;
+    const size_t idx = (head + count) % kMaxBurst;
+    timestamps[idx] = now_ms;
+    ++count;
+    return true;
+}
+
 void CeStarTransport::PeerSlot::WipeCrypto() noexcept {
     crypto_wipe(session_id, sizeof(session_id));
     crypto_wipe(client_nonce, sizeof(client_nonce));
@@ -344,6 +363,7 @@ void CeStarTransport::PeerSlot::ResetLink() noexcept {
         send_seq[c] = 0;
         recv_replay[c].Reset();
     }
+    chat_rate.Reset();
     rtt_ms = 0;
     route = CeStarRoute::Unknown;
     last_rx_ms = 0;
@@ -465,15 +485,63 @@ void CeStarTransport::RejectPacket() noexcept {
 }
 
 void CeStarTransport::PushEvent(CeStarEvent&& ev) {
-    if (events_.size() >= kMaxEventQueue) events_.pop_front();
+    if (ev.kind == CeStarEventKind::Chat) {
+        if (chat_events_.size() >= kMaxChatEventQueue) chat_events_.pop_front();
+        chat_events_.push_back(std::move(ev));
+        return;
+    }
+    if (ev.kind == CeStarEventKind::PingReport) {
+        if (aux_events_.size() >= kMaxAuxEventQueue) aux_events_.pop_front();
+        aux_events_.push_back(std::move(ev));
+        return;
+    }
+    if (critical_overflow_) return;
+    if (events_.size() >= kMaxEventQueue) {
+        critical_overflow_ = true;
+        last_error_ = CeStarError::Capacity;
+        if (config_.role == CeStarRole::Guest) {
+            host_lost_ = true;
+            if (!slots_.empty() && slots_[0].peer) {
+                _ENetPeer* p = slots_[0].peer;
+                slots_[0].ResetLink();
+                enet_peer_reset(p);
+            }
+        } else {
+            for (uint16_t s = 1; s <= config_.max_guests && s < slots_.size(); ++s) {
+                if (slots_[s].peer) {
+                    _ENetPeer* p = slots_[s].peer;
+                    p->data = nullptr;
+                    slots_[s].ResetLink();
+                    enet_peer_reset(p);
+                }
+            }
+        }
+        CeStarEvent fault;
+        fault.kind = CeStarEventKind::Error;
+        fault.error = CeStarError::Capacity;
+        events_.push_back(std::move(fault));
+        return;
+    }
     events_.push_back(std::move(ev));
 }
 
 bool CeStarTransport::PopEvent(CeStarEvent& out) {
-    if (events_.empty()) return false;
-    out = std::move(events_.front());
-    events_.pop_front();
-    return true;
+    if (!events_.empty()) {
+        out = std::move(events_.front());
+        events_.pop_front();
+        return true;
+    }
+    if (!chat_events_.empty()) {
+        out = std::move(chat_events_.front());
+        chat_events_.pop_front();
+        return true;
+    }
+    if (!aux_events_.empty()) {
+        out = std::move(aux_events_.front());
+        aux_events_.pop_front();
+        return true;
+    }
+    return false;
 }
 
 bool CeStarTransport::SeenHelloNonce(const uint8_t nonce[16]) noexcept {
@@ -571,7 +639,7 @@ void CeStarTransport::SendGuestHello(uint64_t now_ms) {
     if (SendEncrypted(slots_[0].peer, kChannelControl, kFlagHandshake, config_.local_sim_slot, 1u,
                       hello_nonce, config_.match_secret.data(), frame.data(), frame.size(), true)) {
         guest_hello_sent_ = true;
-        slots_[0].connected_at_ms = now_ms;
+        slots_[0].connected_at_ms = now_ms ? now_ms : 1u;
         enet_host_flush(host_);
     }
 }
@@ -917,6 +985,10 @@ void CeStarTransport::HandleAuthenticatedFrame(PeerSlot& slot, uint8_t channel,
             return;
         }
         if (config_.role == CeStarRole::Host) {
+            if (!slot.chat_rate.Allow(now_ms)) {
+                RejectPacket();
+                return;
+            }
             // Authoritatively stamp the authenticated guest's seat/sim_slot and relay to other guests.
             from_seat = slot.expected_seat;
             from_slot = slot.sim_slot;
@@ -932,6 +1004,11 @@ void CeStarTransport::HandleAuthenticatedFrame(PeerSlot& slot, uint8_t channel,
                     SendFrameToSlot(slots_[s], kChannelAux, CeStarMsgType::Chat,
                                     relay.data(), relay.size(), true);
                 }
+            }
+        } else {
+            if (from_slot > config_.max_guests || !guest_chat_rates_[from_slot].Allow(now_ms)) {
+                RejectPacket();
+                return;
             }
         }
         CeStarEvent ev;
@@ -1123,6 +1200,28 @@ void CeStarTransport::HandlePacket(_ENetPeer* peer, uint8_t channel, const uint8
     HandleAuthenticatedFrame(*slot, channel, msg_type, body, body_len, now_ms);
 }
 
+#if defined(CE_NETWORK_ICE)
+bool CeStarTransport::TryRetryGuestOverRelay() noexcept {
+    if (config_.role != CeStarRole::Guest || !config_.use_ice || slots_.empty()) return false;
+    auto& slot = slots_[0];
+    if (slot.authenticated || slot.ice_require_relay || host_lost_ || !slot.ice) return false;
+    slot.ice_failed = true;
+    slot.ice.reset();
+    if (slot.peer) {
+        _ENetPeer* p = slot.peer;
+        slot.peer = nullptr;
+        enet_peer_reset(p);
+    }
+    slot.ResetLink();
+    for (auto& r : guest_chat_rates_) r.Reset();
+    guest_connect_started_ = false;
+    guest_hello_sent_ = false;
+    last_keepalive_tx_ms_ = 0;
+    created_at_ms_ = 0;
+    return true;
+}
+#endif
+
 void CeStarTransport::HandleDisconnectPeer(_ENetPeer* peer, uint16_t reason) {
     if (!peer) return;
     if (config_.role == CeStarRole::Host) {
@@ -1148,6 +1247,11 @@ void CeStarTransport::HandleDisconnectPeer(_ENetPeer* peer, uint16_t reason) {
         }
     } else {
         if (slots_[0].peer == peer) {
+#if defined(CE_NETWORK_ICE)
+            if (TryRetryGuestOverRelay()) {
+                return;
+            }
+#endif
             const bool was_auth = slots_[0].authenticated;
             slots_[0].ResetLink();
             host_lost_ = true;
@@ -1184,19 +1288,11 @@ void CeStarTransport::PumpIceBridges(uint64_t now_ms) {
         auto& slot = slots_[0];
         if (!slot.ice) return;
         if (!slot.ice->Pump()) {
-            const bool can_retry_relay = !slot.authenticated && !slot.ice_require_relay;
-            slot.ice_failed = true;
-            slot.ice.reset();
-            if (can_retry_relay) {
-                if (slot.peer) {
-                    _ENetPeer* p = slot.peer;
-                    enet_peer_reset(p);
-                }
-                slot.ResetLink();
-                guest_connect_started_ = false;
-                guest_hello_sent_ = false;
+            if (TryRetryGuestOverRelay()) {
                 return;
             }
+            slot.ice_failed = true;
+            slot.ice.reset();
             last_error_ = CeStarError::Io;
             host_lost_ = true;
             if (slot.peer) {
@@ -1218,11 +1314,15 @@ void CeStarTransport::PumpIceBridges(uint64_t now_ms) {
                 if (p) {
                     enet_peer_ping_interval(p, 500);
                     slot.peer = p;
-                    slot.connected_at_ms = now_ms;
+                    slot.connected_at_ms = now_ms ? now_ms : 1u;
                     guest_connect_started_ = true;
-                } else {
+                } else if (!TryRetryGuestOverRelay()) {
                     last_error_ = CeStarError::Io;
                     host_lost_ = true;
+                    CeStarEvent ev;
+                    ev.kind = CeStarEventKind::Error;
+                    ev.error = CeStarError::Io;
+                    PushEvent(std::move(ev));
                 }
             }
         }
@@ -1364,10 +1464,15 @@ void CeStarTransport::Poll(uint64_t now_ms, uint32_t event_budget) {
         } else if (guest_connect_started_ && !host_lost_ && slot.peer) {
             const uint64_t ref = slot.connected_at_ms ? slot.connected_at_ms : created_at_ms_;
             if (now_ms >= ref && now_ms - ref >= config_.handshake_timeout_ms) {
-                last_error_ = CeStarError::Timeout;
-                _ENetPeer* p = slot.peer;
-                HandleDisconnectPeer(p, static_cast<uint16_t>(CeStarError::Timeout));
-                enet_peer_reset(p);
+#if defined(CE_NETWORK_ICE)
+                if (!TryRetryGuestOverRelay())
+#endif
+                {
+                    last_error_ = CeStarError::Timeout;
+                    _ENetPeer* p = slot.peer;
+                    HandleDisconnectPeer(p, static_cast<uint16_t>(CeStarError::Timeout));
+                    enet_peer_reset(p);
+                }
             }
         }
     }
@@ -1790,8 +1895,11 @@ void CeStarTransport::DetachHostIceBridge() {
             enet_peer_reset(slots_[0].peer);
         }
         slots_[0].ResetLink();
+        for (auto& r : guest_chat_rates_) r.Reset();
         guest_connect_started_ = false;
         guest_hello_sent_ = false;
+        last_keepalive_tx_ms_ = 0;
+        created_at_ms_ = 0;
         host_lost_ = false;
         last_error_ = CeStarError::Ok;
     }

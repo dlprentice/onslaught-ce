@@ -633,7 +633,8 @@ class Entry(unittest.TestCase):
         self.assertIn("const bool modsAvailable = !PortModsPlatformOff();", text)
         self.assertIn("if (!lab.mNeedsMods || modsAvailable)", text)
         self.assertIn("CE_SettingSet(mLab->mKey, value)", text)
-        self.assertIn('kLabsNote[] = L"Changes apply on next restart (Solo Skirmish starts Off).";', text)
+        self.assertIn('kLabsNote[] = L"Changes apply on next restart.";', text)
+        self.assertIn("Starts Off.", labs)
 
     def test_mutants_of_the_entry_points_are_caught(self):
         def commander_ok(t):

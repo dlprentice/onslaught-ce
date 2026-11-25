@@ -8,6 +8,9 @@
 #include "game.h"
 #include "frontend.h"
 #include "Platform.h"
+#ifndef CE_CHAT_UI_TEST
+#include "ltshell.h"
+#endif
 #include <SDL3/SDL.h>
 #include <algorithm>
 #include <cstring>
@@ -163,9 +166,12 @@ void PortCeChatRender(void) {
     const float line_height = (std::max)(12.f, float(font->GetHeight()) * scale);
     Rows rows;
     const unsigned first = view.history_count > 6 ? view.history_count - 6 : 0;
-    for (unsigned i = first; i < view.history_count && i < CE_CHAT_HISTORY; ++i)
-        Plain(rows, font, view.history[i].local_transport_accepted ? "You (local): " : "Peer: ",
-              view.history[i].utf8, view.history[i].size, width - 40.f * scale, scale);
+    for (unsigned i = first; i < view.history_count && i < CE_CHAT_HISTORY; ++i) {
+        const CE_ChatLine &line = view.history[i];
+        const char *prefix = line.has_sender_label ? "" :
+                             line.local_transport_accepted ? "You (local): " : "Peer: ";
+        Plain(rows, font, prefix, line.utf8, line.size, width - 40.f * scale, scale);
+    }
     const char *hint = view.composing ? "Enter: send   Esc: cancel   F6: mute   F7: clear"
                                      : "Enter: text chat (best effort)";
     Plain(rows, font, "", reinterpret_cast<const uint8_t*>(hint),
@@ -187,10 +193,42 @@ void PortCeChatRender(void) {
               static_cast<uint32_t>(std::strlen(notice)), width - 40.f * scale, scale);
     const float x = 20.f * scale;
     float y = (std::max)(20.f * scale, height - (rows.count + 2) * line_height);
+#ifndef CE_CHAT_UI_TEST
+    IDirect3DDevice9 *device = LT.GetDevice();
+    IDirect3DStateBlock9 *saved = nullptr;
+    if (!device || FAILED(device->CreateStateBlock(D3DSBT_ALL, &saved)) || !saved) {
+        Wipe(&rows, sizeof(rows)); Wipe(&view, sizeof(view)); return;
+    }
+    device->SetRenderState(D3DRS_FOGENABLE, FALSE);
+    device->SetRenderState(D3DRS_LIGHTING, FALSE);
+    device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+    device->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+    device->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE, FALSE);
+    device->SetRenderState(D3DRS_BLENDOP, D3DBLENDOP_ADD);
+    device->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+    device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+    device->SetRenderState(D3DRS_ZENABLE, D3DZB_FALSE);
+    device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+    device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+    device->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+    device->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+    device->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
+    device->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+    device->SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
+    device->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+    device->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+    device->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+    device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+#endif
     for (unsigned i = 0; i < rows.count; ++i) {
         font->DrawTextWithShadow(x, y, 0xffffffffu, rows.text[i], 0, 0.f, scale, scale);
         y += line_height;
     }
+#ifndef CE_CHAT_UI_TEST
+    saved->Apply();
+    saved->Release();
+    LT.InvalidateAllStates();
+#endif
     Wipe(&rows, sizeof(rows)); Wipe(&view, sizeof(view));
 }
 

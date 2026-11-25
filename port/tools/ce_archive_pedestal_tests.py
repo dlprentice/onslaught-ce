@@ -273,13 +273,96 @@ static std::vector<unsigned char> BuildSyntheticMeshStream(const SynthMeshOpts &
 }
 
 int main() {
-    // 1. Exact 232 Goodies breakdown: 45 models + 149 art plates + 33 FMVs + 5 levels = 232.
+    // 1. Exact 233 Goodies breakdown (ids 0..232): 45 models + 149 art plates + 34 FMVs + 5 levels = 233.
+    Need(kGoodieTotal == 233u, "goodie ids run 0..232");
     Need(CountGoodies(kGoodieMesh) == 45u, "45 Goodie 3D models");
     Need(CountGoodies(kGoodieImage) == 149u, "149 Goodie concept art plates");
-    Need(CountGoodies(kGoodieFmv) == 33u, "33 Goodie Cinema FMVs");
+    Need(CountGoodies(kGoodieFmv) == 34u, "34 Goodie Cinema FMVs");
     Need(CountGoodies(kGoodieLevel) == 5u, "5 Goodie Bonus Levels");
     Need(CountGoodies(kGoodieMesh) + CountGoodies(kGoodieImage) +
-         CountGoodies(kGoodieFmv) + CountGoodies(kGoodieLevel) == 232u, "sum equals 232 goodies");
+         CountGoodies(kGoodieFmv) + CountGoodies(kGoodieLevel) == 233u, "sum equals 233 goodies");
+    Need(ClassifyGoodie(232u) == kGoodieFmv && GoodieIdAt(kGoodieFmv, 33u) == 232,
+         "goodie 232, the PC build's last film, is in the archive");
+    Need(GoodieIdAt(kGoodieFmv, 34u) == -1, "no film past goodie 232");
+    // The Cinema category's ordinal is a film's position among the film goodies, which is what
+    // PortCeMuseumCinemaFilmName walks: ids ascending, 75 then 77 then 201..232.
+    Need(GoodieIdAt(kGoodieFmv, 0u) == 75 && GoodieIdAt(kGoodieFmv, 1u) == 77, "films 0 and 1 are goodies 75 and 77");
+    for (unsigned k = 2u; k < 34u; ++k)
+        Need(GoodieIdAt(kGoodieFmv, k) == int(199u + k), "film k is goodie 199 + k from the third film on");
+    {
+        unsigned ordinal = 0u;
+        for (unsigned id = 0u; id < kGoodieTotal; ++id) {
+            if (ClassifyGoodie(id) != kGoodieFmv) continue;
+            Need(GoodieIdAt(kGoodieFmv, ordinal) == int(id), "film ordinals count film goodies in id order");
+            ++ordinal;
+        }
+    }
+
+    // 1a. Control glyphs: each block's engraving sits inside the block face, has area, and points the way it says.
+    {
+        for (int gi = 0; gi < int(kGlyphCount); ++gi) {
+            GlyphTriangles g = {};
+            BuildControlGlyph(ControlGlyph(gi), &g);
+            Need(g.count >= 1u && g.count <= kMaxGlyphTriangles, "every glyph has triangles, within the buffer");
+            float area = 0.0f, minX = 1.0f, maxX = -1.0f;
+            for (unsigned t = 0; t < g.count; ++t) {
+                const float (*p)[2] = g.xy + t * 3u;
+                for (int c = 0; c < 3; ++c) {
+                    Need(std::fabs(p[c][0]) <= kGlyphHalf + 1e-6f && std::fabs(p[c][1]) <= kGlyphHalf + 1e-6f,
+                         "glyph stays inside its half-size");
+                    if (p[c][0] < minX) minX = p[c][0];
+                    if (p[c][0] > maxX) maxX = p[c][0];
+                }
+                area += 0.5f * std::fabs((p[1][0] - p[0][0]) * (p[2][1] - p[0][1]) - (p[2][0] - p[0][0]) * (p[1][1] - p[0][1]));
+            }
+            Need(area > 0.25f * kGlyphHalf * kGlyphHalf, "glyph is big enough to read");
+            Need(maxX - minX > kGlyphHalf, "glyph spans its block");
+        }
+        Need(kGlyphHalf < 0.11f, "glyphs fit the smallest (idle) control block face, 0.115 by 0.11 half-size");
+        GlyphTriangles prev = {}, next = {}, play = {}, pause = {}, cat = {};
+        BuildControlGlyph(kGlyphPrevious, &prev); BuildControlGlyph(kGlyphNext, &next);
+        BuildControlGlyph(kGlyphPlay, &play); BuildControlGlyph(kGlyphPause, &pause); BuildControlGlyph(kGlyphCategory, &cat);
+        Need(prev.count == 1u && prev.xy[0][0] < 0.0f && prev.xy[1][0] > 0.0f && prev.xy[2][0] > 0.0f,
+             "Previous points to the visitor's left");
+        Need(next.count == 1u && next.xy[0][0] > 0.0f && next.xy[1][0] < 0.0f && next.xy[2][0] < 0.0f,
+             "Next points to the visitor's right");
+        Need(play.count == 1u && play.xy[0][0] > 0.0f, "Play points right");
+        Need(pause.count == 4u && cat.count == 6u, "Pause is two bars and Category three");
+        Need(GlyphForButton(kBtnPrev) == kGlyphPrevious && GlyphForButton(kBtnNext) == kGlyphNext &&
+             GlyphForButton(kBtnCategory) == kGlyphCategory && GlyphForButton(kBtnPause) == kGlyphPause,
+             "each control block has its own glyph");
+        BuildControlGlyph(kGlyphCount, &cat);
+        Need(cat.count == 0u, "an unknown glyph draws nothing");
+        BuildControlGlyph(kGlyphNext, NULL);
+    }
+
+    // 1b. Catalogue paths are copied whole or not at all.
+    {
+        char small[16];
+        Need(CopyPathChecked("data/a.aya", small, sizeof(small)) && std::strcmp(small, "data/a.aya") == 0,
+             "a path that fits is copied whole");
+        Need(CopyPathChecked("123456789012345", small, sizeof(small)) && std::strlen(small) == 15u,
+             "a path that exactly fills the buffer is kept");
+        std::strcpy(small, "stale");
+        Need(!CopyPathChecked("1234567890123456", small, sizeof(small)) && small[0] == '\0',
+             "a path one character too long is refused and the buffer left empty");
+        Need(!CopyPathChecked("", small, sizeof(small)) && !CopyPathChecked(NULL, small, sizeof(small)) &&
+             !CopyPathChecked("x", NULL, 4u) && !CopyPathChecked("x", small, 0u), "empty and null paths are refused");
+        char path[40];
+        Need(BuildGoodieMeshPath("f_be1.msh", path, sizeof(path)) &&
+             std::strcmp(path, "data/resources/meshes/m_f_be1.msh.aya") == 0, "goodie model path is built whole");
+        std::strcpy(path, "stale");
+        Need(!BuildGoodieMeshPath("a_very_long_goodie_mesh_name.msh", path, sizeof(path)) && path[0] == '\0',
+             "a goodie model path that does not fit is refused, never cut short");
+        Need(!BuildGoodieMeshPath("", path, sizeof(path)) && !BuildGoodieMeshPath(NULL, path, sizeof(path)),
+             "a goodie with no model has no path");
+        char full[CeArchiveScanner::kPathCap];
+        char longName[CeArchiveScanner::kPathCap + 32];
+        std::memset(longName, 'm', sizeof(longName) - 1u);
+        longName[sizeof(longName) - 1u] = '\0';
+        Need(!CopyPathChecked(longName, full, sizeof(full)) && full[0] == '\0',
+             "a catalogue path longer than the archive's path buffer is left out");
+    }
     Need(GoodieIdAt(kGoodieMesh, 0u) == 8, "first 3D goodie is id 8");
     Need(GoodieIdAt(kGoodieMesh, 44u) == 76, "last 3D goodie is id 76");
     Need(GoodieIdAt(kGoodieMesh, 45u) == -1, "out-of-range goodie ordinal returns -1");
@@ -557,6 +640,24 @@ PEDESTAL_MUTANTS = [
     ("wrong-goodie-classify",
      "if (id == 76u) return kGoodieMesh;",
      "if (id == 76u) return kGoodieImage;"),
+    ("glyph-prev-points-right",
+     "case kGlyphPrevious: tri(-a, 0.0f, a * 0.78f, a, a * 0.78f, -a); break;",
+     "case kGlyphPrevious: tri(a, 0.0f, -a * 0.78f, a, -a * 0.78f, -a); break;"),
+    ("glyph-overflows-block",
+     "constexpr float kGlyphHalf = 0.066f;",
+     "constexpr float kGlyphHalf = 0.166f;"),
+    ("glyph-category-missing",
+     "bar(-a, -a * 0.18f, a, a * 0.18f);",
+     "(void)bar;"),
+    ("goodie-232-left-out",
+     "constexpr unsigned kGoodieTotal = 233u;",
+     "constexpr unsigned kGoodieTotal = 232u;"),
+    ("path-cut-short",
+     "if (len + 1u > cap) return false;",
+     "if (len + 1u > cap) { std::memcpy(dst, src, cap - 1u); dst[cap - 1u] = 0; return true; }"),
+    ("goodie-path-cut-short",
+     "if (headLen + nameLen + tailLen + 1u > cap) return false;",
+     "if (headLen + nameLen + tailLen + 1u > cap) { std::memcpy(dst, kHead, cap - 1u < headLen ? cap - 1u : headLen); dst[cap - 1u < headLen ? cap - 1u : headLen] = 0; return true; }"),
 ]
 
 
@@ -582,7 +683,7 @@ def main():
         check("archive pedestal + scanner driver builds with ASan/UBSan", ok, detail)
         if ok:
             ok, detail = run([str(d / "driver")])
-            check("232 goodies, 1200-swap arena soak, 0xDD poison, quarantine & controls pass", ok, detail)
+            check("233 goodies, whole-or-nothing paths, 1200-swap arena soak, 0xDD poison, quarantine & controls pass", ok, detail)
 
         # Causal mutants against ce_archive_scanner.h
         scan_src = SCANNER_H.read_text()
@@ -639,13 +740,20 @@ def main():
               "void RuntimeDraw(",
               "void RuntimeSetBasePose(",
           )))
-    check("pedestal renderer guards D3D9 state with StateBlock + LT.InvalidateAllStates + NORMALIZENORMALS",
+    restore_h = (GAME / "ce_museum_render_state.h").read_text()
+    draw_tail = ped_cpp[ped_cpp.index("void RuntimeDraw(float floorZ, bool ownStateBlock) {"):]
+    check("pedestal renderer guards D3D9 state with StateBlock + the shared engine-state restore + NORMALIZENORMALS",
           "CreateStateBlock(D3DSBT_ALL" in ped_cpp
-          and "LT.InvalidateAllStates();" in ped_cpp
           and "D3DRS_NORMALIZENORMALS, TRUE" in ped_cpp
-          and "RENDERINFO.mWorldChanged = true;" in ped_cpp
-          and "RENDERINFO.mViewChanged = true;" in ped_cpp
-          and "RENDERINFO.mProjectionChanged = true;" in ped_cpp)
+          and re.search(r"saved->Apply\(\);\s*saved->Release\(\);\s*CeMuseumRestoreEngineRenderState\(\);", draw_tail) is not None
+          and all(needle in restore_h for needle in (
+              "LT.InvalidateAllStates();",
+              "RENDERINFO.mWorldChanged = true;", "RENDERINFO.mViewChanged = true;",
+              "RENDERINFO.mProjectionChanged = true;", "RENDERINFO.mFogStartChanged = true;",
+              "RENDERINFO.mFogEndChanged = true;", "RENDERINFO.mFogDensityChanged = true;",
+              "RENDERINFO.mFVFChanged = true;", "RENDERINFO.Apply();",
+              "LT.SRS(D3DRS_CULLMODE, D3DCULL_CCW);", "LT.SRS(D3DRS_ALPHATESTENABLE, TRUE);", "LT.SetModulate(0);"))
+          and restore_h.index("LT.InvalidateAllStates();") < restore_h.index("RENDERINFO.Apply();") < restore_h.index("LT.SetModulate(0);"))
     def strip_comments(src):
         src = re.sub(r"/\*.*?\*/", "", src, flags=re.S)
         return re.sub(r"//[^\n]*", "", src)
@@ -662,6 +770,29 @@ def main():
           all("SPDX-License-Identifier: GPL-3.0-only" in txt for txt in (ped_h, ped_cpp, scan_h, scan_cpp)))
     check("player-facing strings stay free of forbidden jargon",
           not re.search(r'"[^"]*(?:prototype|experimental|ce\.ini)[^"]*"', ped_h, re.I))
+    # The visitor reads a curator's words: no parser, memory, install or file-format talk on the pedestal's cards.
+    shown = re.findall(r'std::snprintf\(\s*(?:d->|gData->)?(?:activeTitle|activeLine|activeNote|sub|title|line|note)\b[^;]*?"((?:[^"\\]|\\.)*)"',
+                       ped_cpp, re.S)
+    shown += re.findall(r'return "((?:[^"\\]|\\.)*)";', ped_h)
+    engineer = re.compile(r"\b(mesh|meshes|quarantin\w*|memory|leak\w*|install\w*|directory|parser?|scan|retail|goodie|3d|archival 3d|fmvs?|portal)\b", re.I)
+    bad = [text for text in shown if engineer.search(text)]
+    check("pedestal cards speak as a curator, with no engineering words", len(shown) >= 20 and not bad, "; ".join(bad))
+    check("a model that cannot be shown logs its reason instead of printing it",
+          "Zero memory leaked" not in ped_cpp and "model withdrawn from display (%s)" in ped_cpp
+          and "CopyPathChecked(PortCeAssetCatalogPath(d->catalog, i), e.relPath, sizeof(e.relPath))" in ped_cpp
+          and "BuildGoodieMeshPath(meshName, relPath, sizeof(relPath));" in ped_cpp
+          and "PortCeMuseumCinemaFilmName(ord, stem, sizeof(stem))" in ped_cpp)
+    resolve = re.search(r"size_t ResolvePlateTexture\(const CeAssetCatalog \*catalog, const char \*retailPath\) \{(.*?)\n\}", ped_cpp, re.S)
+    check("the lightbox finds the two plates whose retail file names are cut short (goodies 95 and 103)",
+          bool(resolve) and "PortCeAssetCatalogFindTexture(catalog, retailPath)" in resolve.group(1)
+          and "CeMuseumArt::MatchesTruncatedCatalogPath(PortCeAssetCatalogPath(catalog, k), retailPath)" in resolve.group(1)
+          and resolve.group(1).index("PortCeAssetCatalogFindTexture") < resolve.group(1).index("MatchesTruncatedCatalogPath")
+          and "ResolvePlateTexture(d->catalog, picName)" in ped_cpp
+          and "PortCeAssetCatalogFindTexture(d->catalog, picName)" not in ped_cpp)
+    check("each control block draws its engraved glyph, and Pause shows Play while the turntable is paused",
+          "EmitControlGlyph(dev, glyph, bx, railY, bz - hz - 0.003f," in ped_cpp
+          and "(i == kBtnPause && d->state.paused) ? kGlyphPlay : GlyphForButton(static_cast<ControlButton>(i))" in ped_cpp
+          and "BuildControlGlyph(glyph, &shape);" in ped_cpp)
 
     return 1 if failures else 0
 

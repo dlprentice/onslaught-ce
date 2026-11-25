@@ -52,4 +52,53 @@ for sub in ('user','game','package'):(anc_real/sub).mkdir()
 lu,lg,lp=anc_link/'user',anc_link/'game',anc_link/'package'
 rc=subprocess.run([str(exe),str(good),str(lu),str(lg),str(lp),alpha,'Backup Copy 3.bes','1'],capture_output=True).returncode;report.append(('symlinked ancestors on read',rc==0));assert rc==0,('symlinked ancestors on read',rc)
 rc=subprocess.run([str(exe),str(catalog),str(lu),str(lg),str(lp),'list','2',newest],capture_output=True).returncode;report.append(('symlinked ancestors on list',rc==0));assert rc==0,('symlinked ancestors on list',rc)
+ctrl_cpp=job/'preview_ctrl.cpp'
+ctrl_cpp.write_text(r'''#include <SDL3/SDL.h>
+#include <chrono>
+#include <cstring>
+#include <string>
+#include <thread>
+#include "ce_backup_preview.h"
+#include "ce_career_restore.h"
+#define CE_CAREER_RESTORE_UI_INTERNAL
+#include "ce_career_restore_ui.h"
+static SDL_DialogFileCallback gCb;
+static void *gData;
+static std::string gPkg;
+extern "C" const char *SDL_GetBasePath(void) { return gPkg.c_str(); }
+extern "C" SDL_Window *SDL_GetKeyboardFocus(void) { return nullptr; }
+extern "C" void SDL_ShowOpenFolderDialog(SDL_DialogFileCallback cb, void *data, SDL_Window *, const char *, bool) { gCb = cb; gData = data; }
+bool CeCareerRestoreStamp(const CeCareerRestoreRequest &, std::string &out) { out = "test-stamp"; return true; }
+static bool waitPhase(CePreviewPhase want) {
+  CePreviewDisplay d{};
+  for (int i = 0; i < 1000; ++i) { CePreviewDisplayRead(0, &d); if (d.phase == want) return true; std::this_thread::sleep_for(std::chrono::milliseconds(2)); }
+  return false;
+}
+int main(int argc, char **argv) {
+  if (argc != 7) return 2;
+  gPkg = std::string(argv[3]) + "///";
+  CePreviewOpen((std::string(argv[1]) + "///").c_str(), (std::string(argv[2]) + "///").c_str(), (std::string(argv[4]) + "///").c_str());
+  if (!waitPhase(CE_PREVIEW_IDLE)) return 3;
+  CePreviewDisplay d{};
+  CePreviewDisplayRead(0, &d);
+  if (d.choices != 2) return 4;
+  CePreviewSelectSet(0);
+  if (!waitPhase(CE_PREVIEW_VERIFIED)) return 5;
+  CeRestoreCard card;
+  CePreviewRestoreCard(card);
+  if (!card.verified || card.set != std::string(argv[4]) + "/" + argv[6] || card.root != argv[4] || card.user != argv[1] || card.game != argv[2] || card.package != argv[3]) return 6;
+  CePreviewChoose();
+  std::string picked = std::string(argv[5]) + "//";
+  const char *files[] = {picked.c_str(), nullptr};
+  gCb(gData, files, 0);
+  if (!waitPhase(CE_PREVIEW_VERIFIED)) return 8;
+  CePreviewRestoreCard(card);
+  CePreviewLeave();
+  return card.verified && card.set == argv[5] ? 0 : 10;
+}
+''')
+ctrl_exe=job/'preview-ctrl'
+subprocess.run(['c++','-std=c++17','-pthread','-Wall','-Wextra','-Werror','-O2','-I'+str(root/'port/platform/common'),'-I'+str((root/'port/tools/deps.py').parent),'-isystem',str(Path(os.environ['BEA_PORT_DATA'])/'prefix-sniper/include'),str(ctrl_cpp),str(root/'port/platform/common/ce_backup_preview.cpp'),str(root/'port/platform/linux/ce_backup_preview.cpp'),str(root/'port/game/ce_career_view.cpp'),'-o',str(ctrl_exe)],check=True)
+bslash_set=job/'set_with_backslash\\';shutil.copytree(good,bslash_set)
+rc=subprocess.run([str(ctrl_exe),str(user),str(game),str(package),str(catalog),str(bslash_set),newest],capture_output=True).returncode;report.append(('controller trailing slash trim and posix backslash preserve',rc==0));assert rc==0,('controller trailing slash trim and posix backslash preserve',rc)
 assert protected==[members(q) for q in (user,game,package)];(job/'result.json').write_text(json.dumps({'checks':report,'protected_files_unchanged':True,'source_sha256':hashit(source.read_bytes())},indent=2)+'\n');print(f'{len(report)} preview cases passed; protected careers and settings unchanged. {job.name}')

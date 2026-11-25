@@ -10,6 +10,7 @@
 #include "ce_career_edit.h"
 #include "ce_career_view.h"
 #include "ce_extras.h"
+#include "ce_name_text.h"
 #include "../platform/common/ce_backup_name.h"
 #include "../platform/common/ce_career_backup.h"
 #include "../platform/common/ce_career_publish.h"
@@ -70,10 +71,12 @@ struct DoneRow
 
 CeBackupStatus			sFolderView{};
 Phase					sPhase = PH_IDLE;
+Phase					sShownPhase = PH_IDLE;
 bool					sAllowed = false;
 bool					sValidSource = false;
 bool					sHiddenDirection = false;
 bool					sPreviewValid = false;
+bool					sReshow = false;
 bool					sWorkRows = false;
 bool					sDrawn = false;
 unsigned				sDrawnAt = 0;
@@ -115,13 +118,40 @@ void	plain(WCHAR *dst, int n, const char *s)
 	PortCeExtrasWiden(dst, n, s);
 }
 
-const char	*leafOf(const char *path)
+void	widenUtf8(WCHAR *dst, int n, const char *s)
 {
-	const char *l = path;
-	for (const char *c = path; *c; ++c)
-		if (*c == '/' || *c == '\\')
-			l = c + 1;
-	return l;
+	CeDecodeName(dst, n, s, true);
+}
+
+void	leafOf(char *out, size_t cap, const char *path)
+{
+	if (!cap)
+		return;
+	out[0] = 0;
+	if (!path || !*path)
+		return;
+	size_t end = strlen(path);
+	while (end > 1 && (path[end - 1] == '/' || path[end - 1] == '\\'))
+	{
+		if (end == 3 && path[1] == ':')
+			break;
+		--end;
+	}
+	if ((end == 1 && (path[0] == '/' || path[0] == '\\')) ||
+		(end == 3 && path[1] == ':' && (path[2] == '/' || path[2] == '\\')))
+	{
+		snprintf(out, cap, "%.*s", int(end), path);
+		return;
+	}
+	size_t start = end;
+	while (start > 0 && path[start - 1] != '/' && path[start - 1] != '\\')
+		--start;
+	if (start == end)
+	{
+		snprintf(out, cap, "%c", path[0]);
+		return;
+	}
+	snprintf(out, cap, "%.*s", int(end - start), path + start);
 }
 
 void	careerStem(char *out, size_t cap, const char *file)
@@ -151,7 +181,7 @@ void	thousands(int value, char *out, int n)
 void	fitColumn(WCHAR *out, int cap, const char *text)
 {
 	WCHAR wide[160];
-	PortCeExtrasWidenName(wide, 160, text);
+	widenUtf8(wide, 160, text);
 	PortCeExtrasInFont(wide);
 	int len = 0;
 	while (wide[len])
@@ -302,8 +332,9 @@ void	buildDoneRows()
 			addDone("Find in Load Game", "");
 		if (sResult.backupSet[0])
 		{
-			char when[96], label[160];
-			PortCeBackupWhen(when, sizeof(when), leafOf(sResult.backupSet), false);
+			char leaf[256], when[96], label[160];
+			leafOf(leaf, sizeof(leaf), sResult.backupSet);
+			PortCeBackupWhen(when, sizeof(when), leaf, false);
 			snprintf(label, sizeof(label), "Set %s", when);
 			DoneRow &setRow = addDone(label, "");
 			setRow.leftName = true;
@@ -314,10 +345,33 @@ void	buildDoneRows()
 	}
 }
 
+void	focus(int row)
+{
+	sReshow = true;
+	PortCeExtrasShow(XP_EDIT_CAREER, row);
+	sReshow = false;
+}
+
+void	syncRows()
+{
+	buildDoneRows();
+	if (sPhase != sShownPhase)
+	{
+		sShownPhase = sPhase;
+		if (sPhase == PH_DONE && sDoneCount > 0)
+			focus(sDoneCount - 1);
+		else if (sPhase == PH_IDLE)
+			focus(0);
+	}
+}
+
 void	openPage()
 {
+	if (sReshow)
+		return;
 	sAllowed = permit();
 	sPhase = PH_IDLE;
+	sShownPhase = PH_IDLE;
 	sValidSource = false;
 	sHiddenDirection = false;
 	sPreviewValid = false;
@@ -362,6 +416,7 @@ void	closePage()
 {
 	CeBackupLeave();
 	sPhase = PH_IDLE;
+	sShownPhase = PH_IDLE;
 	sValidSource = false;
 	sPreviewValid = false;
 	sWorkRows = false;
@@ -402,13 +457,13 @@ void	updatePage()
 			req.namePermitted = editNamePermitted;
 			req.owner = nullptr;
 			sResult = CeCareerPublishNew(&req);
-			if (sResult.status == CE_PUBLISH_COMPLETE)
+			if (sResult.status == CE_PUBLISH_COMPLETE || sResult.possible)
 				PortCeRecordRefreshCareers();
 		}
 		fprintf(stderr, PORT_LOG_PREFIX "edit career: outcome %d\n", int(sResult.status));
 		sPhase = PH_DONE;
 	}
-	buildDoneRows();
+	syncRows();
 }
 
 void	drawPage(float)
@@ -546,7 +601,11 @@ void	fillRow(int i, SCeListRow *out)
 	case R_FOLDER:
 		plain(out->mLeft, 80, "Backup Folder");
 		if (sFolderView.folder[0])
-			fitColumn(out->mRight, 24, leafOf(sFolderView.folder));
+		{
+			char leaf[256];
+			leafOf(leaf, sizeof(leaf), sFolderView.folder);
+			fitColumn(out->mRight, 24, leaf[0] ? leaf : sFolderView.folder);
+		}
 		else
 		{
 			plain(out->mRight, 24, "Not chosen");
@@ -694,7 +753,7 @@ void	fillHint(int i, WCHAR *help, WCHAR *extra, int n)
 		if (sTargetName[0])
 		{
 			snprintf(line, sizeof(line), "New file: %s.", sTargetName);
-			PortCeExtrasWidenName(help, n, line);
+			widenUtf8(help, n, line);
 			PortCeExtrasInFont(help);
 			plain(extra, n, "Select Save as New Career below to write it.");
 		}
@@ -719,7 +778,7 @@ void	fillHint(int i, WCHAR *help, WCHAR *extra, int n)
 		else
 		{
 			snprintf(line, sizeof(line), "Saves edits into %s after backing up all careers.", sTargetName);
-			PortCeExtrasWidenName(help, n, line);
+			widenUtf8(help, n, line);
 			PortCeExtrasInFont(help);
 			plain(extra, n, "Your original career is never changed.");
 		}
@@ -812,10 +871,16 @@ bool	selectRow(int i)
 		if (i >= 0 && i < sDoneCount && sDoneRows[i].isBack)
 		{
 			sPhase = PH_IDLE;
-			PortCeCareerEditBack();
+			refreshSuggestion();
+			syncRows();
 			return true;
 		}
 		return false;
+	}
+	if (i == R_BACK)
+	{
+		PortCeCareerEditBack();
+		return true;
 	}
 	if (picking())
 		return false;
@@ -868,7 +933,7 @@ bool	selectRow(int i)
 			memset(&sResult, 0, sizeof(sResult));
 			sResult.status = CE_PUBLISH_NO_FOLDER;
 			sPhase = PH_DONE;
-			buildDoneRows();
+			syncRows();
 			return true;
 		}
 		if (sFolderView.state == CE_BACKUP_OTHER)
@@ -876,7 +941,7 @@ bool	selectRow(int i)
 			memset(&sResult, 0, sizeof(sResult));
 			sResult.status = CE_PUBLISH_BUSY;
 			sPhase = PH_DONE;
-			buildDoneRows();
+			syncRows();
 			return true;
 		}
 		if (!sPreviewValid)
@@ -884,7 +949,7 @@ bool	selectRow(int i)
 			memset(&sResult, 0, sizeof(sResult));
 			sResult.status = CE_PUBLISH_BAD_CAREER;
 			sPhase = PH_DONE;
-			buildDoneRows();
+			syncRows();
 			return true;
 		}
 		if (!sTargetName[0])
@@ -892,7 +957,7 @@ bool	selectRow(int i)
 			memset(&sResult, 0, sizeof(sResult));
 			sResult.status = sSuggestStatus;
 			sPhase = PH_DONE;
-			buildDoneRows();
+			syncRows();
 			return true;
 		}
 		memcpy(sFrozenBytes, sPreviewBytes, CE_CAREER_SIZE);
@@ -902,7 +967,7 @@ bool	selectRow(int i)
 		sWorkRows = false;
 		sDrawn = false;
 		sDrawnAt = 0;
-		buildDoneRows();
+		syncRows();
 		return true;
 	}
 	case R_BACK:
@@ -938,7 +1003,7 @@ int	PortCeCareerEditStepBack()
 	{
 		sPhase = PH_IDLE;
 		refreshSuggestion();
-		buildDoneRows();
+		syncRows();
 		return 1;
 	}
 	return 0;

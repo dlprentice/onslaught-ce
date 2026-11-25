@@ -5,9 +5,20 @@
  * launcher_on1.inc the expressions the updater and the launcher test.
  * Usage: launcher_ini_driver INI off0   prints 1 when the updater turns update checking off for that file, else 0
  *        launcher_ini_driver INI on1    prints 1 when the launcher records the session for that file, else 0 */
+#include <errno.h>
+#include <fcntl.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <io.h>
+#include <windows.h>
+#else
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+#include "ce_report.h"
 
 #define PATHN 4096
 static char sIni[PATHN];

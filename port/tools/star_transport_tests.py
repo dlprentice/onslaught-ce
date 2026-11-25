@@ -63,9 +63,9 @@ DRIVER_CPP = r"""
 #include <string>
 #include <thread>
 #include <vector>
+#include <enet/enet.h>
 
 #if defined(CE_NETWORK_ICE)
-#include <enet/enet.h>
 #include <juice/juice.h>
 #define private public
 #include "ice_bridge.h"
@@ -500,6 +500,209 @@ void TestStartBarrierSilenceKeepalive() {
           "frozen non-polling guest still cleanly triggers CeStarError::Timeout");
 }
 
+void TestChatRateLimitAndQueueIsolation() {
+    const auto secret = MakeSecret(0x42);
+    const auto compat = MakeCompat(0x24);
+
+    CeStarConfig hcfg;
+    hcfg.role = CeStarRole::Host;
+    hcfg.bind_ipv4 = "127.0.0.1";
+    hcfg.bind_port = 0;
+    hcfg.max_guests = 2;
+    hcfg.local_seat = 0;
+    hcfg.local_sim_slot = 0;
+    hcfg.match_secret = secret;
+    hcfg.compatibility = compat;
+    hcfg.silence_timeout_ms = 180000;
+    hcfg.ping_report_interval_ms = 0;
+
+    auto host = CeStarTransport::Create(hcfg);
+    Check(bool(host), "chat/isolation host created");
+    if (!host) return;
+
+    auto make_guest = [&](uint16_t slot) {
+        CeStarConfig gcfg;
+        gcfg.role = CeStarRole::Guest;
+        gcfg.remote_ipv4 = "127.0.0.1";
+        gcfg.remote_port = host->LocalPort();
+        gcfg.max_guests = 2;
+        gcfg.local_seat = slot;
+        gcfg.local_sim_slot = slot;
+        gcfg.match_secret = secret;
+        gcfg.compatibility = compat;
+        gcfg.silence_timeout_ms = 180000;
+        gcfg.ping_report_interval_ms = 0;
+        return CeStarTransport::Create(gcfg);
+    };
+
+    auto g1 = make_guest(1);
+    auto g2 = make_guest(2);
+    Check(bool(g1) && bool(g2), "chat/isolation guests created");
+    if (!g1 || !g2) return;
+
+    Check(WaitUntil([&] {
+        const uint64_t now = NowMs();
+        host->Poll(now);
+        g1->Poll(now);
+        g2->Poll(now);
+        return host->ActiveGuestCount() == 2 && g1->IsAuthenticated() && g2->IsAuthenticated();
+    }, 3000), "chat/isolation guests authenticated");
+
+    CeStarEvent ev;
+    while (host->PopEvent(ev)) {}
+    while (g1->PopEvent(ev)) {}
+    while (g2->PopEvent(ev)) {}
+
+    // 1. Per-peer incoming chat rate limit (6 msgs / 10s) enforced BEFORE enqueue and BEFORE relay.
+    const uint8_t inp[4] = {1, 2, 3, 4};
+    Check(g1->SendGuestInput(77, inp, sizeof(inp)), "g1 SendGuestInput alongside chat burst");
+    for (int i = 0; i < 16; ++i) {
+        Check(g1->SendChat("spam-" + std::to_string(i)), "g1 SendChat in burst");
+    }
+    Check(g2->SendChat("g2-independent"), "g2 SendChat unaffected by g1 rate limit");
+    Check(g1->SendHash(77, 0xCAFEBABE12345678ULL), "g1 SendHash alongside chat burst");
+
+    const uint64_t burst_base = NowMs();
+    for (int step = 0; step < 30; ++step) {
+        const uint64_t now = burst_base + static_cast<uint64_t>(step * 5);
+        host->Poll(now);
+        g1->Poll(now);
+        g2->Poll(now);
+        std::this_thread::sleep_for(std::chrono::milliseconds(3));
+    }
+
+    unsigned host_g1_chats = 0;
+    unsigned host_g2_chats = 0;
+    bool host_got_input = false;
+    bool host_got_hash = false;
+    while (host->PopEvent(ev)) {
+        if (ev.kind == CeStarEventKind::Chat) {
+            if (ev.sim_slot == 1) ++host_g1_chats;
+            if (ev.sim_slot == 2 && ev.text == "g2-independent") ++host_g2_chats;
+        } else if (ev.kind == CeStarEventKind::InputGuest && ev.sim_slot == 1 && ev.tick == 77) {
+            host_got_input = true;
+        } else if (ev.kind == CeStarEventKind::Hash && ev.sim_slot == 1 &&
+                   ev.tick == 77 && ev.hash == 0xCAFEBABE12345678ULL) {
+            host_got_hash = true;
+        }
+    }
+    unsigned g2_relayed_g1_chats = 0;
+    while (g2->PopEvent(ev)) {
+        if (ev.kind == CeStarEventKind::Chat && ev.sim_slot == 1) ++g2_relayed_g1_chats;
+    }
+    while (g1->PopEvent(ev)) {}
+
+    Check(host_got_input && host_got_hash, "lockstep InputGuest and Hash unaffected by peer chat burst");
+    Check(host_g1_chats == 6u, "Host enforced per-peer incoming chat limit of 6 msgs per 10s window");
+    Check(host_g2_chats == 1u, "Guest 2 independent chat rate window unaffected by Guest 1 spam");
+    Check(g2_relayed_g1_chats == 6u, "Host dropped excess Guest 1 chat BEFORE relaying to Guest 2");
+
+    // 2. Chat queue isolation: >64 incoming chat events across 15 rate windows NEVER evict critical
+    //    lockstep InputBundle/Desync events, and PopEvent drains critical events FIFO before Chat!
+    uint64_t sim_now = burst_base + 20000;
+    const CeStarBitmask mask = host->ActiveMask();
+    uint32_t next_bundle_tick = 100;
+    for (int win = 0; win < 15; ++win) {
+        sim_now += 11000;
+        for (int m = 0; m < 5; ++m) {
+            Check(host->SendChat("w" + std::to_string(win) + "-" + std::to_string(m)), "host SendChat");
+        }
+        if (win < 12) {
+            const uint8_t bundle[8] = {static_cast<uint8_t>(next_bundle_tick), 9, 8, 7, 6, 5, 4, 3};
+            Check(host->BroadcastInputBundle(next_bundle_tick++, mask, bundle, sizeof(bundle)),
+                  "host BroadcastInputBundle");
+        }
+        if (win == 14) {
+            Check(host->BroadcastDesync(next_bundle_tick, 0, 2, mask, 0x1111ULL, 0x2222ULL),
+                  "host BroadcastDesync");
+        }
+        for (int p = 0; p < 8; ++p) {
+            host->Poll(sim_now + static_cast<uint64_t>(p * 5));
+            g1->Poll(sim_now + static_cast<uint64_t>(p * 5));
+            g2->Poll(sim_now + static_cast<uint64_t>(p * 5));
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    }
+
+    Check(!g1->IsHostLost() && g1->LastError() == CeStarError::Ok,
+          "chat queue saturation never faults transport");
+    std::vector<CeStarEvent> drained;
+    while (g1->PopEvent(ev)) drained.push_back(ev);
+
+    unsigned bundle_count = 0;
+    bool bundle_fifo_ok = true;
+    bool got_desync = false;
+    bool saw_chat_before_critical = false;
+    bool seen_any_chat = false;
+    unsigned chat_count = 0;
+    for (const auto& item : drained) {
+        if (item.kind == CeStarEventKind::Chat) {
+            seen_any_chat = true;
+            ++chat_count;
+        } else if (item.kind == CeStarEventKind::InputBundle) {
+            if (seen_any_chat) saw_chat_before_critical = true;
+            if (item.tick != 100u + bundle_count) bundle_fifo_ok = false;
+            ++bundle_count;
+        } else if (item.kind == CeStarEventKind::Desync) {
+            if (seen_any_chat) saw_chat_before_critical = true;
+            got_desync = true;
+        }
+    }
+    Check(bundle_count == 12u && bundle_fifo_ok && got_desync,
+          "all 12 InputBundle events and Desync survived chat flood in exact FIFO order");
+    Check(!saw_chat_before_critical && chat_count == 64u,
+          "critical lockstep events popped before bounded 64-entry chat queue");
+
+    // 3. Critical lockstep queue overflow (>512 unpopped events) surfaces explicit CeStarError::Capacity.
+    auto ohost = CeStarTransport::Create(hcfg);
+    Check(bool(ohost), "overflow test host created");
+    if (!ohost) return;
+    CeStarConfig ogcfg = hcfg;
+    ogcfg.role = CeStarRole::Guest;
+    ogcfg.local_seat = 1;
+    ogcfg.local_sim_slot = 1;
+    ogcfg.remote_ipv4 = "127.0.0.1";
+    ogcfg.remote_port = ohost->LocalPort();
+    auto oguest = CeStarTransport::Create(ogcfg);
+    Check(bool(oguest), "overflow test guest created");
+    if (!oguest) return;
+
+    Check(WaitUntil([&] {
+        const uint64_t now = NowMs();
+        ohost->Poll(now);
+        oguest->Poll(now);
+        return ohost->ActiveGuestCount() == 1 && oguest->IsAuthenticated();
+    }, 3000), "overflow test guest authenticated");
+    while (ohost->PopEvent(ev)) {}
+    while (oguest->PopEvent(ev)) {}
+
+    const CeStarBitmask omask = ohost->ActiveMask();
+    const uint8_t obundle[4] = {0xAA, 0xBB, 0xCC, 0xDD};
+    for (uint32_t t = 1; t <= 530 && oguest->LastError() == CeStarError::Ok; ++t) {
+        ohost->BroadcastInputBundle(t, omask, obundle, sizeof(obundle));
+        if ((t % 24u) == 0u) {
+            const uint64_t now = NowMs();
+            ohost->Poll(now);
+            oguest->Poll(now);
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    }
+    Check(WaitUntil([&] {
+        const uint64_t now = NowMs();
+        ohost->Poll(now);
+        oguest->Poll(now);
+        return oguest->LastError() == CeStarError::Capacity;
+    }, 3000), "critical lockstep queue overflow (>512) sets LastError() == CeStarError::Capacity");
+    Check(oguest->IsHostLost(), "critical lockstep queue overflow marks guest disconnected");
+    bool saw_cap_err_event = false;
+    while (oguest->PopEvent(ev)) {
+        if (ev.kind == CeStarEventKind::Error && ev.error == CeStarError::Capacity) {
+            saw_cap_err_event = true;
+        }
+    }
+    Check(saw_cap_err_event, "critical lockstep queue overflow surfaces terminal Error(Capacity) event");
+}
+
 #if defined(CE_NETWORK_ICE)
 void TestMultiSlotIceLoopbackMultiplexing() {
     const auto secret = MakeSecret(0x77);
@@ -632,6 +835,265 @@ void TestMultiSlotIceLoopbackMultiplexing() {
     Check(relay_host->SetGuestRemoteIceDescription(1, mixed_relay_sdp),
           "require_relay=true accepts scrubbed TURN relay SDP");
 }
+
+void TestGuestPreAuthHandshakeTimeoutAndRelayFallback() {
+    Check(enet_initialize() == 0, "enet_initialize for raw responder sockets");
+    struct EnetGuard { ~EnetGuard() { enet_deinitialize(); } } enet_guard;
+
+    const auto secret = MakeSecret(0x88);
+    const auto compat = MakeCompat(0x44);
+
+    juice_config_t jcfg{};
+    jcfg.bind_address = "127.0.0.1";
+
+    // 1. STUN ICE Guest pre-auth ENet handshake timeout -> non-fatal ICE failure, then TURN/2nd bridge recovery!
+    ENetAddress dummy_addr{};
+    enet_address_set_host_ip(&dummy_addr, "127.0.0.1");
+    dummy_addr.port = 0;
+    ENetHost* dummy_enet = enet_host_create(&dummy_addr, 2, 3, 0, 0);
+    auto dummy_ice = dummy_enet ? CeIceBridge::Create(dummy_enet, jcfg, false) : nullptr;
+    Check(dummy_enet != nullptr && bool(dummy_ice), "dummy ICE responder init");
+
+    CeStarConfig gcfg;
+    gcfg.role = CeStarRole::Guest;
+    gcfg.use_ice = true;
+    gcfg.require_relay = false;
+    gcfg.max_guests = 2;
+    gcfg.local_seat = 1;
+    gcfg.local_sim_slot = 1;
+    gcfg.match_secret = secret;
+    gcfg.compatibility = compat;
+    gcfg.handshake_timeout_ms = 250;
+
+    auto guest = CeStarTransport::Create(gcfg);
+    Check(bool(guest) && guest->AttachHostIceBridge(jcfg, false), "guest attached initial STUN ICE bridge");
+    if (!guest || !dummy_ice) {
+        dummy_ice.reset();
+        if (dummy_enet) enet_host_destroy(dummy_enet);
+        return;
+    }
+
+    std::string d_sdp, g_sdp;
+    Check(WaitUntil([&] {
+        if (d_sdp.empty()) dummy_ice->LocalDescription(d_sdp);
+        if (g_sdp.empty()) guest->GetLocalIceDescription(g_sdp);
+        return !d_sdp.empty() && !g_sdp.empty();
+    }, 3000), "gathered SDPs for STUN pre-auth timeout test");
+
+    Check(dummy_ice->SetRemoteDescription(g_sdp) && guest->SetRemoteIceDescription(d_sdp),
+          "exchanged SDPs with non-serviced ENet ICE responder");
+
+    Check(WaitUntil([&] {
+        dummy_ice->Pump();
+        guest->Poll(NowMs());
+        return guest->IsIceFailed();
+    }, 3000), "STUN pre-auth ENet handshake timeout sets guest->IsIceFailed()");
+
+    dummy_ice.reset();
+    enet_host_destroy(dummy_enet);
+
+    CeStarEvent ev;
+    bool had_fatal_event = false;
+    while (guest->PopEvent(ev)) {
+        if (ev.kind == CeStarEventKind::Error || ev.kind == CeStarEventKind::HostDisconnected) {
+            had_fatal_event = true;
+        }
+    }
+    Check(!guest->IsHostLost() && !guest->IsAuthenticated() &&
+          guest->LastError() == CeStarError::Ok && !had_fatal_event,
+          "STUN pre-auth handshake timeout does NOT mark host_lost_ or emit fatal Error event");
+
+    // Recover the SAME guest transport instance by detaching and attaching a fresh bridge to a real Host!
+    CeStarConfig hcfg;
+    hcfg.role = CeStarRole::Host;
+    hcfg.bind_ipv4 = "127.0.0.1";
+    hcfg.bind_port = 0;
+    hcfg.use_ice = true;
+    hcfg.require_relay = false;
+    hcfg.max_guests = 2;
+    hcfg.local_seat = 0;
+    hcfg.local_sim_slot = 0;
+    hcfg.match_secret = secret;
+    hcfg.compatibility = compat;
+    auto host = CeStarTransport::Create(hcfg);
+    Check(bool(host) && host->AttachGuestIceBridge(1, jcfg, false), "recovery host created with ICE bridge");
+    if (!host) return;
+
+    guest->DetachHostIceBridge();
+    Check(!guest->IsIceFailed() && guest->AttachHostIceBridge(jcfg, false),
+          "guest reattached second ICE bridge cleanly after STUN timeout");
+
+    std::string h2_sdp, g2_sdp;
+    Check(WaitUntil([&] {
+        if (h2_sdp.empty()) host->GetGuestLocalIceDescription(1, h2_sdp);
+        if (g2_sdp.empty()) guest->GetLocalIceDescription(g2_sdp);
+        return !h2_sdp.empty() && !g2_sdp.empty();
+    }, 3000), "gathered recovery SDPs");
+    Check(host->SetGuestRemoteIceDescription(1, g2_sdp) && guest->SetRemoteIceDescription(h2_sdp),
+          "exchanged recovery SDPs");
+    Check(WaitUntil([&] {
+        const uint64_t now = NowMs();
+        host->Poll(now);
+        guest->Poll(now);
+        return guest->IsAuthenticated() && host->ActiveGuestCount() == 1;
+    }, 4000), "guest authenticated cleanly on second ICE bridge after pre-auth STUN timeout");
+
+    // 2. STUN ICE Guest pre-auth ENet disconnect (without Refusal) also routes to non-fatal IsIceFailed().
+    ENetAddress raw_addr{};
+    enet_address_set_host_ip(&raw_addr, "127.0.0.1");
+    raw_addr.port = 0;
+    ENetHost* raw_srv = enet_host_create(&raw_addr, 2, 3, 0, 0);
+    Check(raw_srv != nullptr, "raw ENetHost created");
+    if (raw_srv) {
+        auto srv_ice = CeIceBridge::Create(raw_srv, jcfg, false);
+        Check(bool(srv_ice), "srv_ice attached to raw ENetHost");
+        auto disc_guest = CeStarTransport::Create(gcfg);
+        Check(bool(disc_guest) && disc_guest->AttachHostIceBridge(jcfg, false), "disc_guest created");
+        std::string s_sdp, dg_sdp;
+        Check(WaitUntil([&] {
+            if (srv_ice && s_sdp.empty()) srv_ice->LocalDescription(s_sdp);
+            if (dg_sdp.empty()) disc_guest->GetLocalIceDescription(dg_sdp);
+            return !s_sdp.empty() && !dg_sdp.empty();
+        }, 3000), "gathered SDPs for pre-auth ENet disconnect test");
+        Check(srv_ice && srv_ice->SetRemoteDescription(dg_sdp) && disc_guest->SetRemoteIceDescription(s_sdp),
+              "exchanged SDPs for pre-auth ENet disconnect test");
+        Check(WaitUntil([&] {
+            if (srv_ice) srv_ice->Pump();
+            ENetEvent eev{};
+            while (enet_host_service(raw_srv, &eev, 0) > 0) {
+                if (eev.type == ENET_EVENT_TYPE_CONNECT) {
+                    enet_peer_disconnect(eev.peer, 0);
+                } else if (eev.type == ENET_EVENT_TYPE_RECEIVE) {
+                    enet_packet_destroy(eev.packet);
+                }
+            }
+            disc_guest->Poll(NowMs());
+            return disc_guest->IsIceFailed();
+        }, 3000), "pre-auth ENet disconnect on STUN ICE routes to non-fatal IsIceFailed()");
+        Check(!disc_guest->IsHostLost() && disc_guest->LastError() == CeStarError::Ok,
+              "pre-auth ENet disconnect on STUN ICE preserves non-fatal state");
+        srv_ice.reset();
+        enet_host_destroy(raw_srv);
+    }
+
+    // 3. Fatal paths MUST stay fatal:
+    // 3a. Direct mode (!use_ice) pre-auth timeout -> fatal Timeout.
+    ENetSocket silent_sock = enet_socket_create(ENET_SOCKET_TYPE_DATAGRAM);
+    Check(silent_sock != ENET_SOCKET_NULL, "silent UDP socket created");
+    if (silent_sock != ENET_SOCKET_NULL) {
+        ENetAddress saddr{};
+        enet_address_set_host_ip(&saddr, "127.0.0.1");
+        saddr.port = 0;
+        ENetAddress bound{};
+        Check(enet_socket_bind(silent_sock, &saddr) == 0 &&
+              enet_socket_get_address(silent_sock, &bound) == 0, "silent UDP socket bound");
+        CeStarConfig dcfg = gcfg;
+        dcfg.use_ice = false;
+        dcfg.remote_ipv4 = "127.0.0.1";
+        dcfg.remote_port = bound.port;
+        dcfg.handshake_timeout_ms = 250;
+        auto dguest = CeStarTransport::Create(dcfg);
+        Check(bool(dguest), "direct timeout guest created");
+        Check(WaitUntil([&] {
+            dguest->Poll(NowMs());
+            return dguest->IsHostLost();
+        }, 2500), "direct mode pre-auth timeout marks IsHostLost() fatally");
+        Check(dguest->LastError() == CeStarError::Timeout, "direct mode pre-auth timeout sets CeStarError::Timeout");
+        enet_socket_destroy(silent_sock);
+    }
+
+    // 3b. Authenticated STUN ICE guest losing host (silence timeout) MUST stay fatal (never retry TURN!).
+    {
+        CeStarConfig ah_cfg = hcfg;
+        ah_cfg.silence_timeout_ms = 550;
+        ah_cfg.ping_report_interval_ms = 0;
+        auto ahost = CeStarTransport::Create(ah_cfg);
+        CeStarConfig ag_cfg = gcfg;
+        ag_cfg.silence_timeout_ms = 550;
+        ag_cfg.ping_report_interval_ms = 0;
+        ag_cfg.handshake_timeout_ms = 3000;
+        auto aguest = CeStarTransport::Create(ag_cfg);
+        Check(bool(ahost) && bool(aguest) &&
+              ahost->AttachGuestIceBridge(1, jcfg, false) &&
+              aguest->AttachHostIceBridge(jcfg, false), "authenticated loss STUN ICE pair created");
+        if (ahost && aguest) {
+            std::string ah_sdp, ag_sdp;
+            Check(WaitUntil([&] {
+                if (ah_sdp.empty()) ahost->GetGuestLocalIceDescription(1, ah_sdp);
+                if (ag_sdp.empty()) aguest->GetLocalIceDescription(ag_sdp);
+                return !ah_sdp.empty() && !ag_sdp.empty();
+            }, 3000), "gathered SDPs for authenticated loss STUN ICE test");
+            Check(ahost->SetGuestRemoteIceDescription(1, ag_sdp) &&
+                  aguest->SetRemoteIceDescription(ah_sdp), "exchanged SDPs for authenticated loss STUN ICE test");
+            Check(WaitUntil([&] {
+                const uint64_t now = NowMs();
+                ahost->Poll(now);
+                aguest->Poll(now);
+                return aguest->IsAuthenticated() && ahost->ActiveGuestCount() == 1;
+            }, 4000), "authenticated loss test guest authenticated over STUN ICE");
+            while (aguest->PopEvent(ev)) {}
+            // Freeze ahost (stop polling it) -> aguest hits silence_timeout_ms while authenticated!
+            Check(WaitUntil([&] {
+                aguest->Poll(NowMs());
+                return aguest->IsHostLost();
+            }, 2500), "authenticated STUN ICE silence loss marks IsHostLost() fatally");
+            Check(aguest->LastError() == CeStarError::Timeout && !aguest->IsIceFailed(),
+                  "authenticated STUN ICE loss sets CeStarError::Timeout and does NOT trigger TURN retry");
+        }
+    }
+
+    // 3c. Explicit Incompatible refusal over STUN ICE (!require_relay) MUST stay fatal (never retry TURN!).
+    CeStarConfig bad_compat_cfg = gcfg;
+    bad_compat_cfg.local_seat = 2;
+    bad_compat_cfg.local_sim_slot = 2;
+    bad_compat_cfg.compatibility = MakeCompat(0xEE);
+    bad_compat_cfg.handshake_timeout_ms = 3000;
+    auto bad_compat_guest = CeStarTransport::Create(bad_compat_cfg);
+    Check(bool(bad_compat_guest) && host->AttachGuestIceBridge(2, jcfg, false) &&
+          bad_compat_guest->AttachHostIceBridge(jcfg, false), "bad_compat_guest attached STUN ICE");
+    std::string hc_sdp, bc_sdp;
+    Check(WaitUntil([&] {
+        if (hc_sdp.empty()) host->GetGuestLocalIceDescription(2, hc_sdp);
+        if (bc_sdp.empty()) bad_compat_guest->GetLocalIceDescription(bc_sdp);
+        return !hc_sdp.empty() && !bc_sdp.empty();
+    }, 3000), "gathered SDPs for bad-compat STUN ICE test");
+    Check(host->SetGuestRemoteIceDescription(2, bc_sdp) && bad_compat_guest->SetRemoteIceDescription(hc_sdp),
+          "exchanged SDPs for bad-compat STUN ICE test");
+    Check(WaitUntil([&] {
+        const uint64_t now = NowMs();
+        host->Poll(now);
+        bad_compat_guest->Poll(now);
+        return bad_compat_guest->IsHostLost();
+    }, 4000), "wrong-compat STUN ICE guest marks IsHostLost() fatally");
+    Check(bad_compat_guest->LastError() == CeStarError::Incompatible && !bad_compat_guest->IsIceFailed(),
+          "wrong-compat STUN ICE refusal sets CeStarError::Incompatible and does NOT trigger TURN retry");
+
+    // 3d. Explicit SlotRejected (wrong seat) refusal over STUN ICE (!require_relay) MUST stay fatal!
+    host->DetachGuestIceBridge(2);
+    CeStarConfig bad_seat_cfg = gcfg;
+    bad_seat_cfg.local_seat = 9;
+    bad_seat_cfg.local_sim_slot = 2;
+    bad_seat_cfg.handshake_timeout_ms = 3000;
+    auto bad_seat_guest = CeStarTransport::Create(bad_seat_cfg);
+    Check(bool(bad_seat_guest) && host->AttachGuestIceBridge(2, jcfg, false) &&
+          bad_seat_guest->AttachHostIceBridge(jcfg, false), "bad_seat_guest attached STUN ICE");
+    std::string hs_sdp, bs_sdp;
+    Check(WaitUntil([&] {
+        if (hs_sdp.empty()) host->GetGuestLocalIceDescription(2, hs_sdp);
+        if (bs_sdp.empty()) bad_seat_guest->GetLocalIceDescription(bs_sdp);
+        return !hs_sdp.empty() && !bs_sdp.empty();
+    }, 3000), "gathered SDPs for bad-seat STUN ICE test");
+    Check(host->SetGuestRemoteIceDescription(2, bs_sdp) && bad_seat_guest->SetRemoteIceDescription(hs_sdp),
+          "exchanged SDPs for bad-seat STUN ICE test");
+    Check(WaitUntil([&] {
+        const uint64_t now = NowMs();
+        host->Poll(now);
+        bad_seat_guest->Poll(now);
+        return bad_seat_guest->IsHostLost();
+    }, 4000), "wrong-seat STUN ICE guest marks IsHostLost() fatally");
+    Check(bad_seat_guest->LastError() == CeStarError::SlotRejected && !bad_seat_guest->IsIceFailed(),
+          "wrong-seat STUN ICE refusal sets CeStarError::SlotRejected and does NOT trigger TURN retry");
+}
 #endif
 
 } // namespace
@@ -640,8 +1102,10 @@ int main() {
     TestWireAnd64Bitmask();
     TestFourPeerDirectStarSession();
     TestStartBarrierSilenceKeepalive();
+    TestChatRateLimitAndQueueIsolation();
 #if defined(CE_NETWORK_ICE)
     TestMultiSlotIceLoopbackMultiplexing();
+    TestGuestPreAuthHandshakeTimeoutAndRelayFallback();
 #endif
     std::printf("STAR_TRANSPORT_TESTS checks=%d failures=%d\n", gChecks, gFails);
     return gFails == 0 ? 0 : 1;

@@ -88,3 +88,93 @@
  		sAllocations++;
  
  		if (!important)
+--- a/weapon.cpp
++++ b/weapon.cpp
+@@ -52,6 +52,9 @@
+ // scheduling tie-break (CPDTimeline 004c2640 in ParticleDescriptor.cpp loses its match).
+ inline CUnit *CEquipment::GetAttachedTo() { return mAttachedTo; }
+ 
++#ifdef CE_VERSION
++extern "C" int PortCeBattleEngineIsLocalHuman(const void *be) __attribute__((weak));
++#endif
+ //******************************************************************************************
+ // The two IsA tests read the unit through GetAttachedTo(): two offered sites after the GetWeaponMode walks, which is
+ // what VC6's budget needs to call GenericSPtrSet::First out of line in both walks as retail does (each walk's body
+@@ -80,7 +83,12 @@
+ 	{
+ 		if (mMode->mSoundA && mMode->mSoundPerBurst)
+ 		{
++#ifdef CE_VERSION
++			if (GetAttachedTo()->IsA(THING_TYPE_BATTLE_ENGINE) &&
++				(!PortCeBattleEngineIsLocalHuman || PortCeBattleEngineIsLocalHuman(GetAttachedTo())))
++#else
+ 			if (GetAttachedTo()->IsA(THING_TYPE_BATTLE_ENGINE))
++#endif
+ 				SOUND.PlayEffect(mMode->mSoundA, NULL, 0.5f, ST_NOTRACKING);
+ 			else
+ 				SOUND.PlayEffect(mMode->mSoundA, mAttachedTo, 0.5f, ST_FOLLOWDONTDIE);
+@@ -395,7 +403,12 @@
+ 	{
+ 		if (WeaponMode_mSoundA(WeaponModeOf(this)) && !mode->mSoundPerBurst)
+ 		{
++#ifdef CE_VERSION
++			if (mAttachedTo->IsA(THING_TYPE_BATTLE_ENGINE) &&
++				(!PortCeBattleEngineIsLocalHuman || PortCeBattleEngineIsLocalHuman(mAttachedTo)))
++#else
+ 			if (mAttachedTo->IsA(THING_TYPE_BATTLE_ENGINE))
++#endif
+ 				SOUND.PlayEffect(WeaponMode_mSoundA(mode), NULL, 0.5f, ST_NOTRACKING);
+ 			else
+ 				SOUND.PlayEffect(WeaponMode_mSoundA(mode), mAttachedTo, 0.5f, ST_FOLLOWDONTDIE);
+--- a/BattleEngine.cpp
++++ b/BattleEngine.cpp
+@@ -1860,7 +1860,12 @@
+ 
+ 	mThrustersOn=FALSE;
+ }
++#ifdef CE_VERSION
++extern "C" int PortCeBattleEngineIsLocalHuman(const void *be) __attribute__((weak));
++inline void CBattleEngine::PlayHudSample(CEffect *effect) { if (PortCeBattleEngineIsLocalHuman && !PortCeBattleEngineIsLocalHuman(this)) return; SOUND.PlayEffect(effect, this, SOUND.GetHUDMessageVolume(), ST_FOLLOWDONTDIE, 0, 0, 0, -1.f, 0, 1.f, ST_GAME_SOUND, 1); }
++#else
+ inline void CBattleEngine::PlayHudSample(CEffect *effect) { SOUND.PlayEffect(effect, this, SOUND.GetHUDMessageVolume(), ST_FOLLOWDONTDIE, 0, 0, 0, -1.f, 0, 1.f, ST_GAME_SOUND, 1); }
++#endif
+ //******************************************************************************************
+ void CBattleEngine::HandleSounds()	// FUNCTION: 0x00409950
+ {
+@@ -1875,7 +1880,11 @@
+ 		if (mEnergyVeryLowSound)
+ 			SOUND.StopSample(mEnergyVeryLowSound->mSample, this);
+ 
++#ifdef CE_VERSION
++		if ((!PortCeBattleEngineIsLocalHuman || PortCeBattleEngineIsLocalHuman(this)) && !SOUND.IsEffectPlaying(mHealthLowSound, this))
++#else
+ 		if (!SOUND.IsEffectPlaying(mHealthLowSound, this))
++#endif
+ 			SOUND.PlayEffect(mHealthLowSound, this, ENGINE_VOLUME, ST_FOLLOWDONTDIE, false, 0.0f, 0, -1.f, true);
+ 	}
+ 	/*else if (mEnergy<1.0f)
+@@ -1893,7 +1902,11 @@
+ 		if (mEnergyVeryLowSound)
+ 			SOUND.StopSample(mEnergyVeryLowSound->mSample, this);
+ 
++#ifdef CE_VERSION
++		if ((!PortCeBattleEngineIsLocalHuman || PortCeBattleEngineIsLocalHuman(this)) && !SOUND.IsEffectPlaying(mEnergyLowSound, this))
++#else
+ 		if (!SOUND.IsEffectPlaying(mEnergyLowSound, this))
++#endif
+ 			SOUND.PlayEffect(mEnergyLowSound, this, ENGINE_VOLUME, ST_FOLLOWDONTDIE, false, 0.0f, 0, -1.f, true);	
+ 	}
+ 	else
+@@ -3422,8 +3435,12 @@
+ //******************************************************************************************
+ 
+ void CBattleEngine::PlayHudSample(char* name1)	// FUNCTION: 0x0040d5f0
+ {
++#ifdef CE_VERSION
++	if (PortCeBattleEngineIsLocalHuman && !PortCeBattleEngineIsLocalHuman(this))
++		return;
++#endif
+ 	char name[256];
+ 	sprintf(name, "hud\\%s", name1) ;
+ 
+ 	CEffect	*e = SOUND.GetEffectByName(name);

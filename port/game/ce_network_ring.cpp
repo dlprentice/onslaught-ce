@@ -31,6 +31,7 @@
 #include "ce_network_ring.h"
 
 extern "C" void PortCeNetRingMousePoint(float x, float y, int *menuX, int *menuY);
+extern "C" int PortCeChatCapturingInput(void) __attribute__((weak));
 extern "C" int PortCeOnlineMatchActive(void) __attribute__((weak));
 extern "C" int PortCeOnlineMatchLocalSlot(void) __attribute__((weak));
 extern "C" int PortCeOnlineMatchSlotCount(void) __attribute__((weak));
@@ -367,6 +368,8 @@ extern "C" int PortCeNetRingEvent(const union SDL_Event *event)
 		const SDL_Scancode key = event->key.scancode;
 		if (key == SDL_SCANCODE_ESCAPE)
 		{
+			if (!open && PortCeChatCapturingInput && PortCeChatCapturingInput())
+				return 0;
 			if (!event->key.repeat)
 			{
 				Toggle();

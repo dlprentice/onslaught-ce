@@ -56,6 +56,7 @@ void	PortCeNetDrawSlot(float x, float y, bool present);
 extern "C" {
 void PortCeOnlineUiOpen(void) __attribute__((weak));
 int  PortCeOnlineUiActive(void) __attribute__((weak));
+int  PortCeOnlineUiOffered(void) __attribute__((weak));
 void PortCeOnlineUiUpdate(void) __attribute__((weak));
 void PortCeOnlineUiRender(void) __attribute__((weak));
 void PortCeOnlineUiButton(int button, float val) __attribute__((weak));
@@ -426,7 +427,7 @@ public:
 		if (mHidden)
 			return;
 		CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);
-		const DWORD col = !mEnabled ? 0x50505050 : (selected ? 0xffffcc00 : 0xff7fd0ff);
+		const DWORD col = !mEnabled ? 0x50505050 : (selected ? 0xffffcc00 : 0xff3f687f);
 		SIZE size;
 		font->GetTextExtent(mWide, &size);
 		font->DrawTextWithShadow(x - float(size.cx / 2), y, col, mWide, 0, 0, 1.f, 1.f);
@@ -1446,9 +1447,12 @@ public:
 		case NA_ONLINE_LOBBIES:
 			if (mPage != NP_MENU) break;
 #ifndef CE_NETWORK_OFF
-			if (PortCeOnlineUiOpen)
+			if (PortCeOnlineUiOpen && PortCeOnlineUiOffered && PortCeOnlineUiOffered())
 			{
 				CFrontEnd::PlaySound(FES_SELECT);
+				// Close owns Direct LAN cleanup. Suppress its automatic return so this opens Online once.
+				sDirectFromOnline = false;
+				Close();
 				PortCeOnlineUiOpen();
 				return;
 			}

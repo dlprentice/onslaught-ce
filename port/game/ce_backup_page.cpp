@@ -3,6 +3,7 @@
 #include "common.h"
 #include "ce_extras.h"
 #include "ce_career_view.h"
+#include "ce_name_text.h"
 #include "../platform/common/ce_career_backup.h"
 #include "../platform/common/ce_backup_name.h"
 #include "../platform/common/save_names.h"
@@ -47,23 +48,51 @@ int act(int i) {
     if(hiddenDirection || unavailable)return i==0?R_BACK:R_NONE;
     return i>=0&&i<4?i:R_NONE;
 }
-const char *leafOf(const char *path) {
-    const char *l=path;for(const char *c=path;*c;++c)if(*c=='/'||*c=='\\')l=c+1;return l;
+void widenUtf8(WCHAR *dst, int n, const char *s) { CeDecodeName(dst, n, s, true); }
+void leafOf(char *out, size_t cap, const char *path) {
+    if (!cap) return;
+    out[0] = 0;
+    if (!path || !*path) return;
+    size_t end = strlen(path);
+    while (end > 1 && (path[end - 1] == '/' || path[end - 1] == '\\')) {
+        if (end == 3 && path[1] == ':') break;
+        --end;
+    }
+    if ((end == 1 && (path[0] == '/' || path[0] == '\\')) ||
+        (end == 3 && path[1] == ':' && (path[2] == '/' || path[2] == '\\'))) {
+        snprintf(out, cap, "%.*s", int(end), path);
+        return;
+    }
+    size_t start = end;
+    while (start > 0 && path[start - 1] != '/' && path[start - 1] != '\\') --start;
+    if (start == end) {
+        snprintf(out, cap, "%c", path[0]);
+        return;
+    }
+    snprintf(out, cap, "%.*s", int(end - start), path + start);
 }
 // The folder row's text: the new set's date once a backup is made, else the folder's name.
 void folderText(char *out,size_t cap) {
+    char leaf[256];
     if(view.state==CE_BACKUP_OK && view.location[0]) {
-        char when[96];PortCeBackupWhen(when,sizeof(when),leafOf(view.location),false);
+        char when[96];
+        leafOf(leaf,sizeof(leaf),view.location);
+        PortCeBackupWhen(when,sizeof(when),leaf,false);
         snprintf(out,cap,"Set %s",when);return;
     }
-    snprintf(out,cap,"%s",view.folder[0]?leafOf(view.folder):"No folder chosen");
+    if(view.folder[0]) {
+        leafOf(leaf,sizeof(leaf),view.folder);
+        snprintf(out,cap,"%s",leaf[0]?leaf:view.folder);
+        return;
+    }
+    snprintf(out,cap,"No folder chosen");
 }
 int rows() { return hiddenDirection || unavailable ? 1 : 4; }
 void row(int i,SCeListRow *value) {
     SCeListRow &out=*value;
     const int a=act(i);
     if(a==R_FOLDER) {char text[160];folderText(text,sizeof(text));
-        PortCeExtrasWidenName(out.mLeft,80,text);PortCeExtrasInFont(out.mLeft);out.mTone=CE_TONE_DIM;return;}
+        widenUtf8(out.mLeft,80,text);PortCeExtrasInFont(out.mLeft);out.mTone=CE_TONE_DIM;return;}
     const char *label=a==R_BACK?"Back":a==R_CHOOSE?"Choose Folder":a==R_NOW?"Back Up Now":"";
     PortCeExtrasWiden(out.mLeft,80,label);
     if((a==R_NOW||a==R_CHOOSE) && (view.state==CE_BACKUP_WORKING||view.state==CE_BACKUP_OTHER||view.state==CE_BACKUP_PICKING))out.mDim=true;

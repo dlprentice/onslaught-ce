@@ -6,6 +6,8 @@
 
 #include "ce_sandbox_telemetry.h"
 
+#include <cstring>
+
 #ifdef CE_VERSION
 
 #include "common.h"

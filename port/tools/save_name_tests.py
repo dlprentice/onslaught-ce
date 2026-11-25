@@ -255,7 +255,8 @@ int CompareStringOrdinal(const WCHAR *, int, const WCHAR *, int, BOOL);
                      "fileid-same","fileid-upper64","fileid-volume-upper","fileid-unsupported","fileid-bytes",
                      "fileid-failure-zero","fileid-query-error-preserved","fileid-both-queries-zero"):
             scan_run(namespace_binary,case)
-        for case in ('query-known','query120','case-flags2','query-zero','directory-open-zero','directory-close-zero','directory-close-denied','query-denied-close-zero'):
+        for case in ('query-known','query120','case-flags2','query-zero','directory-open-zero','directory-close-zero','directory-close-denied','query-denied-close-zero',
+                     'findstart-shadow-fail','findstart-read-fail','findstart-both-fail','findstart-oom'):
             scan_run(namespace_binary,case)
         coupled_cases=('unknown-valid','unknown-uppercase','unknown-same-root','unknown-cross-root','unknown-short-alias',
                        'unknown-partial-enum','unknown-enum-open-zero','unknown-enum-next-zero','unknown-enum-close-zero','unknown-enum-close-denied',

@@ -843,6 +843,11 @@ bool CeOnlineLobbyClient::BeginUpdateRoom(const std::string& room_id, const CeOn
         jb.AddString("route", req.route);
         any = true;
     }
+    if (req.has_state) {
+        if (req.state != "in_match") return false;
+        jb.AddString("state", req.state);
+        any = true;
+    }
     if (req.has_name) {
         if (!IsPrintableAscii(req.name, 1, 48)) return false;
         jb.AddString("name", req.name);
@@ -913,10 +918,17 @@ bool CeOnlineLobbyClient::BeginStartMatch(const std::string& room_id, uint64_t n
 }
 
 bool CeOnlineLobbyClient::BeginFinishMatch(const std::string& room_id, uint64_t now_ms,
-                                           uint64_t timeout_ms) {
+                                           uint64_t timeout_ms, const std::string& match_id) {
     if (!IsValidSafeId(room_id)) return false;
+    if (!match_id.empty() && !IsValidSafeId(match_id)) return false;
+    std::string body = "{}";
+    if (!match_id.empty()) {
+        CeOnlineJson::ObjectBuilder jb;
+        jb.AddString("match_id", match_id);
+        body = jb.Finish();
+    }
     return StartHttp(CeOnlineOpKind::FinishMatch, CeOnlineHttpMethod::Post,
-                     "/ce-lobby/v1/rooms/" + room_id + "/finish", true, "{}", now_ms, timeout_ms);
+                     "/ce-lobby/v1/rooms/" + room_id + "/finish", true, body, now_ms, timeout_ms);
 }
 
 bool CeOnlineLobbyClient::BeginFetchTurn(const std::string& room_id, const std::string& match_id,
@@ -947,6 +959,7 @@ bool CeOnlineLobbyClient::BeginSendSignal(const std::string& room_id, const std:
     jb.AddString("kind", kind);
     jb.AddString("sdp", sdp);
     std::string body = jb.Finish();
+    last_sent_signal_seq_ = 0;
     const bool ok = StartHttp(CeOnlineOpKind::SendSignal, CeOnlineHttpMethod::Post,
                               "/ce-lobby/v1/rooms/" + room_id + "/signal", true, body, now_ms, timeout_ms);
     WipeString(body);
@@ -1186,6 +1199,14 @@ bool CeOnlineLobbyClient::HandleReply(const CeSignalHttpsReply& reply, uint64_t 
     }
 
     case CeOnlineOpKind::SendSignal: {
+        bool ok_val = true;
+        uint64_t seq = 0;
+        uint64_t srv_ms = 0;
+        if (!OptBool(root, "ok", ok_val, true) || !ok_val ||
+            !OptU64(root, "seq", seq, 0) ||
+            !OptU64(root, "server_time_ms", srv_ms, 0))
+            return FailOp(reply.code, "invalid_response", "invalid signal send response");
+        last_sent_signal_seq_ = seq;
         return true;
     }
 

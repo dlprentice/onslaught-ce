@@ -4,12 +4,22 @@
 #include <chrono>
 #include <cstdarg>
 #include <condition_variable>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <thread>
 #include <vector>
+#ifdef DSOUND_HARDENING_TESTS
+static bool failObjectMalloc, failBackingCalloc, failScratchMalloc;
+static void *TestObjectMalloc(size_t n) { return failObjectMalloc ? nullptr : std::malloc(n); }
+static void *TestBackingCalloc(size_t c, size_t s) { return failBackingCalloc ? nullptr : std::calloc(c, s); }
+static void *TestScratchMalloc(size_t n) { return failScratchMalloc ? nullptr : std::malloc(n); }
+#define DSOUND_OBJECT_MALLOC TestObjectMalloc
+#define DSOUND_BACKING_CALLOC TestBackingCalloc
+#define DSOUND_SCRATCH_MALLOC TestScratchMalloc
+#endif
 #include MIXER_SOURCE
 
 struct SDL_Mutex { std::recursive_mutex value; };
@@ -88,8 +98,10 @@ extern "C" void SDLCALL SDL_LockMutex(SDL_Mutex *mutex)
 }
 extern "C" void SDLCALL SDL_UnlockMutex(SDL_Mutex *mutex) { --lockDepth; mutex->value.unlock(); }
 extern "C" Uint64 SDLCALL SDL_GetTicksNS() { return realNow.load(); }
+static size_t maxSdlMalloc;
 extern "C" void *SDLCALL SDL_malloc(size_t bytes)
 {
+	if (bytes > maxSdlMalloc) maxSdlMalloc = bytes;
 	if (role == 1 && holdAllocate)
 	{
 		std::unique_lock<std::mutex> lock(gateMutex);
@@ -320,6 +332,156 @@ int main(int argc, char **argv)
 		}
 		Cleanup(b);
 	}
+#ifdef DSOUND_HARDENING_TESTS
+	else if (!std::strcmp(mode, "buffer-validation"))
+	{
+		IDirectSound8 *ds = nullptr;
+		Check(DirectSoundCreate8(nullptr, &ds, nullptr) == DS_OK && ds, "DirectSoundCreate8 succeeds");
+		WAVEFORMATEX wf{};
+		wf.wFormatTag = WAVE_FORMAT_PCM; wf.nChannels = 2; wf.nSamplesPerSec = 44100;
+		wf.wBitsPerSample = 16; wf.nBlockAlign = 4; wf.nAvgBytesPerSec = 176400;
+		DSBUFFERDESC bd{}; bd.dwSize = sizeof bd; bd.dwFlags = DSBCAPS_CTRLVOLUME;
+		bd.dwBufferBytes = 4096; bd.lpwfxFormat = &wf;
+
+		int usersBefore = gMixer.users;
+		IDirectSoundBuffer *out = (IDirectSoundBuffer *)0x1;
+		failBackingCalloc = true;
+		Check(ds->CreateSoundBuffer(&bd, &out, nullptr) == DSERR_OUTOFMEMORY && out == nullptr, "backing OOM returns DSERR_OUTOFMEMORY and nulls output");
+		Check(gMixer.users == usersBefore, "backing OOM leaves mixer user count untouched");
+		failBackingCalloc = false;
+
+		out = (IDirectSoundBuffer *)0x1;
+		failObjectMalloc = true;
+		Check(ds->CreateSoundBuffer(&bd, &out, nullptr) == DSERR_OUTOFMEMORY && out == nullptr, "object OOM returns DSERR_OUTOFMEMORY and nulls output");
+		failObjectMalloc = false;
+
+		// Invalid PCM block alignment, channel count, bit depth, and format tag must be rejected before Sample() can OOB.
+		wf.nBlockAlign = 2; // mismatched for 2ch * 16-bit (expects 4)
+		Check(FAILED(ds->CreateSoundBuffer(&bd, &out, nullptr)) && out == nullptr, "mismatched nBlockAlign rejected");
+		wf.nBlockAlign = 4; wf.nChannels = 3;
+		Check(FAILED(ds->CreateSoundBuffer(&bd, &out, nullptr)) && out == nullptr, "3-channel PCM rejected");
+		wf.nChannels = 2; wf.wBitsPerSample = 24; wf.nBlockAlign = 6;
+		Check(FAILED(ds->CreateSoundBuffer(&bd, &out, nullptr)) && out == nullptr, "24-bit PCM rejected");
+		wf.wBitsPerSample = 16; wf.nBlockAlign = 4; wf.wFormatTag = 3; // IEEE float
+		Check(FAILED(ds->CreateSoundBuffer(&bd, &out, nullptr)) && out == nullptr, "non-PCM tag rejected");
+
+		// Primary buffer SetFormat also validates block alignment.
+		DSBUFFERDESC pbd{}; pbd.dwSize = sizeof pbd; pbd.dwFlags = DSBCAPS_PRIMARYBUFFER;
+		IDirectSoundBuffer *prim = nullptr;
+		Check(ds->CreateSoundBuffer(&pbd, &prim, nullptr) == DS_OK && prim, "primary buffer created");
+		wf.wFormatTag = WAVE_FORMAT_PCM; wf.nChannels = 2; wf.wBitsPerSample = 16; wf.nBlockAlign = 1;
+		Check(FAILED(prim->SetFormat(&wf)), "primary SetFormat rejects mismatched nBlockAlign");
+		prim->Release();
+		ds->Release();
+		gMixer.Stop();
+	}
+	else if (!std::strcmp(mode, "spatial-and-phase"))
+	{
+		IDirectSound8 *ds = nullptr;
+		Check(DirectSoundCreate8(nullptr, &ds, nullptr) == DS_OK && ds, "DirectSoundCreate8");
+		DSBUFFERDESC pbd{}; pbd.dwSize = sizeof pbd; pbd.dwFlags = DSBCAPS_PRIMARYBUFFER | DSBCAPS_CTRL3D;
+		IDirectSoundBuffer *prim = nullptr;
+		Check(ds->CreateSoundBuffer(&pbd, &prim, nullptr) == DS_OK && prim, "primary 3D buffer");
+		IDirectSound3DListener8 *lis = nullptr;
+		Check(prim->QueryInterface(IID_IDirectSound3DListener, (void **)&lis) == DS_OK && lis, "3D listener");
+
+		WAVEFORMATEX wf{};
+		wf.wFormatTag = WAVE_FORMAT_PCM; wf.nChannels = 1; wf.nSamplesPerSec = 44100;
+		wf.wBitsPerSample = 16; wf.nBlockAlign = 2; wf.nAvgBytesPerSec = 88200;
+		DSBUFFERDESC bd{}; bd.dwSize = sizeof bd; bd.dwFlags = DSBCAPS_CTRL3D | DSBCAPS_CTRLFREQUENCY;
+		bd.dwBufferBytes = 44100 * 2; bd.lpwfxFormat = &wf;
+		IDirectSoundBuffer *sb = nullptr;
+		Check(ds->CreateSoundBuffer(&bd, &sb, nullptr) == DS_OK && sb, "3D secondary buffer");
+		IDirectSound3DBuffer8 *b3d = nullptr;
+		Check(sb->QueryInterface(IID_IDirectSound3DBuffer, (void **)&b3d) == DS_OK && b3d, "3D buffer interface");
+
+		// Nonfinite rejections across immediate and deferred setters.
+		for (DWORD apply : {(DWORD)DS3D_IMMEDIATE, (DWORD)DS3D_DEFERRED})
+		{
+			Check(b3d->SetPosition(NAN, 0.f, 0.f, apply) == DSERR_INVALIDPARAM, "SetPosition rejects NaN");
+			Check(b3d->SetVelocity(0.f, INFINITY, 0.f, apply) == DSERR_INVALIDPARAM, "SetVelocity rejects Inf");
+			Check(b3d->SetMinDistance(NAN, apply) == DSERR_INVALIDPARAM, "SetMinDistance rejects NaN");
+			Check(b3d->SetMaxDistance(-1.f, apply) == DSERR_INVALIDPARAM, "SetMaxDistance rejects <= 0");
+			Check(lis->SetPosition(NAN, 0.f, 0.f, apply) == DSERR_INVALIDPARAM, "Listener SetPosition rejects NaN");
+			Check(lis->SetVelocity(0.f, -INFINITY, 0.f, apply) == DSERR_INVALIDPARAM, "Listener SetVelocity rejects -Inf");
+			Check(lis->SetOrientation(NAN, 0.f, 1.f, 0.f, 1.f, 0.f, apply) == DSERR_INVALIDPARAM, "Listener SetOrientation rejects NaN");
+			Check(lis->SetDistanceFactor(0.f, apply) == DSERR_INVALIDPARAM, "Listener SetDistanceFactor rejects <= 0");
+			Check(lis->SetRolloffFactor(NAN, apply) == DSERR_INVALIDPARAM, "Listener SetRolloffFactor rejects NaN");
+			Check(lis->SetDopplerFactor(-1.f, apply) == DSERR_INVALIDPARAM, "Listener SetDopplerFactor rejects < 0");
+		}
+
+		// Supersonic listener + source velocities and inverted maxD < minD must keep finite positive step and bounded gains.
+		Check(b3d->SetPosition(10.f, 0.f, 0.f, DS3D_IMMEDIATE) == DS_OK, "source at +10x");
+		Check(b3d->SetMaxDistance(2.f, DS3D_IMMEDIATE) == DS_OK, "maxD = 2");
+		Check(b3d->SetMinDistance(10.f, DS3D_IMMEDIATE) == DS_OK, "minD = 10 > maxD");
+		Check(b3d->SetVelocity(-1.0e6f, 0.f, 0.f, DS3D_IMMEDIATE) == DS_OK, "extreme source velocity");
+		Check(lis->SetVelocity(1.0e6f, 0.f, 0.f, DS3D_IMMEDIATE) == DS_OK, "extreme listener velocity");
+
+		Buffer *raw = static_cast<Buffer *>(sb);
+		for (DWORD i = 0; i < raw->Bytes() / 2; ++i) ((Sint16 *)raw->data->bytesPtr)[i] = 16000;
+		float g[2] = {0.f, 0.f}; double step = 0.0;
+		raw->Gains(g, &step);
+		Check(std::isfinite(g[0]) && std::isfinite(g[1]) && g[0] >= 0.f && g[0] <= 1.001f && g[1] >= 0.f && g[1] <= 1.001f, "inverted maxD<minD keeps gains <= 1");
+		Check(std::isfinite(step) && step > 0.0, "supersonic listener/source Doppler stays positive and finite");
+
+		// Negative fractional cursor must clamp gKernel phase cleanly without OOB or (DWORD) underflow.
+		Check(sb->Play(0, 0, DSBPLAY_LOOPING) == DS_OK, "play 3D voice");
+		raw->cursor = -0.25;
+		Feed(nullptr, gMixer.stream, 256, 256);
+		Check(std::isfinite(raw->cursor) && raw->cursor >= 0.0, "negative fractional cursor mixes cleanly");
+
+		sb->Stop(); b3d->Release(); sb->Release(); lis->Release(); prim->Release(); ds->Release();
+		gMixer.Stop();
+	}
+	else if (!std::strcmp(mode, "scratch-oom"))
+	{
+		Buffer *b = Voice();
+		Feed(nullptr, gMixer.stream, 400, 400); // 100 frames -> allocates scratchFrames = 100
+		Check(gMixer.scratch != nullptr && gMixer.scratchFrames == 100, "initial 100-frame scratch allocated");
+		float *savedScratch = gMixer.scratch;
+
+		// Request 512 frames while scratch growth fails: old scratch & scratchFrames stay intact, output is silence, mixed advances!
+		failScratchMalloc = true;
+		Uint64 mixedBefore = gMixer.mixed;
+		Feed(nullptr, gMixer.stream, 512 * 4, 512 * 4);
+		failScratchMalloc = false;
+		Check(gMixer.scratch == savedScratch && gMixer.scratchFrames == 100, "failed scratch growth preserves old scratch buffer and frame count");
+		Check(gMixer.mixed == mixedBefore + 512, "Mix OOM still advances mixed count so CatchUpLocked never spins");
+		bool allZero = !submitted.empty();
+		for (Sint16 s : submitted) if (s != 0) allZero = false;
+		Check(allZero, "Mix OOM outputs clean silence");
+
+		// Subsequent 100-frame mix reuses preserved scratch and produces audio again.
+		Feed(nullptr, gMixer.stream, 400, 400);
+		Check(submitted[0] >= 9999, "subsequent <=100-frame mix succeeds with preserved scratch");
+		Cleanup(b);
+	}
+	else if (!std::strcmp(mode, "timer-bounds"))
+	{
+		gMixer.Stop();
+		setenv("BEA_AUDIO_CLOCK", "timer", 1);
+		gMixer.Start();
+		Buffer *b = Voice();
+		Timer t = LatestTimer();
+		realNow += 10000000ull;
+		Tick(t);
+		Uint64 afterFirst = gMixer.mixed;
+		Check(afterFirst == 441, "initial 10ms timer tick mixed 441 frames");
+
+		// Backward clock jump must not wrap unsigned delta.
+		realNow -= 5000000ull;
+		Check(Tick(t) == 10 && gMixer.mixed == afterFirst, "backward clock jump mixes 0 frames and returns interval");
+
+		// 4-hour suspend jump must cap backlog and chunk SDL_malloc <= kRate * 4 bytes.
+		maxSdlMalloc = 0;
+		realNow += 4ull * 3600ull * 1000000000ull;
+		Check(Tick(t) == 10, "4-hour jump returns interval without hanging");
+		Uint64 deltaMixed = gMixer.mixed - afterFirst;
+		Check(deltaMixed > 0 && deltaMixed <= 88200ull, "suspend backlog capped to <= 2s");
+		Check(maxSdlMalloc > 0 && maxSdlMalloc <= 44100u * 4u, "TimerTick chunks SDL_malloc to <= kRate frames");
+		Cleanup(b);
+	}
+#endif
 	else return 1;
 	std::printf("{\"case\":\"%s\",\"fixed\":%s,\"checks\":%u,\"mixed\":%llu,\"bounded_underflow\":%s}\n",
 		mode, fixed ? "true" : "false", checks, (unsigned long long)gMixer.mixed, hitLimit ? "true" : "false");

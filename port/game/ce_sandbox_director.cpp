@@ -47,12 +47,23 @@ extern "C" bool PortCeMuseumActive(void) __attribute__((weak));
 extern "C" bool PortCeMuseumVisitActive(void) __attribute__((weak));
 extern "C" bool PortCeEditorActive(void) __attribute__((weak));
 extern "C" bool PortCeCarrierClashActive(void) __attribute__((weak));
+extern "C" bool PortCeFlagshipDuelActive(void) __attribute__((weak));
 extern "C" int PortCePlayUnitShowsBattleline(int viewpoint) __attribute__((weak));
 extern "C" int PortCePlayUnitOwnsPilot(int player) __attribute__((weak));
+extern "C" int PortCePlayUnitIsDriven(const void *unit) __attribute__((weak));
+// The Commander may answer this itself (a live order on the squad); absent, the
+// director goes by what PortCeSandboxSquadPlayerOrder was last told.
+extern "C" int PortCeCmdSquadHasPlayerOrder(const void *squad) __attribute__((weak));
 
 namespace {
 
 CeSandboxDirector gDirector;
+CeSandboxPlatoonRegistry gPlatoons;
+// Render-side clocks of the strip (never read by the simulation): one 0.4 s
+// pulse per capture pip, restarted when the director reports the node flipped.
+uint32_t gPipFlipSeen[CeSandboxWorld::kCaptureNodeCount];
+float gPipPulseSec[CeSandboxWorld::kCaptureNodeCount];
+bool gPipFlipPrimed = false;
 bool gArmed = false;
 bool gLoadRefused = false;
 bool gPendingNotice = false;
@@ -100,6 +111,7 @@ bool CanBeginSession() {
 	if (PortCeMuseumVisitActive && PortCeMuseumVisitActive()) return false;
 	if (PortCeEditorActive && PortCeEditorActive()) return false;
 	if (PortCeCarrierClashActive && PortCeCarrierClashActive()) return false;
+	if (PortCeFlagshipDuelActive && PortCeFlagshipDuelActive()) return false;
 	return true;
 }
 
@@ -211,6 +223,21 @@ void UpdateP0SurvivalAndStasis() {
 	}
 }
 
+void RegisterPlatoon(CSquad *squad, int allegiance) {
+	if (!squad) return;
+	const CeEntityHandle h = CeEntityHandleFor(squad);
+	if (h == kCeEntityHandleInvalid) return;
+	gPlatoons.Register(h, allegiance);
+}
+
+void ResetStripClocks() {
+	for (unsigned i = 0; i < CeSandboxWorld::kCaptureNodeCount; ++i) {
+		gPipFlipSeen[i] = 0u;
+		gPipPulseSec[i] = 0.0f;
+	}
+	gPipFlipPrimed = false;
+}
+
 bool SpawnSandboxUnit(const CeSandboxSpawnOrder &order) {
 	if (!order.unitName || CeSandboxWorld::IsForbiddenUnit(order.unitName))
 		return false;
@@ -244,9 +271,18 @@ bool SpawnSandboxUnit(const CeSandboxSpawnOrder &order) {
 			CSquadInitThing sinit;
 			sinit.Copy(&init);
 			std::snprintf(sinit.mUnitName, sizeof(sinit.mUnitName), "%s", order.unitName);
-			sinit.mAmount = 1;
+			// Ground line units arrive as one 2-3 unit platoon sharing this squad
+			// (retail's own CSquad::Init spawns and forms up the members). The squad
+			// keeps mUnknown84 set: retail reads it to take the squad's allegiance and
+			// AI state from its lead unit, and it keeps the platoon from merging away.
+			const int members = (order.role == CE_SB_ROLE_LINE && order.platoonSize > 1)
+				? (order.platoonSize > 3 ? 3 : order.platoonSize) : 1;
+			sinit.mAmount = members;
 			squad->mUnknown84 = TRUE;
 			squad->Init(&sinit);
+			if (order.role == CE_SB_ROLE_LINE) {
+				RegisterPlatoon(squad, order.allegiance);
+			}
 			return true;
 		}
 	}
@@ -265,6 +301,118 @@ bool SpawnSandboxUnit(const CeSandboxSpawnOrder &order) {
 		}
 	}
 	return true;
+}
+
+// The opening ground forces are authored in the world as lone units with no
+// squad. They are formed into platoons here the way retail's own spawners build
+// a squad (SpawnerThng.cpp: a squad made empty while assembling, then each unit
+// added through the squad's member slot): consecutive units of one definition
+// and side pair up (infantry in threes), and a unit with no partner leads a
+// squad of its own, so every Forseti ground unit answers to the Commander.
+void FormOpeningPlatoons() {
+	CUnit *group[3] = {NULL, NULL, NULL};
+	int groupSize = 0;
+	int groupWant = 0;
+	const char *groupDef = NULL;
+	int groupAllegiance = -1;
+	int formed = 0, members = 0;
+
+	auto flush = [&]() {
+		if (groupSize <= 0 || !group[0]) { groupSize = 0; return; }
+		CUnitData *stats = group[0]->GetUnitData();
+		CSquad *squad = stats ? UPhysicsManager::SpawnSquad(stats->mBehaviour) : NULL;
+		if (squad) {
+			float cx = 0.0f, cy = 0.0f, cz = 0.0f;
+			for (int i = 0; i < groupSize; ++i) {
+				const FVector mp = group[i]->GetPos();
+				cx += mp.X; cy += mp.Y; cz += mp.Z;
+			}
+			const float inv = 1.0f / float(groupSize);
+			CSquadInitThing sinit;
+			sinit.mPos = FVector(cx * inv, cy * inv, cz * inv);
+			sinit.mOrientation = group[0]->GetOrientation();
+			sinit.mAllegiance = static_cast<EAllegiance>(groupAllegiance);
+			sinit.mActive = TRUE;
+			std::snprintf(sinit.mUnitName, sizeof(sinit.mUnitName), "%s", stats->mName);
+			squad->mUnknown84 = TRUE;
+			squad->mUnknown80 = TRUE;    // assembling: no merge or split while members join
+			squad->Init(&sinit);
+			for (int i = 0; i < groupSize; ++i) {
+				if (!group[i]->GetSquad()) squad->Unknown67(group[i], 0, 0);
+			}
+			squad->mUnknown80 = FALSE;
+			RegisterPlatoon(squad, groupAllegiance);
+			++formed;
+			members += groupSize;
+		}
+		groupSize = 0;
+	};
+
+	// Collect first: forming a squad must not disturb the list being walked.
+	CUnit *line[CeSandboxWorld::kMaxActors];
+	int lineCount = 0;
+	ListIterator<CUnit> it(&WORLD.GetUnitNB());
+	for (CUnit *u = it.First(); u; u = it.Next()) {
+		if (!u || u->IsA(THING_TYPE_BATTLE_ENGINE) || u->IsA(THING_TYPE_COMPONENT) ||
+		    u->IsDying() || u->IsShuttingDown()) continue;
+		CUnitData *data = u->GetUnitData();
+		if (!data || !data->mName) continue;
+		// CSquad::Init resolves mUnknownA0 via UPhysicsManager::GetUnitData(mUnitName),
+		// which searches mUnits only (never mComponents). Skip anything absent from mUnits.
+		if (!UPhysicsManager::GetUnitData(data->mName)) continue;
+		if (CeSandboxDirector::RoleForUnit(data->mName) != CE_SB_ROLE_LINE) continue;
+		// Retail ground vehicles (e.g. Broadsword, Sabre) receive an auto-created
+		// 1-unit squad during CUnit::Init with mUnknown84 set. Register those
+		// opening squads in gPlatoons so Commander treats them as commandable.
+		if (CSquad *existing = u->GetSquad()) {
+			RegisterPlatoon(existing, static_cast<int>(u->GetAllegiance()));
+			continue;
+		}
+		if (lineCount < CeSandboxWorld::kMaxActors) line[lineCount++] = u;
+	}
+	for (int i = 0; i < lineCount; ++i) {
+		CUnit *u = line[i];
+		const char *def = u->GetUnitData()->mName;
+		const int allegiance = static_cast<int>(u->GetAllegiance());
+		const bool sameGroup = groupSize > 0 && groupSize < groupWant && allegiance == groupAllegiance &&
+		                       CeSandboxWorld::StrEqualsIgnoreCase(def, groupDef);
+		if (!sameGroup) {
+			flush();
+			groupDef = def;
+			groupAllegiance = allegiance;
+			groupWant = CeSandboxPlatoonSizeFor(def, CE_SB_ROLE_LINE);
+		}
+		group[groupSize++] = u;
+		if (groupSize >= groupWant) flush();
+	}
+	flush();
+	PortSessionLog(PORT_SESSION_GAME, false,
+	               "living sandbox opening platoons: %d squads, %d units", formed, members);
+}
+
+// True while the player owns this unit's platoon: an order on its squad (the
+// Commander's own answer when it gives one, else what it last reported) or the
+// player piloting one of its members.
+bool PlatoonHeldByPlayer(CUnit *unit, CSquad *squad, const CSquad *pilotedSquad) {
+	if (PortCePlayUnitIsDriven && PortCePlayUnitIsDriven(unit) != 0) return true;
+	if (!squad) return false;
+	if (squad == pilotedSquad) return true;
+	if (PortCeCmdSquadHasPlayerOrder && PortCeCmdSquadHasPlayerOrder(squad) != 0) return true;
+	const CeEntityHandle h = CeEntityHandleLookup(squad);
+	return h != kCeEntityHandleInvalid && gPlatoons.HasPlayerOrder(h, gDirector.ElapsedSec());
+}
+
+// Drops platoons whose squad has gone (all members lost, or the squad shut down).
+void PrunePlatoons() {
+	for (unsigned i = 0; i < gPlatoons.Count(); ) {
+		const CeEntityHandle h = gPlatoons.At(i);
+		if (CeEntityHandleResolveSquad(h) == NULL) {
+			gPlatoons.Unregister(h);
+			CeEntityHandleUnregisterHandle(h);
+			continue;
+		}
+		++i;
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -311,6 +459,30 @@ void EndHudUntextured() {
 	LT.SRS(D3DRS_ZENABLE, TRUE);
 	LT.SRS(D3DRS_ZWRITEENABLE, TRUE);
 	LT.SRS(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+}
+
+// Leaves the device the way the HUD pass handed it over (HUD.RenderObjectiveBar's
+// state): back-face culling, alpha test and straight alpha blending on, fog and
+// lighting off, depth test on, stage 0 at the engine's texture * diffuse modulate.
+void RestoreHudDeviceState() {
+	LT.SRS(D3DRS_CULLMODE, D3DCULL_CCW);
+	LT.SRS(D3DRS_ALPHATESTENABLE, TRUE);
+	LT.SRS(D3DRS_ALPHABLENDENABLE, TRUE);
+	LT.SRS(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+	LT.SRS(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+	LT.SRS(D3DRS_FOGENABLE, FALSE);
+	LT.SRS(D3DRS_LIGHTING, FALSE);
+	LT.SRS(D3DRS_ZENABLE, TRUE);
+	LT.SRS(D3DRS_ZWRITEENABLE, TRUE);
+	LT.SRS(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+	LT.STS(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+	LT.STS(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+	LT.SetModulate(0);
+	LT.STS(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+	LT.STS(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
+	LT.STS(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
+	LT.STS(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+	LT.STS(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
 }
 
 struct CeSbHudBatch {
@@ -542,6 +714,8 @@ extern "C" bool PortCeLivingSandboxBegin(void) {
 	CaptureCareerSnapshot();
 	gArmed = true;
 	gP0StasisApplied = false;
+	gPlatoons.Clear();
+	ResetStripClocks();
 	CeSandboxProfileSetNonCampaignSession(true);
 	gDirector.Arm(BuildRuntimeConfig());
 	return true;
@@ -561,6 +735,8 @@ extern "C" void PortCeLivingSandboxCancel(void) {
 #endif
 	ClearCareerSnapshot();
 	gDirector.Reset();
+	gPlatoons.Clear();
+	ResetStripClocks();
 	PortCeLivingSandboxDropWorld();
 }
 
@@ -635,6 +811,8 @@ extern "C" void PortCeLivingSandboxLevelBegin(int level) {
 	gP0StasisApplied = false;
 	const CeSandboxDirectorConfig cfg = BuildRuntimeConfig();
 	gDirector.BeginLevel(cfg);
+	gPlatoons.Clear();
+	ResetStripClocks();
 
 #ifdef CE_SANDBOX_HAS_CITADEL
 	CeSanctuaryCitadel::RuntimeInit(CeSandboxWorld::kCitadelFloorZ);
@@ -656,6 +834,7 @@ extern "C" void PortCeLivingSandboxLevelBegin(int level) {
 		const FVector pos = u->GetPos();
 		gDirector.OnUnitSpawn(h, def, static_cast<int>(u->GetAllegiance()), pos.X, pos.Y, u->GetLife());
 	}
+	FormOpeningPlatoons();
 
 	PortSessionLog(PORT_SESSION_GAME, false,
 	               "living sandbox started: target_cap=%d tracked=%u venturer=%d",
@@ -670,6 +849,8 @@ extern "C" void PortCeLivingSandboxLevelEnd(int level, int quit) {
 	CeSanctuaryCitadel::RuntimeShutdown();
 #endif
 	gP0StasisApplied = false;
+	gPlatoons.Clear();
+	ResetStripClocks();
 	const bool keepForRetry = (quit == QT_RESTART_LEVEL) && !gLoadRefused;
 	gDirector.EndLevel(keepForRetry);
 	if (keepForRetry) {
@@ -702,11 +883,48 @@ extern "C" void PortCeLivingSandboxUnitDestroyed(CUnit *unit) {
 	}
 }
 
+// The Commander's question: may the player order this squad? True only for a
+// live ground platoon the director formed for the player's own (Forseti) side.
+// The pointer is compared, never read, until the handle table has vouched for it.
+extern "C" bool PortCeSandboxSquadCommandable(const void *squad) {
+	if (!squad || !PortCeLivingSandboxActive() || !gDirector.IsRunning()) return false;
+	const CeEntityHandle h = CeEntityHandleLookup(static_cast<const CThing *>(squad));
+	if (h == kCeEntityHandleInvalid || !gPlatoons.IsCommandable(h)) return false;
+	return static_cast<const void *>(CeEntityHandleResolveSquad(h)) == squad;
+}
+
+// The Commander's report: the player gave this platoon an order (active != 0)
+// or released it. While an order stands the director neither steers nor reaps
+// the platoon. Returns false for a squad that is not a commandable platoon.
+extern "C" bool PortCeSandboxSquadPlayerOrder(const void *squad, int active) {
+	if (!PortCeSandboxSquadCommandable(squad)) return false;
+	const CeEntityHandle h = CeEntityHandleLookup(static_cast<const CThing *>(squad));
+	return gPlatoons.SetPlayerOrder(h, active != 0, gDirector.ElapsedSec());
+}
+
 extern "C" void PortCeLivingSandboxTickPre(void) {
 	if (!PortCeLivingSandboxActive() || !gDirector.IsRunning()) return;
 	if (GAME.IsPaused() || GAME.GetGameState() == GAME_STATE_PRE_RUNNING) return;
 
 	UpdateP0SurvivalAndStasis();
+
+#ifdef CE_SANDBOX_HAS_CITADEL
+	// Citadel walkability is simulation: pushing units out of solid masonry here,
+	// in the sim phase, keeps it at the game's tick rate and out of the renderer.
+	CeSanctuaryCitadel::RuntimeTickSim();
+#endif
+
+	// The squad the player is piloting in (Play Any Unit), if any.
+	const CSquad *pilotedSquad = NULL;
+	if (PortCePlayUnitIsDriven) {
+		ListIterator<CUnit> pit(&WORLD.GetUnitNB());
+		for (CUnit *u = pit.First(); u; u = pit.Next()) {
+			if (u && PortCePlayUnitIsDriven(u) != 0) {
+				pilotedSquad = u->GetSquad();
+				break;
+			}
+		}
+	}
 
 	// Collect lightweight node presence and tracked unit mobility samples.
 	CeSandboxNodePresence presence = {};
@@ -738,9 +956,14 @@ extern "C" void PortCeLivingSandboxTickPre(void) {
 		if (!isP0 && sampleCount < CeSandboxDirector::kMaxTrackedUnits) {
 			const CeEntityHandle h = CeEntityHandleLookup(u);
 			if (h != kCeEntityHandleInvalid) {
+				CSquad *squad = u->GetSquad();
+				CeEntityHandle squadHandle = squad ? CeEntityHandleLookup(squad) : kCeEntityHandleInvalid;
+				if (squadHandle != kCeEntityHandleInvalid && !gPlatoons.Contains(squadHandle))
+					squadHandle = kCeEntityHandleInvalid;
 				samples[sampleCount++] = {
 					h, pos.X, pos.Y, pos.Z, u->GetLife(),
-					u->GetCurrentTarget() != NULL, true
+					u->GetCurrentTarget() != NULL, true,
+					PlatoonHeldByPlayer(u, squad, pilotedSquad), squadHandle
 				};
 			}
 		}
@@ -768,14 +991,19 @@ extern "C" void PortCeLivingSandboxTickPre(void) {
 	for (int i = 0; i < stepOut.reapCount; ++i) {
 		CUnit *u = CeEntityHandleResolveUnit(stepOut.reaps[i].handle);
 		if (u && !u->IsDying() && !u->IsShuttingDown() && !u->IsA(THING_TYPE_BATTLE_ENGINE)) {
+			// The handle goes before the thing does: a removed unit's slot is never
+			// left naming freed memory.
+			CeEntityHandleUnregister(u);
 			u->Remove();
 		}
 	}
+	PrunePlatoons();
 
 	// Issue frontline movement / Sanctuary keep-out steer orders.
 	for (int i = 0; i < stepOut.moveCount; ++i) {
 		CUnit *u = CeEntityHandleResolveUnit(stepOut.moves[i].handle);
-		if (u && !u->IsDying() && !u->IsShuttingDown()) {
+		if (u && !u->IsDying() && !u->IsShuttingDown() &&
+		    !PlatoonHeldByPlayer(u, u->GetSquad(), pilotedSquad)) {
 			u->GoToPoint(FVector(stepOut.moves[i].x, stepOut.moves[i].y, stepOut.moves[i].z), FALSE);
 		}
 	}
@@ -805,6 +1033,8 @@ extern "C" void PortCeLivingSandboxDrawWorld(CPlayer *player, int viewpoint) {
 	ReadViewEyeAndAim(eyeX, eyeY, eyeZ, aimX, aimY, aimZ);
 	float dt = GAME.GetRenderFrameLength() * CLOCK_TICK;
 	if (!(dt > 0.0f && dt <= 0.25f)) dt = 1.0f / 60.0f;
+	// Presentation only: the eye, the ripples and the pedestal's view. Unit
+	// collision is the sim tick's (PortCeLivingSandboxTickPre).
 	CeSanctuaryCitadel::RuntimeUpdate(dt, GAME.IsPaused() != FALSE,
 	                                  eyeX, eyeY, eyeZ, aimX, aimY, aimZ);
 	CeSanctuaryCitadel::RuntimeDrawWorld();
@@ -896,6 +1126,21 @@ extern "C" void PortCeLivingSandboxDrawHud(CPlayer *player, int viewpoint) {
 	gHudBatch.EmitNineSliceBracket(dev, layout.panel, layout.cornerRadius, layout.glowPad, layout.strokeWidth, true, coreHalf, 0xf2f04e1au);
 	gHudBatch.EmitNineSliceBracket(dev, layout.panel, layout.cornerRadius, layout.glowPad, layout.strokeWidth, true, coreHalf * 0.42f, 0xffffc464u);
 
+	// Render-side pip pulses: a node that changed hands since the last frame
+	// starts a 0.4 s pulse. The first frame of a level only records the serials.
+	{
+		float frameDt = GAME.GetRenderFrameLength() * CLOCK_TICK;
+		if (!(frameDt > 0.0f && frameDt <= 0.25f)) frameDt = 1.0f / 60.0f;
+		for (unsigned i = 0; i < CeSandboxWorld::kCaptureNodeCount; ++i) {
+			if (gPipFlipPrimed && state.nodeFlipSerial[i] != gPipFlipSeen[i])
+				gPipPulseSec[i] = kCeSandboxPipPulseSec;
+			else if (gPipPulseSec[i] > 0.0f)
+				gPipPulseSec[i] = gPipPulseSec[i] > frameDt ? gPipPulseSec[i] - frameDt : 0.0f;
+			gPipFlipSeen[i] = state.nodeFlipSerial[i];
+		}
+		gPipFlipPrimed = true;
+	}
+
 	// 5 Contested Capture Node pips with proportional control fill.
 	for (unsigned i = 0; i < CeSandboxWorld::kCaptureNodeCount; ++i) {
 		const CeSandboxHudRect &pip = layout.nodePips[i];
@@ -904,29 +1149,64 @@ extern "C" void PortCeLivingSandboxDrawHud(CPlayer *player, int viewpoint) {
 		const unsigned bg = (owner == CE_SB_OWNER_FORSETI) ? 0xc80a2234u
 		                  : (owner == CE_SB_OWNER_MUSPELL) ? 0xc82c0e0cu
 		                                                   : 0xc81a1c24u;
+		const float pulse = gPipPulseSec[i] > 0.0f ? gPipPulseSec[i] / kCeSandboxPipPulseSec : 0.0f;
+		if (pulse > 0.0f) {
+			// A bright frame that swells out and fades as the node changes hands.
+			const float grow = floorf((1.0f - pulse) * 4.0f * uiScale) + floorf(1.0f * uiScale);
+			const unsigned ring = (owner == CE_SB_OWNER_FORSETI) ? 0x0050e4ffu
+			                    : (owner == CE_SB_OWNER_MUSPELL) ? 0x00ff6a3cu
+			                                                     : 0x00f2c040u;
+			gHudBatch.EmitRect(dev, pip.x - grow, pip.y - grow, pip.w + 2.0f * grow, pip.h + 2.0f * grow,
+			                   LerpArgb(ring, ring | 0xd0000000u, pulse));
+		}
+		// The pip the fight is over wears a thin white underline.
+		if (static_cast<int>(i) == state.activeFrontNode && !state.regroupActive) {
+			gHudBatch.EmitRect(dev, pip.x, pip.y + pip.h + 1.0f, pip.w, uiScale >= 1.5f ? 2.0f : 1.0f, 0xd0f4f8ffu);
+		}
 		gHudBatch.EmitRect(dev, pip.x, pip.y, pip.w, pip.h, bg);
 
 		const float innerW = pip.w - 2.0f;
 		const float innerH = pip.h - 2.0f;
-		const unsigned fillCol = (owner == CE_SB_OWNER_FORSETI) ? 0xf032d8ffu
-		                       : (owner == CE_SB_OWNER_MUSPELL) ? 0xf0ff4c28u
-		                                                        : 0xf0f2c040u;
-		if (ctrl >= 0.0f) {
-			const float wFill = innerW * (0.5f + (ctrl * 0.005f));
-			gHudBatch.EmitRect(dev, pip.x + 1.0f, pip.y + 1.0f, wFill, innerH, fillCol);
-		} else {
-			const float wFill = innerW * (0.5f + ((-ctrl) * 0.005f));
-			gHudBatch.EmitRect(dev, pip.x + pip.w - 1.0f - wFill, pip.y + 1.0f, wFill, innerH, fillCol);
+		const float midX = pip.x + 1.0f + innerW * 0.5f;
+		const float absCtrl = fabsf(ctrl);
+		if (absCtrl >= 0.5f) {
+			const float frac = CeSandboxWorld::Clamp01(absCtrl * 0.01f);
+			const float wFill = (innerW * 0.5f) * frac;
+			const unsigned baseFill = (owner == CE_SB_OWNER_FORSETI) ? 0xf032d8ffu
+			                        : (owner == CE_SB_OWNER_MUSPELL) ? 0xf0ff4c28u
+			                        : (ctrl > 0.0f)                  ? 0xd85cc8f0u
+			                                                         : 0xd8f47240u;
+			const unsigned fillCol = LerpArgb(baseFill, 0xffffffffu, pulse * 0.85f);
+			if (ctrl > 0.0f) {
+				gHudBatch.EmitRect(dev, midX - wFill, pip.y + 1.0f, wFill, innerH, fillCol);
+			} else {
+				gHudBatch.EmitRect(dev, midX, pip.y + 1.0f, wFill, innerH, fillCol);
+			}
 		}
+		// Subtle neutral centre mark so 0.0 reads unmistakably empty/neutral.
+		gHudBatch.EmitRect(dev, floorf(midX), pip.y + 1.0f, 1.0f, innerH, 0x70b4c0ccu);
 	}
 
 	// Event / status banner below the 5-node strip
 	if (layout.showBanner) {
-		const unsigned topGlass = state.regroupActive ? 0xe01c222eu : 0xe00e1e2cu;
-		const unsigned botGlass = state.regroupActive ? 0xe80c1018u : 0xe8061018u;
-		const unsigned haloCol  = state.navalEscalationActive ? 0x50ffb028u : 0x5028e0ffu;
-		const unsigned bodyCol  = state.navalEscalationActive ? 0xf4ffc040u : 0xf43ce4ffu;
-		const unsigned coreCol  = 0xffe8fbffu;
+		// A banner wears its faction: Forseti cyan, Muspell crimson and amber, amber
+		// alone for the strait, slate for news that belongs to neither side.
+		const CeSandboxBannerTone tone = state.bannerTone;
+		const unsigned topGlass = tone == CE_SB_TONE_MUSPELL ? 0xe02c0e0cu
+		                        : tone == CE_SB_TONE_FORSETI ? 0xe00b2638u
+		                        : tone == CE_SB_TONE_NAVAL   ? 0xe0241a0au : 0xe01c222eu;
+		const unsigned botGlass = tone == CE_SB_TONE_MUSPELL ? 0xe8180606u
+		                        : tone == CE_SB_TONE_FORSETI ? 0xe8061420u
+		                        : tone == CE_SB_TONE_NAVAL   ? 0xe8120c04u : 0xe80c1018u;
+		const unsigned haloCol  = tone == CE_SB_TONE_MUSPELL ? 0x50ff3c20u
+		                        : tone == CE_SB_TONE_FORSETI ? 0x5028e0ffu
+		                        : tone == CE_SB_TONE_NAVAL   ? 0x50ffb028u : 0x4090a4b8u;
+		const unsigned bodyCol  = tone == CE_SB_TONE_MUSPELL ? 0xf4f04e1au
+		                        : tone == CE_SB_TONE_FORSETI ? 0xf43ce4ffu
+		                        : tone == CE_SB_TONE_NAVAL   ? 0xf4ffc040u : 0xe8b4c4d4u;
+		const unsigned coreCol  = tone == CE_SB_TONE_MUSPELL ? 0xffffc870u
+		                        : tone == CE_SB_TONE_FORSETI ? 0xffd8fbffu
+		                        : tone == CE_SB_TONE_NAVAL   ? 0xfffff0c8u : 0xffe8f0f8u;
 		const float br = floorf(9.0f * uiScale);
 		gHudBatch.EmitNineSliceGlass(dev, layout.bannerBox, br, inset, topGlass, botGlass);
 		for (int side = 0; side < 2; ++side) {
@@ -963,10 +1243,25 @@ extern "C" void PortCeLivingSandboxDrawHud(CPlayer *player, int viewpoint) {
 	DrawSafeHudTextRight(font, layout.panel.x + layout.panel.w - sidePad, textY, 0xffffd4c0u,
 	                     state.headerRight, textScale, floorf(115.0f * uiScale));
 
+	// One short tag under each pip names its node: owned ones in their faction's
+	// colour, the rest in quiet slate.
+	for (unsigned i = 0; i < CeSandboxWorld::kCaptureNodeCount; ++i) {
+		const CeSandboxHudRect &tag = layout.nodeTags[i];
+		const CeSandboxOwner owner = state.nodeOwner[i];
+		const unsigned tagCol = (owner == CE_SB_OWNER_FORSETI) ? 0xff9ce8ffu
+		                      : (owner == CE_SB_OWNER_MUSPELL) ? 0xffffb090u
+		                                                       : 0xffb4c0ccu;
+		DrawSafeHudTextCentered(font, tag.x + tag.w * 0.5f, tag.y, tagCol,
+		                        CeSandboxWorld::CaptureNode(i).shortTag, 0.62f * uiScale, tag.w);
+	}
+
 	if (layout.showBanner) {
 		const float bannerY = layout.bannerBox.y + floorf(6.0f * uiScale);
+		const unsigned bannerCol = state.bannerTone == CE_SB_TONE_MUSPELL ? 0xffffb890u
+		                         : state.bannerTone == CE_SB_TONE_FORSETI ? 0xff9cf0ffu
+		                         : state.bannerTone == CE_SB_TONE_NAVAL   ? 0xffffe2a0u : 0xffe6f0f8u;
 		DrawSafeHudTextCentered(font, layout.bannerBox.x + layout.bannerBox.w * 0.5f, bannerY,
-		                        0xffe6f8ffu, state.bannerText, 0.88f * uiScale,
+		                        bannerCol, state.bannerText, 0.88f * uiScale,
 		                        layout.bannerBox.w - floorf(24.0f * uiScale));
 	}
 
@@ -982,9 +1277,8 @@ extern "C" void PortCeLivingSandboxDrawHud(CPlayer *player, int viewpoint) {
 		DrawSafeHudTextCentered(font, cx, layout.cueBox.y + floorf(37.0f * uiScale), 0xffb8d4e8u, sNote, 0.72f * uiScale, maxW);
 	}
 
-	LT.SRS(D3DRS_ZENABLE, TRUE);
-	LT.SRS(D3DRS_ZWRITEENABLE, TRUE);
-	LT.SRS(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+	// Every state this pass changed goes back, text included.
+	RestoreHudDeviceState();
 }
 
 extern "C" void PortCeLivingSandboxFilterSave(CCareer *career, void *dest) {

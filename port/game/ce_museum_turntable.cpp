@@ -16,6 +16,7 @@
 #include "mesh.h"
 #include "meshrenderer.h"
 #include "ce_museum_turntable.h"
+#include "ce_museum_render_state.h"
 #include "ce_museum_cinema.h"
 #include "ce_museum_world.h"
 #include "../platform/common/portlog.h"
@@ -473,8 +474,19 @@ void RuntimeDraw(float floorZ) {
     if (!anyMesh) {
         savedState->Apply();
         savedState->Release();
+        CeMuseumRestoreEngineRenderState();
         return;
     }
+
+    // Step 1 drew brass studs directly through raw `dev->` calls (FVF without UVs,
+    // CULLMODE=NONE, ALPHATEST=FALSE, COLOROP=SELECTARG1/DIFFUSE, LIGHTING=FALSE).
+    // Invalidate LT and RENDERINFO caches before step 2 so cached state from
+    // CeMuseumRestoreEngineRenderState() cannot cause LT/RENDERINFO to elide updates.
+    LT.InvalidateAllStates();
+    RENDERINFO.mWorldChanged = true;
+    RENDERINFO.mViewChanged = true;
+    RENDERINFO.mProjectionChanged = true;
+    RENDERINFO.mFVFChanged = true;
 
     // Save RENDERINFO cached lighting/fog state alongside the D3D9 state block
     D3DMATRIX savedWorld;
@@ -616,6 +628,11 @@ void RuntimeDraw(float floorZ) {
     RENDERINFO.mFogDensityChanged = true;
     RENDERINFO.mFVFChanged = true;
     RENDERINFO.Apply();
+    // The world renderer's own between-pass defaults, sent through LT so its
+    // cache (just invalidated) and the device agree again.
+    LT.SRS(D3DRS_CULLMODE, D3DCULL_CCW);
+    LT.SRS(D3DRS_ALPHATESTENABLE, TRUE);
+    LT.SetModulate(0);
 }
 
 } // namespace CeMuseumTurntable

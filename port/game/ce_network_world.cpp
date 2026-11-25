@@ -100,9 +100,9 @@ public:
         int pad=controller->GetPadNumber();
         out.invert_ground=!!CAREER.GetInvertYAxis(0); out.invert_jet=!!CAREER.GetInvertJetYAxis(0);
         SControlBinding *yaw=FindControlBinding(BUTTON_MECH_YAW_RIGHT);
-        out.walker_mouse_any=yaw&&(yaw->mInput[pad].mType==MOUSE_AXIS_PLUS_ANY||yaw->mInput[pad].mType==MOUSE_AXIS_MINUS_ANY);
+        out.walker_mouse_any=yaw&&(yaw->PlayerInput(pad)->mType==MOUSE_AXIS_PLUS_ANY||yaw->PlayerInput(pad)->mType==MOUSE_AXIS_MINUS_ANY);
         CBattleEngine *e=SlotEngine(local_player);
-        out.mouse_ground_aim=e&&!e->IsDying()&&e->GetIsPoweredUp()&&e->GetState()==BATTLE_ENGINE_STATE_WALKER&&e->IsWalkerOnGroundOrObject()&&yaw&&(yaw->mInput[pad].mType==MOUSE_AXIS_PLUS||yaw->mInput[pad].mType==MOUSE_AXIS_MINUS);
+        out.mouse_ground_aim=e&&!e->IsDying()&&e->GetIsPoweredUp()&&e->GetState()==BATTLE_ENGINE_STATE_WALKER&&e->IsWalkerOnGroundOrObject()&&yaw&&(yaw->PlayerInput(pad)->mType==MOUSE_AXIS_PLUS||yaw->PlayerInput(pad)->mType==MOUSE_AXIS_MINUS);
         if(out.mouse_ground_aim) {
             out.ground_yaw=-(MOUSE_X-PLATFORM.GetWindowWidth()/2)*(gMouseSensitivity*.002f);
             out.ground_pitch=-(MOUSE_Y-PLATFORM.GetWindowHeight()/2)*(gMouseSensitivity*.001f);

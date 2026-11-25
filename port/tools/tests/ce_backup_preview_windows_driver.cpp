@@ -3,6 +3,9 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "../../platform/common/ce_backup_preview.h"
+#include "../../platform/common/ce_career_restore.h"
+#define CE_CAREER_RESTORE_UI_INTERNAL
+#include "../../platform/common/ce_career_restore_ui.h"
 #include <SDL3/SDL.h>
 #include <atomic>
 #include <cstdio>
@@ -276,5 +279,41 @@ int main(int argc, char **argv) {
   CePreviewLeave();
   expect(card().phase == CE_PREVIEW_IDLE && !card().careers && !card().choices,
          "leave-clears-card");
+  {
+    CeRestoreCard rcard;
+    CePreviewOpen((user + "\\\\").c_str(), (game + "\\/").c_str(), "R:\\");
+    bool r1 = waitPhase(CE_PREVIEW_IDLE) && card().choices == 2;
+    CePreviewSelectSet(0);
+    r1 = r1 && waitPhase(CE_PREVIEW_VERIFIED);
+    CePreviewRestoreCard(rcard);
+    r1 = r1 && rcard.verified && rcard.root == "R:\\" &&
+         rcard.set == std::string("R:\\") + goodLeaf &&
+         rcard.user == user && rcard.game == game && rcard.package == pkg;
+    CePreviewLeave();
+
+    CePreviewOpen(user.c_str(), game.c_str(), "R:/");
+    bool r2 = waitPhase(CE_PREVIEW_IDLE) && card().choices == 2;
+    CePreviewSelectSet(0);
+    r2 = r2 && waitPhase(CE_PREVIEW_VERIFIED);
+    CePreviewRestoreCard(rcard);
+    r2 = r2 && rcard.verified && rcard.root == "R:/" &&
+         rcard.set == std::string("R:/") + goodLeaf;
+    CePreviewChoose();
+    choose("R:\\\\");
+    r2 = r2 && waitPhase(CE_PREVIEW_IDLE) && card().choices == 2;
+    CePreviewSelectSet(0);
+    r2 = r2 && waitPhase(CE_PREVIEW_VERIFIED);
+    CePreviewLeave();
+
+    CePreviewOpen(user.c_str(), game.c_str(), (root + "\\\\").c_str());
+    bool r3 = waitPhase(CE_PREVIEW_IDLE) && card().choices == 2;
+    CePreviewSelectSet(0);
+    r3 = r3 && waitPhase(CE_PREVIEW_VERIFIED);
+    CePreviewRestoreCard(rcard);
+    r3 = r3 && rcard.verified && rcard.root == root && rcard.set == good;
+    CePreviewLeave();
+
+    expect(r1 && r2 && r3, "drive-root-and-trailing-separator-card");
+  }
   return 0;
 }

@@ -666,7 +666,7 @@ class ModsPageTests(unittest.TestCase):
             return code[code.index(start):code.index(end, code.index(start))]
         self.assertIn("PlaySound(FES_BACK)", body("void\tClose()", "One Select reaches"), "leaving the page")
         pause = body("case BUTTON_PAUSE_MENU_SELECT:", "case BUTTON_FRONTEND_MENU_BACK:")
-        self.assertEqual(pause.count("PlaySound(FES_SELECT)"), 2, "More Mods and Open Mods Folder each make the select sound")
+        self.assertEqual(pause.count("PlaySound(FES_SELECT)"), 3, "More Mods, Open Mods Folder and Import PS2 Level 888 each make the select sound")
         self.assertIn("Close()", pause, "Back")
         self.assertIn("PlaySound(FES_SELECT)", body("if (button == BUTTON_FRONTEND_MENU_SELECT)\n\t\t\t{", "if (count < 2)\n\t\t\t\treturn;"), "a row's own select")
         self.assertIn("case BUTTON_FRONTEND_MENU_BACK:\n\t\t\tClose();", code, "the page's Back key leaves it")
@@ -993,6 +993,8 @@ class ModsPageTests(unittest.TestCase):
         for text in said:
             text = text.replace("\\n", " ")		# the driver shows a line break as \n
             for word in FORBIDDEN:
+                if word == ".aya" and text == "Import cut Level 888 from your own PS2 disc image (.iso, .zip or .aya).":
+                    continue
                 self.assertNotIn(word, text, text)
             self.assertFalse(set(text) & set(NOT_IN_FACE), text)
             self.assertTrue(all(32 <= ord(c) < 127 for c in text), text)
@@ -1000,6 +1002,25 @@ class ModsPageTests(unittest.TestCase):
             if " " in text and len(text) > 12 and text != "Open Mods Folder":
                 self.assertTrue(text.endswith("."), "a sentence ends with a full stop: " + text)
                 self.assertLessEqual(len(text), 110, "one or two short sentences: " + text)
+
+    def test_ps2_level_888_import_row_and_busy_guards_in_modspage(self):
+        said = sentences(self.exe)
+        self.assertIn("Import PS2 Level 888...", said)
+        self.assertIn("Import cut Level 888 from your own PS2 disc image (.iso, .zip or .aya).", said)
+        self.assertIn("Level 888 (PS2) imported and turned on. Restart Onslaught CE, then select it here to Play.", said)
+        code = (PORT / "game/ce_modspage.cpp").read_text()
+        for expected in (
+            'importPs2[] = L"Import PS2 Level 888..."',
+            "mImportPs2 = new (MEMTYPE_MENUITEM) CModsLine(importPs2, true)",
+            "if (!PortCeModsPageOffered())",
+            "if (sModel.mRun.off)",
+            "if (BusyPs2Text())",
+            "CePs2ImportPickOpen()",
+            "CePs2ImportStart(ps.path, PortGameDir(), PortUserDir())",
+            'sModel.RowOf("flagship-duel-ps2")',
+            "CePs2ImportCancel()",
+        ):
+            self.assertIn(expected, code)
 
 
 # ---- mutants: each must make its named test fail -------------------------------------------------------------------------------------

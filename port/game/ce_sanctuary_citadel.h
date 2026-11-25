@@ -54,6 +54,22 @@ constexpr float kCinemaMinY = 411.5f;
 constexpr float kCinemaMaxY = 427.5f;
 constexpr float kCinemaCeilingHeight = 10.0f; // Z in [floorZ - 10.0f, floorZ + 2.0f] => [-44.0f, -32.0f]
 
+// Cinema roof slab (the coffered roof with its cornice overhang). Heights are
+// metres above the terrace floor: the soffit at 9.00, the walkable top at 10.65.
+constexpr float kCinemaRoofMinX = 97.4f;
+constexpr float kCinemaRoofMaxX = 126.6f;
+constexpr float kCinemaRoofMinY = 409.4f;
+constexpr float kCinemaRoofMaxY = 428.6f;
+constexpr float kCinemaRoofBottomH = 9.00f;
+constexpr float kCinemaRoofTopH = 10.65f;
+
+// Forseti signal mast on the south-east bastion corner: the one tall, off-axis
+// silhouette that marks the Citadel as a frontline fortress from the valley.
+constexpr float kSignalMastX = 146.0f;
+constexpr float kSignalMastY = 358.0f;
+constexpr float kSignalMastHeight = 25.9f;   // inside the dome (28.7 m of headroom at this corner)
+constexpr float kSignalMastBaseHalf = 1.20f;
+
 // Landmark positions for alcove cues and pedestal local-frame conversion.
 constexpr float kForsetiAlcoveX = 88.5f;
 constexpr float kForsetiAlcoveY = 392.0f;
@@ -138,6 +154,91 @@ inline bool IsInsideCinema(float x, float y, float z, float floorZ = kFloorZ) {
     return x >= kCinemaMinX && x <= kCinemaMaxX &&
            y >= kCinemaMinY && y <= kCinemaMaxY &&
            z >= (floorZ - kCinemaCeilingHeight) && z <= (floorZ + kDomeSkirtDepth);
+}
+
+// Vertical rule for the Cinema roof. A roof is not a wall: a horizontal push-out
+// box would shove a landing Battle Engine off sideways. Instead the height is
+// clamped: a body whose feet are inside the slab (it came down onto the roof)
+// is stood on top of it, and a body under the soffit whose head has risen into
+// the slab is held just below it. `ioWorldZ` is the body's origin (Z points
+// down), `cofgHeight` its origin's height above its feet. `ioVz`, when given,
+// loses the component that was driving it into the slab.
+enum RoofClamp {
+    kRoofClampNone = 0,
+    kRoofClampLanded,      // feet were inside the slab: now resting on the roof
+    kRoofClampUnderSoffit, // head was inside the slab: now just under the ceiling
+};
+
+inline RoofClamp ResolveCinemaRoofHeight(float x, float y, float *ioWorldZ, float floorZ,
+                                         float unitHeight, float cofgHeight = 0.0f,
+                                         float *ioVz = NULL) {
+    if (!ioWorldZ || !IsFinite3(x, y, *ioWorldZ) || !std::isfinite(floorZ) ||
+        !(unitHeight > 0.0f) || !std::isfinite(cofgHeight))
+        return kRoofClampNone;
+    if (x < kCinemaRoofMinX || x > kCinemaRoofMaxX || y < kCinemaRoofMinY || y > kCinemaRoofMaxY)
+        return kRoofClampNone;
+    const float cofg = cofgHeight > 0.0f ? cofgHeight : 0.0f;
+    const float feetH = (floorZ - *ioWorldZ) - cofg;
+    const float headH = feetH + unitHeight;
+    const float kEps = 0.01f;
+    if (feetH >= kCinemaRoofBottomH && feetH < kCinemaRoofTopH) {
+        *ioWorldZ = floorZ - (kCinemaRoofTopH + kEps + cofg);
+        if (ioVz && *ioVz > 0.0f) *ioVz = 0.0f;   // Z points down: positive is falling
+        return kRoofClampLanded;
+    }
+    if (feetH < kCinemaRoofBottomH && headH > kCinemaRoofBottomH) {
+        float newFeet = kCinemaRoofBottomH - unitHeight - kEps;
+        if (newFeet < 0.0f) newFeet = 0.0f;
+        if (newFeet < feetH) *ioWorldZ = floorZ - (newFeet + cofg);
+        if (ioVz && *ioVz < 0.0f) *ioVz = 0.0f;   // negative is rising
+        return kRoofClampUnderSoffit;
+    }
+    return kRoofClampNone;
+}
+
+// How far inside the dome the viewer stands: 0 well outside, 1 well inside,
+// smooth across the shell so the dome never pops as the camera passes through it.
+inline float DomeViewerInsideBlend(float eyeX, float eyeY, float eyeZ, float floorZ = kFloorZ) {
+    if (!IsFinite3(eyeX, eyeY, eyeZ) || !std::isfinite(floorZ)) return 0.0f;
+    const float dx = eyeX - kCenterX;
+    const float dy = eyeY - kCenterY;
+    float dz = eyeZ - floorZ;
+    if (dz > 0.0f) dz = 0.0f;             // the skirt is a cylinder below the floor line
+    const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+    const float t = (kDomeRadius + 1.5f - dist) / 4.0f;   // 0 at R + 1.5, 1 at R - 2.5
+    const float u = t <= 0.0f ? 0.0f : (t >= 1.0f ? 1.0f : t);
+    return u * u * (3.0f - 2.0f * u);
+}
+
+// Brightness kept by the dome's glass and by its lattice ribs for a viewer
+// inside it, by elevation (0 at the horizon and skirt, 1 at the zenith). Seen
+// from within, the shell overhead all but vanishes and the ribs drop to 40%, so
+// neither crosses the reticle or the HUD rings; the golden band at the horizon
+// keeps its full strength, and so do impact ripples (they are not scaled here).
+inline float DomeHorizonBand(float elev01) {
+    const float e = elev01 <= 0.0f ? 0.0f : (elev01 >= 1.0f ? 1.0f : elev01);
+    const float t = (e - 0.18f) / (0.42f - 0.18f);
+    const float u = t <= 0.0f ? 0.0f : (t >= 1.0f ? 1.0f : t);
+    return 1.0f - u * u * (3.0f - 2.0f * u);
+}
+
+inline float DomeShellGain(float elev01, float insideBlend) {
+    const float b = insideBlend <= 0.0f ? 0.0f : (insideBlend >= 1.0f ? 1.0f : insideBlend);
+    const float interior = 0.05f + 0.95f * DomeHorizonBand(elev01);
+    return 1.0f + (interior - 1.0f) * b;
+}
+
+inline float DomeRibGain(float elev01, float insideBlend) {
+    const float b = insideBlend <= 0.0f ? 0.0f : (insideBlend >= 1.0f ? 1.0f : insideBlend);
+    const float interior = 0.40f + 0.60f * DomeHorizonBand(elev01);
+    return 1.0f + (interior - 1.0f) * b;
+}
+
+// The Cinema disarms weapons when either the player's machine or the camera is
+// inside it: a third-person camera trails the machine through the doorway, and
+// the machine must not fire into the hall during the frames it has not followed.
+inline bool CinemaDisarmsWeapons(bool playerInside, bool cameraInside) {
+    return playerInside || cameraInside;
 }
 
 inline bool IsOnTerrace(float x, float y) {
@@ -474,6 +575,12 @@ inline SolidLayout MakeInteriorSolidLayout() {
     AddSolidBox(&out,  74.6f, 354.5f,  75.4f, 428.0f, 0.0f, 1.66f);
     AddSolidBox(&out, 148.6f, 354.5f, 149.4f, 428.0f, 0.0f, 1.66f);
 
+    // 9. Forseti signal mast plinth and shaft on the south-east bastion corner.
+    AddSolidBox(&out, kSignalMastX - kSignalMastBaseHalf, kSignalMastY - kSignalMastBaseHalf,
+                      kSignalMastX + kSignalMastBaseHalf, kSignalMastY + kSignalMastBaseHalf, 0.0f, 1.02f);
+    AddSolidBox(&out, kSignalMastX - 0.80f, kSignalMastY - 0.80f,
+                      kSignalMastX + 0.80f, kSignalMastY + 0.80f, 1.02f, kSignalMastHeight);
+
     return out;
 }
 
@@ -583,6 +690,9 @@ void RuntimeShutdown();
 void RuntimeUpdate(float dtSeconds, bool paused,
                    float eyeX, float eyeY, float eyeZ,
                    float aimX, float aimY, float aimZ);
+// Simulation step (the game's tick, never the renderer): interior walkability
+// push-out, the Cinema roof height rule and the player's Cinema occupancy.
+void RuntimeTickSim();
 void RuntimeDrawWorld();
 void RuntimeDrawDomeFx();
 bool RuntimeHandleKey(unsigned dik, bool repeat);

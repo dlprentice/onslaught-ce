@@ -405,6 +405,7 @@ extern "C" int PortMapMouse(float *x, float *y);	// d3d9hooks.cpp: window to gam
 #ifdef CE_VERSION
 static int gPointerNow[3];	// PortPointerNow, below: x, y, and how many points were mapped so far
 #endif
+static LPARAM gLastMouseLParam;
 LPARAM MouseLParam(float x, float y)
 {
 	if (!PortMapMouse(&x, &y) && PortWideModes() && gNumWindows)
@@ -421,7 +422,9 @@ LPARAM MouseLParam(float x, float y)
 #ifdef CE_VERSION
 	gPointerNow[0] = (int)x; gPointerNow[1] = (int)y; if (++gPointerNow[2] <= 0) gPointerNow[2] = 1;
 #endif
-	return MAKELPARAM((int)x, (int)y);
+	LPARAM lp = MAKELPARAM((int)x, (int)y);
+	gLastMouseLParam = lp;
+	return lp;
 }
 
 #ifdef CE_VERSION
@@ -474,6 +477,24 @@ struct HeldKey
 HeldKey gKeys[0x200];	// by PC scan code, 0x100 = extended
 int gHeld;
 
+struct HeldMouseButton
+{
+	bool down;
+	bool released;		// released synthetically on focus loss/minimize; suppresses a duplicate physical release
+};
+HeldMouseButton gMouseHeld[3];	// 0: left, 1: right, 2: middle (matches PortRecordButton)
+int gHeldMouse;
+
+WPARAM HeldMouseMask(int excludeBit = -1)
+{
+	static const WPARAM flags[3] = {MK_LBUTTON, MK_RBUTTON, MK_MBUTTON};
+	WPARAM w = 0;
+	for (int i = 0; i < 3; i++)
+		if (i != excludeBit && gMouseHeld[i].down)
+			w |= flags[i];
+	return w;
+}
+
 // The test switch's own key state (BEA_PORT_FAKE_KEYS): pushed events do not change SDL's keyboard state, so
 // Reconcile treats a fake key as down from its 'd' to its 'u' or 'x' (x: the state goes up but the event is lost).
 bool gFakeHeld[SDL_SCANCODE_COUNT];
@@ -514,6 +535,31 @@ void SyntheticKeyUp(unsigned scan, const char *why)
 	gHeld--;
 }
 
+void SyntheticMouseUp(int bit, const char *why)
+{
+	static const UINT upMsgs[3] = {WM_LBUTTONUP, WM_RBUTTONUP, WM_MBUTTONUP};
+	HeldMouseButton &b = gMouseHeld[bit];
+	if (!b.down)
+		return;
+	if (InputLog())
+		fprintf(stderr, PORT_LOG_PREFIX "input: synthetic mouse button %d up (%s)\n", bit, why);
+	if (PortRecording())
+	{
+		if (!PortRecordInputSpace(2))
+		{
+			gReleasePending = true;
+			return;
+		}
+		PortRecordButton(bit, false);
+		PortRecordWindowMouse(upMsgs[bit], gLastMouseLParam, 0);
+	}
+	else if (!Post(MainWindow(), upMsgs[bit], HeldMouseMask(bit), gLastMouseLParam))
+		return;	// keep ownership until a later pump can enqueue this release; Post requested that retry
+	b.down = false;
+	b.released = true;
+	gHeldMouse--;
+}
+
 void ReleaseAll(const char *why)
 {
 	for (unsigned s = 1; s < 0x200 && gHeld > 0; s++)
@@ -526,6 +572,16 @@ void ReleaseAll(const char *why)
 				break;
 			}
 			SyntheticKeyUp(s, why);
+		}
+	for (int b = 0; b < 3 && gHeldMouse > 0; b++)
+		if (gMouseHeld[b].down)
+		{
+			if (!PortRecording() && Free() <= 2)
+			{
+				gReleasePending = true;
+				break;
+			}
+			SyntheticMouseUp(b, why);
 		}
 }
 
@@ -1174,15 +1230,33 @@ void Pump()
 #ifndef CE_NETWORK_OFF
 			PortInputActivity::Count(PortInputActivity::BUTTON);
 #endif
+			int bit = e.button.button == SDL_BUTTON_LEFT ? 0 : e.button.button == SDL_BUTTON_RIGHT ? 1 : e.button.button == SDL_BUTTON_MIDDLE ? 2 : -1;
+			bool down = e.type == SDL_EVENT_MOUSE_BUTTON_DOWN;
 			if (PortRecording())
 			{
-				int bit = e.button.button == SDL_BUTTON_LEFT ? 0 : e.button.button == SDL_BUTTON_RIGHT ? 1 : e.button.button == SDL_BUTTON_MIDDLE ? 2 : -1;
-				bool dn = e.type == SDL_EVENT_MOUSE_BUTTON_DOWN;
 				if (bit >= 0)
 				{
+					HeldMouseButton &mb = gMouseHeld[bit];
+					if (!down && mb.released && !mb.down)
+					{
+						mb.released = false;
+						break;
+					}
 					static const UINT msgs[3][2] = {{WM_LBUTTONUP, WM_LBUTTONDOWN}, {WM_RBUTTONUP, WM_RBUTTONDOWN}, {WM_MBUTTONUP, WM_MBUTTONDOWN}};
-					PortRecordButton(bit, dn);
-					PortRecordWindowMouse(msgs[bit][dn], MouseLParam(e.button.x, e.button.y), 0);
+					LPARAM lp = MouseLParam(e.button.x, e.button.y);
+					PortRecordButton(bit, down);
+					PortRecordWindowMouse(msgs[bit][down], lp, 0);
+					if (down)
+					{
+						if (!mb.down) gHeldMouse++;
+						mb.down = true;
+					}
+					else if (mb.down)
+					{
+						mb.down = false;
+						gHeldMouse--;
+					}
+					mb.released = false;
 				}
 				break;
 			}
@@ -1195,6 +1269,11 @@ void Pump()
 #ifndef CE_NETWORK_OFF
 			}
 #endif
+			if (bit >= 0 && !down && gMouseHeld[bit].released && !gMouseHeld[bit].down)
+			{
+				gMouseHeld[bit].released = false;
+				break;
+			}
 #ifdef CE_VERSION
 			if (gPointerHeld)
 			{
@@ -1203,13 +1282,29 @@ void Pump()
 				PostMouseMove(h, MouseButtons(), MouseLParam(e.button.x, e.button.y));
 			}
 #endif
-			bool down = e.type == SDL_EVENT_MOUSE_BUTTON_DOWN;
 			UINT msg = 0;
 			if (e.button.button == SDL_BUTTON_LEFT) msg = down ? WM_LBUTTONDOWN : WM_LBUTTONUP;
 			else if (e.button.button == SDL_BUTTON_RIGHT) msg = down ? WM_RBUTTONDOWN : WM_RBUTTONUP;
 			else if (e.button.button == SDL_BUTTON_MIDDLE) msg = down ? WM_MBUTTONDOWN : WM_MBUTTONUP;
 			if (msg)
-				Post(h, msg, MouseButtons(), MouseLParam(e.button.x, e.button.y));
+			{
+				LPARAM lp = MouseLParam(e.button.x, e.button.y);
+				if (Post(h, msg, MouseButtons(), lp) && bit >= 0)
+				{
+					HeldMouseButton &mb = gMouseHeld[bit];
+					if (down)
+					{
+						if (!mb.down) gHeldMouse++;
+						mb.down = true;
+					}
+					else if (mb.down)
+					{
+						mb.down = false;
+						gHeldMouse--;
+					}
+					mb.released = false;
+				}
+			}
 			break;
 		}
 		case SDL_EVENT_MOUSE_WHEEL:

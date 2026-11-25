@@ -25,15 +25,22 @@
 #include "text.h"
 #include "TransitionHelpers.h"
 #include "data/MissionScripts/text/text.stf"
+#include "ce_menu_fit.h"
+#include "ce_name_text.h"
 #include "ce_modspage.h"
 #include "ce_modspage_model.h"
+#include "../platform/common/ce_ps2_import.h"
 
 #include <stdio.h>
 #include <string.h>
 
 #define MEMTYPE_MENUITEM	((EMemoryType)0x80)
+#define FEP_CE				FEP_LANGUAGE_TEST		// the CE page's slot (ce_frontend.cpp)
 
 bool			PortCeMenus();								// ce_frontend.cpp
+float			PortCeValueGap();							// ce_menu_fit.cpp
+const char		*PortGameDir();								// linux/paths.cpp, windows/files.cpp
+const char		*PortUserDir();
 extern "C" int	CE_SettingGetBool(const char *key, int def);	// ce.cpp
 extern "C" int	CE_OpenModsFolder(void);					// ce.cpp
 bool			PortCeBonusModLevelAvailable(int level);	// ce_bonus.cpp: an active mod supplies the level
@@ -46,13 +53,12 @@ const DWORD	kCream = 0xff7f6f5f;			// what describes (the colour of the original
 const DWORD	kGrey = 0xff6c6c6c;				// a note or by-line: about 216 grey on the screen (matches Museum's light grey contrast on dark navy)
 const DWORD	kRed = 0xff7f3838;				// a failed state's word: about 255, 112, 112 on the screen (crisp coral-red on dark navy)
 
-// The list's rows: ten mods on one page, or nine and More Mods when there are more; then Open Mods Folder and Back. With twelve items the
-// list is centred so that its first row sits just under the title bar, and three lines of hint and the page's note fit between Back and the
-// help bar.
+// The list's rows: ten mods on one page, or nine and More Mods when there are more; then Open Mods Folder, Import PS2 Level 888... and Back.
+// Up to twelve items keep 20-pixel rows; thirteen use 18-pixel rows so the first row stays below the title bar and hints/note fit above the help bar.
 const int	kSlots = kCeModsSlots;
-const float	kLabelMax = 236.f;				// a row's name and colon end at x 320 and start no further left than the frame's left arc
 const float	kHintWidth = 420.f;
 const float	kNoteFoot = 449.f;				// the note ends here: the help bar starts at y 455
+int			sRowHeight = 20;
 
 CeModsModel	sModel;
 
@@ -181,6 +187,26 @@ int		Lines(const char *text, float y, DWORD colour, int most)
 	Widen(buf, kHintChars + 1, text);
 	CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);
 	int n = CeModWordWrap(fill.c, kWrapMaxLines, buf, kHintWidth, Width);
+	if (n == 2 && most >= 2)
+	{
+		auto measure = [](const WCHAR *first, int count) -> float {
+			WCHAR piece[100];
+			if (count > kWrapMaxChars)
+				count = kWrapMaxChars;
+			memcpy(piece, first, size_t(count) * sizeof(WCHAR));
+			piece[count] = 0;
+			return float(Width(piece));
+		};
+		float widest = 0.f;
+		const int at = CeBreakAt(buf, measure, &widest);
+		if ((at > 0) && (at <= kWrapMaxChars) && (int(wcslen(buf + at + 1)) <= kWrapMaxChars) && (widest < kHintWidth))
+		{
+			wcsncpy(fill.c[0], buf, size_t(at));
+			fill.c[0][at] = 0;
+			wcsncpy(fill.c[1], buf + at + 1, kWrapMaxChars);
+			fill.c[1][kWrapMaxChars] = 0;
+		}
+	}
 	if (n > most)
 	{
 		n = most;
@@ -234,9 +260,33 @@ CCeModsMenu	*sMenu = NULL;
 bool		sActive = false;
 bool		sDetailsUp = false;			// the Details box is up: the title bar names the mod
 WCHAR		sDetailsTitle[40];
+bool		sInDraw = false;			// inside mList->Render: defer Act()/Focus()/Bind() so RenderList never sees mRows mutated mid-loop
+bool		sPendingAct = false;
+int			sPendingRow = -1;
+int			sPendingAction = CEMA_NONE;
 
 void	Act(int row, int action);		// below: what a row's choice does
+void	FlushPendingAct()
+{
+	if (!sPendingAct)
+		return;
+	const int row = sPendingRow;
+	const int action = sPendingAction;
+	sPendingAct = false;
+	sPendingRow = -1;
+	sPendingAction = CEMA_NONE;
+	if (sActive && sMenu && row >= 0 && row < sModel.mCount)
+		Act(row, action);
+}
+void	ClearPendingAct()
+{
+	sPendingAct = false;
+	sPendingRow = -1;
+	sPendingAction = CEMA_NONE;
+}
 void	OpenFolder();
+void	StartPs2Import();
+const char	*BusyPs2Text();
 
 //*********************************************************************************
 // A mod's row: the game's own choice item (its label, its value after the colon, and the list that drops down when it is chosen). The
@@ -247,23 +297,25 @@ void	OpenFolder();
 class CModRow : public CMenuMenuItem
 {
 public:
-	CModRow() : CMenuMenuItem((EPCText)0, 3, false), mRow(-1), mBlank(false), mKeep(false)
+	CModRow() : CMenuMenuItem((EPCText)0, 3, false), mRow(-1), mBlank(false), mKeep(false), mWasExpanded(false)
 	{
 		mLabel[0] = 0;
 		mValue = mSelection = -1;
 	}
 
 	// The row this slot shows from now on: its label is the mod's name and a colon (no space after it, as the game's rows have none), the
-	// name cut where a word ends, with "...", where it is too long to end at the list's centre without crossing the frame.
-	void	Bind(int row, bool keep)
+	// name cut where a word ends, with "...", where it is too long to end at the list's centre without crossing the frame's curved left arc.
+	void	Bind(int row, bool keep, float rowY)
 	{
 		mRow = row;
 		mKeep = keep;
 		mExpanded = false;
+		mWasExpanded = false;
 		mValue = mSelection = -1;
 		mLabel[0] = 0;
 		if (row < 0)
 			return;
+		const float labelMax = 320.f - PortCeLabelLeftAt(FEP_CE, rowY);
 		char name[80];
 		CeModName(name, sizeof name, sModel.Mod(row), Shown);
 		for (int length = (int)strlen(name);; length--)
@@ -272,7 +324,7 @@ public:
 			CeModCut(cut, sizeof cut, name, length);
 			snprintf(label, sizeof label, "%s:", cut);
 			Widen(mLabel, int(sizeof(mLabel) / sizeof(mLabel[0])), label);
-			if (length <= 1 || float(Width(mLabel)) <= kLabelMax)
+			if (length <= 1 || float(Width(mLabel)) <= labelMax)
 				break;
 		}
 	}
@@ -290,12 +342,13 @@ public:
 	// reaches it, so that the label is steady and yet a choice is still a change when Select or a click takes it.
 	virtual WCHAR	*GetText() { return mLabel; }
 	virtual BOOL	IsEnabled() { return mRow >= 0; }
-	virtual int		GetHeight() { return (mRow >= 0 || mKeep) ? 20 : 0; }
+	virtual int		GetHeight() { return (mRow >= 0 || mKeep) ? sRowHeight : 0; }
 	virtual int		GetValue() { return mExpanded ? mSelection : -1; }
 	virtual int		GetNumChoices() { return Count(); }
 	virtual void	Refresh() {}
 
 	// Closed, the item draws one text after the label, the mod's state; open, the lines of its list.
+	// While RenderList finishes iterating after a click cleared mExpanded, keep returning open-row action text.
 	virtual WCHAR	*GetChoiceText(int n)
 	{
 		static WCHAR text[32];
@@ -306,7 +359,7 @@ public:
 			return text;
 		int actions[kCeModsMaxActions];
 		const int count = sModel.Actions(mRow, actions);
-		if (mExpanded && n >= 0 && n < count)
+		if ((mExpanded || (sInDraw && mWasExpanded)) && n >= 0 && n < count)
 			Widen(text, 32, sModel.ActionLabel(mRow, actions[n]));
 		else
 			Widen(text, 32, sModel.State(mRow));
@@ -317,7 +370,19 @@ public:
 	{
 		int actions[kCeModsMaxActions];
 		if (mRow >= 0 && choice >= 0 && choice < sModel.Actions(mRow, actions))
-			Act(mRow, actions[choice]);
+		{
+			if (sInDraw)
+			{
+				if (!sPendingAct)
+				{
+					sPendingAct = true;
+					sPendingRow = mRow;
+					sPendingAction = actions[choice];
+				}
+			}
+			else
+				Act(mRow, actions[choice]);
+		}
 	}
 
 	// A row that is not highlighted shows "Can't Load" in the failed state's red (highlighted, it is the focus yellow like any row): the
@@ -327,11 +392,12 @@ public:
 		if (mRow < 0)
 			return;
 		mBlank = !selected && !mExpanded && !sModel.CanLoad(mRow);
+		mWasExpanded = mExpanded;
 		CMenuMenuItem::Render(x, y, selected);
 		if (mBlank)
 		{
 			mBlank = false;
-			PLATFORM.Font(FONT_SMALL)->DrawTextWithShadow(x + 2.f, y, kRed, GetChoiceText(-1), 0, 0, 1.f, 1.f);
+			PLATFORM.Font(FONT_SMALL)->DrawTextWithShadow(x + PortCeValueGap(), y, kRed, GetChoiceText(-1), 0, 0, 1.f, 1.f);
 		}
 	}
 
@@ -367,6 +433,7 @@ public:
 	int		mRow;
 	bool	mBlank;
 	bool	mKeep;
+	bool	mWasExpanded;
 	WCHAR	mLabel[96];
 };
 
@@ -378,7 +445,7 @@ public:
 
 	virtual WCHAR	*GetText() { return (WCHAR *)mText; }
 	virtual BOOL	IsEnabled() { return mShown; }
-	virtual int		GetHeight() { return mShown ? 20 : 0; }
+	virtual int		GetHeight() { return mShown ? sRowHeight : 0; }
 	virtual void	Render(float x, float y, BOOL selected)
 	{
 		if (mShown)
@@ -399,7 +466,7 @@ public:
 	int		PerPage() const { return CeModsPerPage(sModel.mCount); }
 	int		Pages() const { return CeModsPages(sModel.mCount); }
 
-	// The row the list's highlighted item shows, or -1 (More Mods, Open Mods Folder, Back).
+	// The row the list's highlighted item shows, or -1 (More Mods, Open Mods Folder, Import PS2 Level 888..., Back).
 	int		SelectedRow() const
 	{
 		return mList->mSelected < kSlots ? mRows[mList->mSelected]->mRow : -1;
@@ -415,18 +482,22 @@ public:
 		for (int slot = 0; slot < kSlots; slot++)
 		{
 			const int row = mPageIndex * PerPage() + slot;
-			const bool there = slot < PerPage() && row < sModel.mCount;
-			mRows[slot]->Bind(there ? row : -1, paged && slot < PerPage());
-			shown += there;
+			shown += (slot < PerPage() && row < sModel.mCount);
 		}
 		mMore->mShown = paged;
-		// MenuOptionsList.cpp's Render centres its items of 20 pixels on mY: with n of them the first is at mY - 10n - 15 and Back, the last,
-		// at mY + 10n - 35. A short list is centred on 300 as the CE page's other lists are; a longer one is raised so that Back is no lower
-		// than 325, which leaves three lines of hint and the page's note between it and the help bar (with twelve items the first row is at
-		// 105, CE Settings' place). A page of a list of pages has the same number of items on every page, so that nothing moves when it turns.
-		const int items = (paged ? PerPage() + 1 : shown) + 2;
-		const float raised = 368.f - 10.f * float(items);
+		// MenuOptionsList.cpp's Render centres its items on mY: up to twelve items use 20-pixel rows (first row at 113 for twelve), while
+		// thirteen items use 18-pixel rows (first row at 116, Back at 332) so three lines of hint and the page's note stay above the help bar.
+		const int items = (paged ? PerPage() + 1 : shown) + 3;
+		sRowHeight = items > 12 ? 18 : 20;
+		const float raised = items > 12 ? 248.f : (368.f - 10.f * float(items));
 		mList->mY = raised < 300.f ? raised : 300.f;
+		const float firstY = mList->mY - 0.5f * float(sRowHeight * items) - 15.f;
+		for (int slot = 0; slot < kSlots; slot++)
+		{
+			const int row = mPageIndex * PerPage() + slot;
+			const bool there = slot < PerPage() && row < sModel.mCount;
+			mRows[slot]->Bind(there ? row : -1, paged && slot < PerPage(), firstY + float(sRowHeight * slot));
+		}
 		if (!mList->mItems.At(mList->mSelected)->IsEnabled())
 			mList->mSelected = shown ? 0 : kSlots + 1;
 	}
@@ -444,6 +515,11 @@ public:
 	// Reads the mods again and shows the first page (the page has just been opened).
 	void	Open()
 	{
+		ClearPendingAct();
+		CePs2ImportPickStatus pick{};
+		CePs2ImportPickPoll(&pick);
+		if (pick.state != CE_PS2_PICK_OPEN)
+			CePs2ImportPickEnter();
 		sModel.Read();
 		mPageIndex = 0;
 		mList->mSelected = 0;
@@ -453,15 +529,17 @@ public:
 
 	void	Close()
 	{
+		ClearPendingAct();
+		CePs2ImportPickLeave();
 		sActive = false;
 		CFrontEnd::PlaySound(FES_BACK);
 	}
 
 	// One Select reaches the page as two actions in one update, the front end's and the pause menu's, in the order of the input's bindings
 	// (ce_frontend.cpp, CCeMenu). The front end's is the rows' (the list hands it to the highlighted item); the pause menu's chooses More
-	// Mods, Open Mods Folder or Back. So that the front end's select of the update that opened the page, or turned it, is not taken by the
-	// row the highlight lands on, the page takes none until the next update (mTurned, cleared by Process); and, like every page, none in its
-	// first 0.4 s.
+	// Mods, Open Mods Folder, Import PS2 Level 888... or Back. So that the front end's select of the update that opened the page, or turned
+	// it, is not taken by the row the highlight lands on, the page takes none until the next update (mTurned, cleared by Process); and, like
+	// every page, none in its first 0.4 s.
 	virtual void	ReceiveButtonAction(CController *from_controller, int button, float val)
 	{
 		if (FEMESSBOX.BeingDisplayed() || (PLATFORM.GetSysTimeFloat() - mOpenTime < 0.4f))
@@ -493,6 +571,12 @@ public:
 				CFrontEnd::PlaySound(FES_SELECT);
 				OpenFolder();
 			}
+			else if (item == mImportPs2)
+			{
+				mTurned = true;
+				CFrontEnd::PlaySound(FES_SELECT);
+				StartPs2Import();
+			}
 			else if (item->mText == GI_BACK)
 				Close();
 			break;
@@ -510,11 +594,18 @@ public:
 	{
 		CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);
 		const float line = float(font->GetHeight());
-		const char *note = sModel.Note();
+		CMenuItem *item = mList->mItems.At(mList->mSelected);
+		const char *busy = BusyPs2Text();
+		const char *note = (busy && item != mImportPs2) ? busy : sModel.Note();
 		const float noteTop = kNoteFoot - line * float(LineCount(note));
 		if (note)
 			Lines(note, noteTop, kGrey, 2);
-		float y = backY + 20.f + line * 0.5f;
+		float y = backY + float(sRowHeight) + line * 0.5f;
+		if (item == mImportPs2)
+		{
+			Lines(busy ? busy : kCeModsPs2ImportHint, y, kCream, 2);
+			return;
+		}
 		if (!sModel.mCount)
 		{
 			// no mod at all: how to add one
@@ -522,7 +613,6 @@ public:
 			Lines(kCeModsEmptyWhere, y, kGrey, 2);
 			return;
 		}
-		CMenuItem *item = mList->mItems.At(mList->mSelected);
 		if (item == mMore)
 		{
 			char text[80];
@@ -575,14 +665,18 @@ public:
 		LT.SRS(D3DRS_ZWRITEENABLE, FALSE);
 		LT.SRS(D3DRS_ZENABLE, FALSE);
 		RENDERINFO.Apply();
+		sInDraw = true;
 		mList->Render(this);
+		sInDraw = false;
+		for (int slot = 0; slot < kSlots; slot++)
+			mRows[slot]->mWasExpanded = false;
 		LT.SRS(D3DRS_ZWRITEENABLE, TRUE);
 		LT.SRS(D3DRS_ZENABLE, TRUE);
 	}
 
 	CMenuOptionsList	*mList;
 	CModRow				*mRows[kSlots];
-	CModsLine			*mMore, *mOpen;
+	CModsLine			*mMore, *mOpen, *mImportPs2;
 	int					mPageIndex;
 	bool				mTurned;
 };
@@ -594,6 +688,7 @@ class CModsBack : public CMenuItem
 public:
 	CModsBack(CCeModsMenu *menu) : CMenuItem((DWORD)GI_BACK, 3), mMenu(menu) {}
 
+	virtual int		GetHeight() { return sRowHeight; }
 	virtual void	Render(float x, float y, BOOL selected)
 	{
 		CMenuItem::Render(x, y, selected);
@@ -607,12 +702,13 @@ public:
 CCeModsMenu::CCeModsMenu() : CPauseMenu(PORT_CE_NO_LISTS), mPageIndex(0), mTurned(false)
 {
 	static WCHAR title[] = L"Mods";
-	static const WCHAR more[] = L"More Mods", open[] = L"Open Mods Folder";
+	static const WCHAR more[] = L"More Mods", open[] = L"Open Mods Folder", importPs2[] = L"Import PS2 Level 888...";
 	mList = new (MEMTYPE_MENUITEM) CMenuOptionsList(title, 320.f, 300.f, FALSE, 0xb0000000);
 	for (int slot = 0; slot < kSlots; slot++)
 		mList->AddItem(mRows[slot] = new (MEMTYPE_MENUITEM) CModRow());
 	mList->AddItem(mMore = new (MEMTYPE_MENUITEM) CModsLine(more, false));
 	mList->AddItem(mOpen = new (MEMTYPE_MENUITEM) CModsLine(open, true));
+	mList->AddItem(mImportPs2 = new (MEMTYPE_MENUITEM) CModsLine(importPs2, true));
 	mList->AddItem(new (MEMTYPE_MENUITEM) CModsBack(this));
 	mLists.Append(mList);
 }
@@ -693,6 +789,89 @@ void	OpenFolder()
 	}
 }
 
+const char	*BusyPs2Text()
+{
+	static char stageBuf[128];
+	CePs2ImportStatus ws{};
+	CePs2ImportPoll(&ws);
+	if (ws.state == CE_PS2_IMPORT_RUNNING)
+	{
+		snprintf(stageBuf, sizeof stageBuf, "%s", ws.stage[0] ? ws.stage : "Reading PS2 disc image...");
+		return stageBuf;
+	}
+	CePs2ImportPickStatus ps{};
+	CePs2ImportPickPoll(&ps);
+	if (ps.state == CE_PS2_PICK_OPEN)
+		return kCeModsPs2Picking;
+	return NULL;
+}
+
+void	StartPs2Import()
+{
+	if (!PortCeModsPageOffered())
+		return;
+	if (sModel.mRun.off)
+	{
+		PortCeShowMessage(kCeModsOff);
+		return;
+	}
+	if (BusyPs2Text())
+		return;
+	CePs2ImportPickOpen();
+}
+
+void	PollPs2Import()
+{
+	CePs2ImportPickStatus ps{};
+	CePs2ImportPickPoll(&ps);
+	if (ps.state == CE_PS2_PICK_CANCELLED)
+	{
+		CePs2ImportPickAck();
+	}
+	else if (ps.state == CE_PS2_PICK_ERROR)
+	{
+		if (!FEMESSBOX.BeingDisplayed())
+		{
+			CePs2ImportPickAck();
+			char safe[256];
+			CeModText(safe, sizeof safe, ps.message[0] ? ps.message : kCeModsNoFileManager, Shown);
+			PortCeShowMessage(safe[0] ? safe : kCeModsNoFileManager);
+		}
+	}
+	else if (ps.state == CE_PS2_PICK_READY)
+	{
+		CePs2ImportPickAck();
+		CePs2ImportStart(ps.path, PortGameDir(), PortUserDir());
+	}
+
+	CePs2ImportStatus ws{};
+	CePs2ImportPoll(&ws);
+	if (ws.state == CE_PS2_IMPORT_DONE && !FEMESSBOX.BeingDisplayed())
+	{
+		CePs2ImportAck();
+		sModel.Read();
+		const int imported = sModel.RowOf("flagship-duel-ps2");
+		if (imported >= 0)
+			sMenu->Focus(imported);
+		else
+			sMenu->Bind();
+		PortCeShowMessage(ws.enabled ? kCeModsPs2Imported : kCeModsPs2ImportedFull);
+		CFrontEnd::PlaySound(FES_SELECT);
+	}
+	else if (ws.state == CE_PS2_IMPORT_FAILED && !FEMESSBOX.BeingDisplayed())
+	{
+		CePs2ImportAck();
+		sMenu->Bind();
+		char safe[256];
+		CeModText(safe, sizeof safe, ws.error, Shown);
+		PortCeShowMessage(safe[0] ? safe : "Level 888 could not be imported.");
+	}
+	else if (ws.state == CE_PS2_IMPORT_CANCELLED)
+	{
+		CePs2ImportAck();
+	}
+}
+
 }
 
 //*********************************************************************************
@@ -730,13 +909,19 @@ bool	PortCeModsPageButton(SINT button, float val)
 {
 	if (!Active())
 		return false;
+	FlushPendingAct();
+	if (!Active())
+		return false;
 	sMenu->ReceiveButtonAction(NULL, button, val);
 	return true;
 }
 
-// A new update: the page takes the front end's select again (CCeModsMenu::mTurned).
+// A new update: flush any deferred dropdown click action (after RenderList returned), poll PS2 import, and take select again.
 void	PortCeModsPageProcess()
 {
+	FlushPendingAct();
+	if (Active())
+		PollPs2Import();
 	if (sMenu)
 		sMenu->mTurned = false;
 }
@@ -776,6 +961,9 @@ bool	PortCeModsPageReturn(int level)
 // The CE page is going: so is this one.
 void	PortCeModsPageShutdown()
 {
+	ClearPendingAct();
+	CePs2ImportPickLeave();
+	CePs2ImportCancel();
 	SAFE_DELETE(sMenu);
 	sActive = false;
 	sDetailsUp = false;

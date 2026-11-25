@@ -304,6 +304,29 @@ int main() {
     float nanPos[1][3] = {{nanv, 0.0f, 0.0f}};
     Check(!CeMultiBeComputeOverviewCam(nanPos, 1, 0.0f, 1.0f, 34.0f, 11.5f, cam, look), "all-NaN positions rejected");
 
+    // 9. Solo Skirmish dual-slot controls & non-local/AI Battle Engine audio isolation
+    Check(CeMultiBeShouldUseSoloControls(false, true, false), "Solo Skirmish enables dual-slot P1 controls");
+    Check(CeMultiBeShouldUseSoloControls(false, false, true), "one-screen Commander enables dual-slot P1 controls");
+    Check(!CeMultiBeShouldUseSoloControls(false, false, false), "2P splitscreen keeps single-slot per-player controls");
+    Check(!CeMultiBeShouldUseSoloControls(true, true, true), "fenced/replay mode disables solo controls override");
+
+    // Faithful/replay fence always preserves retail audio path
+    Check(CeMultiBeShouldUseLocalAudio(true, true, 1, true, false, 0, true, false, false), "faithful fence preserves retail audio");
+    // Solo Skirmish: slot 0 human keeps local HUD/cockpit audio; AI P2 & aux bots use 3D positional audio and no HUD voices
+    Check(CeMultiBeShouldUseLocalAudio(false, true, 0, false, false, 0, true, true, true), "Solo Skirmish P1 uses local audio");
+    Check(!CeMultiBeShouldUseLocalAudio(false, true, 1, true, false, 0, true, false, true), "Solo Skirmish AI P2 silenced from 2D audio");
+    Check(!CeMultiBeShouldUseLocalAudio(false, true, 2, true, false, 0, false, false, true), "2v2 AI aux slot 2 silenced from 2D audio");
+    // Frame-0 fallback before gEngines populates
+    Check(!CeMultiBeShouldUseLocalAudio(false, false, -1, false, false, 0, true, false, true), "Solo frame-0 non-P0 BE silenced from 2D audio");
+    Check(CeMultiBeShouldUseLocalAudio(false, false, -1, false, false, 0, true, true, true), "Solo frame-0 P0 BE uses local audio");
+    // Local 2P splitscreen: both human P1 and P2 keep local audio
+    Check(CeMultiBeShouldUseLocalAudio(false, false, -1, false, false, 0, false, false, true), "2P splitscreen both humans keep local audio");
+    Check(CeMultiBeShouldUseLocalAudio(false, true, 1, false, false, 0, false, false, true), "2v2 splitscreen human P2 keeps local audio");
+    // Online match: only local player slot gets 2D HUD/cockpit audio, remote peer gets 3D audio
+    Check(CeMultiBeShouldUseLocalAudio(false, true, 1, false, true, 1, false, false, true), "Online local slot 1 uses local audio");
+    Check(!CeMultiBeShouldUseLocalAudio(false, true, 0, false, true, 1, false, true, false), "Online remote slot 0 silenced from 2D audio");
+    Check(!CeMultiBeShouldUseLocalAudio(false, false, -1, false, true, 1, false, true, false), "Online 2P remote peer silenced from 2D audio");
+
     if (!gFail) std::puts("multibe-host-ok");
     return gFail != 0;
 }
@@ -513,6 +536,26 @@ class HostHelperTests(unittest.TestCase):
                 "\treturn CeMultiBeClamp(-pitchErr * 1.6f, -0.75f, 0.75f);",
                 "\treturn CeMultiBeClamp(pitchErr * 1.6f, -0.75f, 0.75f);",
             ),
+            "solo controls bypasses fence": (
+                "\tif (fenced)\n\t\treturn false;\n\treturn soloSkirmish || oneScreenMatch;",
+                "\treturn soloSkirmish || oneScreenMatch;",
+            ),
+            "solo controls ignores soloSkirmish": (
+                "\treturn soloSkirmish || oneScreenMatch;",
+                "\treturn oneScreenMatch;",
+            ),
+            "local audio leaks AI cockpit sounds": (
+                "\t\tif (slotIsAi)\n\t\t\treturn false;",
+                "\t\tif (slotIsAi)\n\t\t\treturn true;",
+            ),
+            "local audio leaks remote online HUD": (
+                "\t\tif (onlineActive)\n\t\t\treturn slotIndex == localOnlineSlot;",
+                "\t\tif (onlineActive)\n\t\t\treturn true;",
+            ),
+            "local audio ignores faithful fence": (
+                "\tif (faithfulFence)\n\t\treturn true;",
+                "\tif (faithfulFence)\n\t\treturn false;",
+            ),
         }
         for name, (old, new) in s_mutants.items():
             with self.subTest(mutant=name):
@@ -602,12 +645,20 @@ class GateAuditTests(unittest.TestCase):
         )
         patch_0373 = (PORT / "patches/0373-ce-multibe-unit-sound-particles.patch").read_text(encoding="latin-1")
         self.assertIn("PortCeOneScreenMatch()", patch_0373, "patch 0373 must pin 3D audio listener to camera 0 in one-screen matches")
+        self.assertIn("PortCeBattleEngineIsLocalHuman", patch_0373, "patch 0373 must isolate non-local/AI Battle Engine 2D gunfire and HUD audio")
+        self.assertIn("PortCeSoloControlsActive", patch_0375, "patch 0375 must allow dual-slot 1P controls in Solo Skirmish")
         patch_0369 = (PORT / "patches/0369-ce-multibe-controller-slots.patch").read_text(encoding="latin-1")
         self.assertIn("PortCeSoloSkirmishActive", patch_0369, "patch 0369 must exempt slot 1 from disconnect gate in Solo Skirmish")
+        self.assertIn("PlayerInput(int player) const", patch_0369, "patch 0369 must keep SControlBinding at retail 32 bytes via PlayerInput()")
+        patch_0370 = (PORT / "patches/0370-ce-multibe-game-state.patch").read_text(encoding="latin-1")
+        self.assertIn("static SINT\t\tmPlayerLives[MAX_PLAYERS];", patch_0370, "patch 0370 must keep CGame::mPlayerLives static for retail CGame layout")
         self.assertIn("MEMTYPE_UNKNOWN", src, "ce_multibe.cpp must use MEMTYPE_UNKNOWN instead of raw 0x80")
         self.assertNotIn("(EMemoryType)0x80", src, "ce_multibe.cpp must not hardcode (EMemoryType)0x80")
         lvl_begin = src[src.index('extern "C" void PortCeMultiBeLevelBegin('):src.index('extern "C" void PortCeMultiBeLevelEnd(')]
         self.assertIn("CeCmdMatchLevelEnd();", lvl_begin, "PortCeMultiBeLevelBegin must defensively call CeCmdMatchLevelEnd()")
+        render_cam = src[src.index('extern "C" CCamera *PortCeMultiBeRenderCamera('):src.index('extern "C" CBattleEngine *PortCeMultiBeHudFocus(')]
+        for guard in ("PortCeCmdMapOpen()", "PortCePlayUnitOwnsPilot(0)", "GAME.IsFreeCameraOn(0)", "camera != GAME.GetCamera(0)"):
+            self.assertIn(guard, render_cam, f"PortCeMultiBeRenderCamera must bypass override on {guard}")
 
 
 class LiveEngineTests(unittest.TestCase):

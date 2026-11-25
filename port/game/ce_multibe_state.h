@@ -491,4 +491,38 @@ struct CeMultiBeMatchState
 	}
 };
 
+// Pure decision rule: should Player 1 read both primary (slot 0) and secondary (slot 1) control bindings
+// in a multiplayer/skirmish level? True only when one local human plays alone (Solo vs AI Skirmish or
+// one-screen Commander match) and never in 2P splitscreen, network games, or faithful replays.
+inline bool CeMultiBeShouldUseSoloControls(bool fenced, bool soloSkirmish, bool oneScreenMatch)
+{
+	if (fenced)
+		return false;
+	return soloSkirmish || oneScreenMatch;
+}
+
+// Pure decision rule: should a Battle Engine play 2D non-positional cockpit gunfire and HUD voice/alarm
+// audio? True for local human Battle Engines (including both humans in 2P splitscreen) and in faithful
+// replays; false for AI-piloted Battle Engines (Solo Skirmish P2, 3-4 BE aux bots) and remote online peers.
+inline bool CeMultiBeShouldUseLocalAudio(bool faithfulFence, bool multiBeActive, int slotIndex,
+                                         bool slotIsAi, bool onlineActive, int localOnlineSlot,
+                                         bool soloOrOneScreen, bool matchesSlot0, bool matchesLocalOnlineSlot)
+{
+	if (faithfulFence)
+		return true;
+	if (multiBeActive && slotIndex >= 0)
+	{
+		if (slotIsAi)
+			return false;
+		if (onlineActive)
+			return slotIndex == localOnlineSlot;
+		return true;
+	}
+	if (soloOrOneScreen && !matchesSlot0)
+		return false;
+	if (onlineActive && !matchesLocalOnlineSlot)
+		return false;
+	return true;
+}
+
 #endif

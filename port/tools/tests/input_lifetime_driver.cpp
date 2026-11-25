@@ -30,6 +30,12 @@ static bool TestWindowSizePixels(SDL_Window* window, int* width, int* height) {
   if (height) *height = lifecycleHeight;
   return true;
 }
+static bool TestWindowSize(SDL_Window* window, int* width, int* height) {
+  if (!lifecycleActive) return SDL_GetWindowSize(window, width, height);
+  if (width) *width = lifecycleWidth;
+  if (height) *height = lifecycleHeight;
+  return true;
+}
 static bool SDLCALL LifecycleWatch(void*, SDL_Event* event) {
   switch (event->type) {
     case SDL_EVENT_WINDOW_FOCUS_LOST: ++lifecycleLost; break;
@@ -124,6 +130,7 @@ static SDL_JoystickID *TestJoysticks(int *count) {
 #define SDL_GetMouseFocus TestMouseFocus
 #define SDL_GetWindowPixelDensity TestPixelDensity
 #define SDL_GetWindowSizeInPixels TestWindowSizePixels
+#define SDL_GetWindowSize TestWindowSize
 // window.cpp only reads LT's raw key array for its optional debug switch. Keep that independent of the caller fixture.
 #define LT PortWindowShellBytes
 #include "WINDOW_CPP"
@@ -205,7 +212,10 @@ enum { BUTTON_FRONTEND_CHEAT = 45 };
 constexpr float ANALOGUE_ACT_AS_DIGITAL_THRESHOLD = .9f;
 static bool testKeyOn;
 struct SControlInput { int mPad, mType; short mKey, mVKey; };
-struct SControlBinding { bool mConfigurable; int mId; SControlInput mInput[2]; } CONTROL_BINDINGS[4];
+struct SControlBinding {
+    bool mConfigurable; int mId; SControlInput mInput[2];
+    const SControlInput *PlayerInput(int p) const { static const SControlInput u = {-1, 0, 0, 0}; return (p >= 0 && p < 2) ? &mInput[p] : &u; }
+} CONTROL_BINDINGS[4];
 struct FixtureDemoBuffer {
     unsigned words[3]{}, cursor = 0;
     void Read(void *out, size_t n) { assert(cursor < 3 && n == sizeof(unsigned)); memcpy(out, &words[cursor++], n); }
@@ -297,6 +307,7 @@ void PortUiMouseMenuPoint(int *x, int *y) {
 static bool testMultiplayer;
 struct InputTestGame { bool IsMultiplayer() { return testMultiplayer; } bool IsPaused() { return false; } void *GetController(int) { return nullptr; } } GAME;
 extern "C" int PortCeSoloSkirmishActive(void) { return 0; }
+extern "C" int PortCeSoloControlsActive(void) { return 0; }
 #if defined(CE_VERSION)
 GAMEPAD_EDGE_FUNCTIONS
 #endif
@@ -318,6 +329,7 @@ GAMEPAD_MAPPING_FUNCTIONS
 
 #define CHECK(expr) do { if (!(expr)) { fprintf(stderr, "failed: %s at %d SDL=%s\n", #expr, __LINE__, SDL_GetError()); return 1; } } while (0)
 static unsigned windowMouse, directDown, directUp, focusNotifications;
+static std::vector<std::pair<UINT, WPARAM>> windowMouseUps;
 static void PrintLifecycleCounts() {
   if (!lifecycleActive) return;
   printf("INPUT_LIFECYCLE_COUNTS {\"checks\":%u,\"pushed\":%u,\"focus_lost\":%u,\"focus_gained\":%u,\"minimized\":%u,\"restored\":%u,\"minimized_messages\":%u,\"restored_messages\":%u,\"restore_width\":%d,\"restore_height\":%d,\"focus_messages\":%u,\"skipped\":0}\n",
@@ -340,7 +352,12 @@ static LRESULT WINAPI Proc(HWND, UINT msg, WPARAM wp, LPARAM lp) {
     }
   }
 
-    if (msg >= WM_MOUSEFIRST && msg <= WM_MOUSEWHEEL) { ++windowMouse; HandleMouseMessage(msg, wp, lp); }
+    if (msg >= WM_MOUSEFIRST && msg <= WM_MOUSEWHEEL) {
+        ++windowMouse;
+        if (msg == WM_LBUTTONUP || msg == WM_RBUTTONUP || msg == WM_MBUTTONUP)
+            windowMouseUps.push_back({msg, wp});
+        HandleMouseMessage(msg, wp, lp);
+    }
     if (msg == WM_KEYDOWN) ++directDown;
     if (msg == WM_KEYUP) ++directUp;
     if (msg == WM_ACTIVATE || msg == WM_ACTIVATEAPP) ++focusNotifications;
@@ -776,7 +793,7 @@ int main(int argc, char **argv) {
                    !strcmp(test, "pad-edge-cross-overflow") || !strcmp(test, "pad-edge-split-two") ||
                    !strcmp(test, "pad-edge-hotplug-two") || !strcmp(test, "pad-neutral-record-two") ||
                    !strcmp(test, "pad-neutral-tape-two") || !strcmp(test, "pad-edge-record-saved-two") ||
-                   !strcmp(test, "pad-edge-tape-saved-two");
+                   !strcmp(test, "pad-edge-tape-saved-two") || !strcmp(test, "pad-rebind-per-device");
         const bool noPad = (!strncmp(test, "pad-edge-pov-", 13) || !strncmp(test, "pad-edge-demo-", 14)) && strstr(test, "-absent");
         for (int i = 0; i < (noPad ? 0 : !strcmp(test, "pad-limit") ? 5 : two ? 2 : 1); ++i)
             { pads.push_back(VirtualPad()); CHECK(pads.back()); }
@@ -786,7 +803,7 @@ int main(int argc, char **argv) {
             snprintf(mapping, sizeof(mapping), "%s,Authored duplicate,a:b0,a:b1,b:b2,start:b6,leftx:a0,lefty:a1,rightx:a2,righty:a3,lefttrigger:a4,righttrigger:a5,", s);
             CHECK(SDL_AddGamepadMapping(mapping) >= 0);
         }
-        if (strncmp(test, "pad-trigger-", 12) == 0) {
+        if (strncmp(test, "pad-trigger-", 12) == 0 || !strcmp(test, "pad-focus-neutral")) {
             CHECK(SDL_SetJoystickVirtualAxis(pads[0], SDL_GAMEPAD_AXIS_LEFT_TRIGGER, -32768));
             CHECK(SDL_SetJoystickVirtualAxis(pads[0], SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, -32768));
             SDL_UpdateJoysticks();
@@ -900,7 +917,68 @@ int main(int argc, char **argv) {
             }
         } else
 #endif
-        if (!strcmp(test, "pad-properties")) {
+        if (!strcmp(test, "pad-focus-neutral")) {
+#if defined(CE_VERSION) && defined(CE_EDGE_TESTS)
+            CHECK(SUCCEEDED(LT.pJoystick[0]->Acquire()));
+            DIPROPRANGE range{}; range.diph.dwSize = sizeof(range); range.diph.dwHeaderSize = sizeof(DIPROPHEADER);
+            range.diph.dwHow = DIPH_DEVICE; range.lMin = 100; range.lMax = 900;
+            CHECK(SUCCEEDED(LT.pJoystick[0]->SetProperty(DIPROP_RANGE, &range.diph)));
+            CHECK(SUCCEEDED(LT.UpdateJoystick(0, true)));
+            PortCeGamepadUpdate(0);
+            CHECK(SDL_SetJoystickVirtualAxis(pads[0], SDL_GAMEPAD_AXIS_LEFTX, 32767));
+            CHECK(SDL_SetJoystickVirtualAxis(pads[0], SDL_GAMEPAD_AXIS_LEFTY, -32768));
+            CHECK(SDL_SetJoystickVirtualAxis(pads[0], SDL_GAMEPAD_AXIS_LEFT_TRIGGER, 20000));
+            CHECK(SDL_SetJoystickVirtualAxis(pads[0], SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, 20000));
+            CHECK(SDL_SetJoystickVirtualButton(pads[0], SDL_GAMEPAD_BUTTON_DPAD_RIGHT, true));
+            CHECK(SDL_SetJoystickVirtualButton(pads[0], SDL_GAMEPAD_BUTTON_SOUTH, true));
+            SDL_UpdateJoysticks();
+            CHECK(SUCCEEDED(LT.UpdateJoystick(0, true)));
+            PortCeGamepadUpdate(0);
+            CHECK(LT.JoyState(0)->lX == 900 && LT.JoyState(0)->lY == 100 && LT.JoyState(0)->rgdwPOV[0] == 9000);
+            CHECK(LT.JoyButtonOn(0, 3) && LT.JoyButtonOn(0, 16) && LT.JoyButtonOn(0, 17) && PortCeGamepadEdge(0, 3, false));
+            focused = false;
+            CHECK(PushLifecycleEvent(SDL_EVENT_WINDOW_FOCUS_LOST, testWindow)); Drain();
+            CHECK(SUCCEEDED(LT.UpdateJoystick(0, true)));
+            CHECK(LT.JoyState(0)->lX == 500 && LT.JoyState(0)->lY == 500 && LT.JoyState(0)->lZ == 500 && LT.JoyState(0)->lRz == 500);
+            for (int i = 0; i < 4; ++i) CHECK(LT.JoyState(0)->rgdwPOV[i] == 0xFFFFFFFF);
+            CHECK(!LT.JoyButtonOn(0, 3) && !LT.JoyButtonOn(0, 16) && !LT.JoyButtonOn(0, 17));
+            focused = true; minimized = true;
+            CHECK(PushLifecycleEvent(SDL_EVENT_WINDOW_MINIMIZED, testWindow)); Drain();
+            CHECK(SUCCEEDED(LT.UpdateJoystick(0, true)));
+            CHECK(LT.JoyState(0)->lX == 500 && LT.JoyState(0)->rgdwPOV[0] == 0xFFFFFFFF && !LT.JoyButtonOn(0, 3) && !LT.JoyButtonOn(0, 16));
+            minimized = false; focused = true;
+            CHECK(PushLifecycleEvent(SDL_EVENT_WINDOW_RESTORED, testWindow));
+            CHECK(PushLifecycleEvent(SDL_EVENT_WINDOW_FOCUS_GAINED, testWindow)); Drain();
+            PortCeGamepadUpdate(0);
+            CHECK(PortCeGamepadOn(0, 3) && !PortCeGamepadEdge(0, 3, false));
+            CHECK(SUCCEEDED(LT.UpdateJoystick(0, true)));
+            CHECK(LT.JoyState(0)->lX == 900 && LT.JoyButtonOn(0, 3) && LT.JoyButtonOn(0, 16));
+#else
+            return 2;
+#endif
+        } else if (!strcmp(test, "pad-rebind-per-device")) {
+            CHECK(SUCCEEDED(LT.pJoystick[0]->Acquire()) && SUCCEEDED(LT.pJoystick[1]->Acquire()));
+            CHECK(SDL_SetJoystickVirtualAxis(pads[0], SDL_GAMEPAD_AXIS_LEFT_TRIGGER, 20000));
+            CHECK(SDL_SetJoystickVirtualButton(pads[1], SDL_GAMEPAD_BUTTON_SOUTH, true));
+            SDL_UpdateJoysticks();
+            CHECK(SUCCEEDED(LT.UpdateJoystick(0, true)) && SUCCEEDED(LT.UpdateJoystick(1, true)));
+            CHECK(LT.JoyButtonOn(0, 16) && LT.JoyButtonOn(1, 3));
+            CHECK(SDL_DetachVirtualJoystick(virtualIds[0]) && SDL_DetachVirtualJoystick(virtualIds[1]));
+            virtualIds.clear();
+            SDL_UpdateJoysticks();
+            // Immediate poll inside the 500ms enumeration throttle must still close dead handles and clear triggerDown.
+            CHECK(SUCCEEDED(LT.UpdateJoystick(0, true)) && SUCCEEDED(LT.UpdateJoystick(1, true)));
+            CHECK(!LT.JoyButtonOn(0, 16) && !LT.JoyButtonOn(1, 3));
+            SDL_Delay(520);
+            SDL_Joystick *fresh0 = VirtualPad(), *fresh1 = VirtualPad();
+            CHECK(fresh0 && fresh1);
+            CHECK(SDL_SetJoystickVirtualButton(fresh0, SDL_GAMEPAD_BUTTON_SOUTH, true));
+            CHECK(SDL_SetJoystickVirtualButton(fresh1, SDL_GAMEPAD_BUTTON_SOUTH, true));
+            SDL_UpdateJoysticks();
+            // Both devices must rebind back-to-back without slot 0's throttle starving slot 1.
+            CHECK(SUCCEEDED(LT.UpdateJoystick(0, true)) && SUCCEEDED(LT.UpdateJoystick(1, true)));
+            CHECK(LT.JoyButtonOn(0, 3) && LT.JoyButtonOn(1, 3));
+        } else if (!strcmp(test, "pad-properties")) {
             // The game's Controller Options page names each pad by DIPROP_INSTANCENAME, and InitDirectInput sets the
             // axis range with DIPROP_RANGE. Both are MAKEDIPROP(n) references; a comparison an optimizing compiler can
             // fold made every property miss (every pad "Not present").
@@ -1467,6 +1545,37 @@ int main(int argc, char **argv) {
             gFakeHeld[SDL_SCANCODE_W] = false; KeyEvent(key, MainWindow()); Drain();
             CHECK(gHeld == 0 && directUp == 21);
         }
+    } else if (!strcmp(test, "mouse-release-focus-loss")) {
+        gMenuMouse = 1;
+        for (int i = 0; i < 18; ++i) {
+            SDL_KeyboardEvent key{}; key.type = SDL_EVENT_KEY_DOWN; key.scancode = static_cast<SDL_Scancode>(SDL_SCANCODE_B + i);
+            key.key = static_cast<SDL_Keycode>('b' + i); key.down = true;
+            gFakeHeld[key.scancode] = true; KeyEvent(key, MainWindow());
+        }
+        PushMouseAt(SDL_EVENT_MOUSE_BUTTON_DOWN, 640.f, 360.f, SDL_BUTTON_LEFT);
+        PushMouseAt(SDL_EVENT_MOUSE_BUTTON_DOWN, 640.f, 360.f, SDL_BUTTON_RIGHT);
+        Drain();
+        CHECK(gHeld == 18 && gHeldMouse == 2 && MOUSE_BUTTONS[0].mDown && MOUSE_BUTTONS[2].mDown);
+        while (Free() > 17) Post(MainWindow(), WM_USER, 0, 0);
+        focused = false;
+        SDL_Event event{}; event.type = SDL_EVENT_WINDOW_FOCUS_LOST; event.window.windowID = 17;
+        CHECK(SDL_PushEvent(&event));
+        Drain(); Drain(); Drain();
+        CHECK(gHeld == 0 && gHeldMouse == 0 && directUp == 18);
+        CHECK(MOUSE_BUTTONS[0].mReleased && MOUSE_BUTTONS[2].mReleased);
+        CHECK(windowMouseUps.size() == 2);
+        CHECK(windowMouseUps[0].first == WM_LBUTTONUP && (windowMouseUps[0].second & MK_RBUTTON) && !(windowMouseUps[0].second & MK_LBUTTON));
+        CHECK(windowMouseUps[1].first == WM_RBUTTONUP && windowMouseUps[1].second == 0);
+        // Late physical releases for buttons already synthetically released must not post duplicate WM_*BUTTONUP.
+        PushMouseAt(SDL_EVENT_MOUSE_BUTTON_UP, 640.f, 360.f, SDL_BUTTON_LEFT);
+        PushMouseAt(SDL_EVENT_MOUSE_BUTTON_UP, 640.f, 360.f, SDL_BUTTON_RIGHT);
+        Drain();
+        CHECK(windowMouseUps.size() == 2);
+        focused = true; event.type = SDL_EVENT_WINDOW_FOCUS_GAINED;
+        CHECK(SDL_PushEvent(&event)); Drain();
+        PushMouseAt(SDL_EVENT_MOUSE_BUTTON_DOWN, 640.f, 360.f, SDL_BUTTON_LEFT); Drain();
+        PushMouseAt(SDL_EVENT_MOUSE_BUTTON_UP, 640.f, 360.f, SDL_BUTTON_LEFT); Drain();
+        CHECK(windowMouseUps.size() == 3 && windowMouseUps[2].first == WM_LBUTTONUP);
     } else if (!strcmp(test, "replay-key")) {
         PortPostMessageA(MainWindow(), WM_KEYDOWN, 'W', KeyLParam(0x11, false, false)); Drain();
         CHECK(directDown == 1 && gHeld == 0);
@@ -1525,6 +1634,24 @@ int main(int argc, char **argv) {
             CHECK(SUCCEEDED(PollMouseMotion())); CHECK(MOUSE_X == 0 && MOUSE_Y == 0);
             relativeX = .5f; relativeY = -.5f; CHECK(SUCCEEDED(PollMouseState())); CHECK(MOUSE_X == 0 && MOUSE_Y == 0);
             relativeX = .5f; relativeY = -.5f; CHECK(SUCCEEDED(PollMouseState())); CHECK(MOUSE_X == 1 && MOUSE_Y == -1);
+        } else if (!strcmp(test, "mouse-buttons-no-focus")) {
+            relativeButtons = SDL_BUTTON_LMASK | SDL_BUTTON_RMASK;
+            relativeX = 8.f; relativeY = -6.f; Wheel(1);
+            focused = false;
+            DIMOUSESTATE2 st{}; CHECK(SUCCEEDED(mouse.GetDeviceState(sizeof(st), &st)));
+            CHECK(st.lX == 0 && st.lY == 0 && st.lZ == 0 && !st.rgbButtons[0] && !st.rgbButtons[1] && !st.rgbButtons[2]);
+            relativeX = 4.f; relativeY = -4.f;
+            CHECK(SUCCEEDED(PollMouseState()) && MOUSE_X == 0 && MOUSE_Y == 0 && !MOUSE_HELD[0] && !MOUSE_HELD[1]);
+            focused = true; minimized = true;
+            relativeX = 6.f; Wheel(1);
+            CHECK(SUCCEEDED(mouse.GetDeviceState(sizeof(st), &st)));
+            CHECK(st.lX == 0 && st.lY == 0 && st.lZ == 0 && !st.rgbButtons[0] && !st.rgbButtons[1]);
+            minimized = false; focused = true;
+            relativeX = 5.f;
+            CHECK(SUCCEEDED(mouse.GetDeviceState(sizeof(st), &st)));
+            CHECK(st.lX == 0 && st.rgbButtons[0] == 0x80 && st.rgbButtons[1] == 0x80);
+            relativeButtons = 0;
+            CHECK(SUCCEEDED(mouse.GetDeviceState(sizeof(st), &st)) && !st.rgbButtons[0] && !st.rgbButtons[1]);
         } else if (!strcmp(test, "mouse-fraction-no-focus")) {
             MOUSE_X = MOUSE_Y = 0;
             relativeX = 2.f; relativeY = -2.f; CHECK(SUCCEEDED(PollMouseState()));

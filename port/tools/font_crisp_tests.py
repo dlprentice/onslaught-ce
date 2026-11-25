@@ -492,7 +492,8 @@ def sharp_program(wide=None, font=None):
     report, ce = REPORT.read_text(), CE.read_text()
     start = report.index("typedef struct CeSettingsDir")
     end = report.index("} CeSettingsDir;", start) + len("} CeSettingsDir;")
-    reader = "".join([definition(report, "static inline void ce_user_dir("), report[start:end] + "\n",
+    reader = "".join([definition(report, "static inline size_t ce_trim_sep_len("),
+                      definition(report, "static inline void ce_user_dir("), report[start:end] + "\n",
                       definition(report, "static inline void ce_settings_dir_close("),
                       definition(report, "static inline int ce_settings_dir_open_ex("),
                       definition(report, "static inline int ce_ini_match_key("),
@@ -663,6 +664,510 @@ class CrispTests(unittest.TestCase):
                 exe = self.build_sharp(f"mutant-{name}", sharp_program(**{where: broken}))
                 failed = [text for text, answer in SHARP_CASES if self.sharp_case(exe, text, answer).returncode != 0]
                 self.assertTrue(failed, f"mutant {name} survived every case")
+
+    def test_linux_user_gdi_font_and_dib_lifecycle(self):
+        user_src = (ROOT / "port/platform/linux/user.cpp").read_text()
+        gdi_start = user_src.index("// ---- GDI: memory DCs and DIB sections")
+        gdi_end = user_src.index("// ---- version information:")
+        gdi_slice = user_src[gdi_start:gdi_end]
+        program = self.out / "linux_user_gdi.cpp"
+        program.write_text(
+            "#include <limits.h>\n"
+            "#include <stdint.h>\n"
+            "#include <stdio.h>\n"
+            "#include <stdlib.h>\n"
+            "#include <string.h>\n"
+            '#include "windows.h"\n'
+            + gdi_slice
+            + r"""
+static void check(bool ok, const char *what)
+{
+    if (!ok) { fprintf(stderr, "FAIL: %s\n", what); exit(2); }
+}
+int main()
+{
+    HDC dc = CreateCompatibleDC(NULL);
+    check(dc != NULL, "CreateCompatibleDC returns non-NULL");
+    HFONT font = CreateFontA(-16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                             ANTIALIASED_QUALITY, VARIABLE_PITCH, "Sans");
+    check(font != NULL, "CreateFontA returns non-NULL");
+    HGDIOBJ prevFont = SelectObject(dc, font);
+    check(prevFont != NULL && prevFont != (HGDIOBJ)(intptr_t)-1, "SelectObject accepts font handle");
+
+    BITMAPINFO bmi;
+    memset(&bmi, 0, sizeof(bmi));
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = 16;
+    bmi.bmiHeader.biHeight = -16;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    void *bits = (void *)0x1;
+    HBITMAP bmp = CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &bits, NULL, 0);
+    check(bmp != NULL && bits != NULL, "CreateDIBSection allocates valid 32-bit section");
+    memset(bits, 0x7f, 16 * 16 * 4);
+
+    // Regression for Linux DeleteObject(font) casting sentinel 0x464f to Dib* and segfaulting.
+    check(DeleteObject(font) == TRUE, "DeleteObject recognizes font sentinel without dereferencing");
+    check(DeleteObject(NULL) == FALSE, "DeleteObject rejects NULL");
+    check(DeleteObject((HGDIOBJ)(intptr_t)-1) == FALSE, "DeleteObject rejects HGDI_ERROR");
+    check(DeleteObject(GetDC(NULL)) == FALSE, "DeleteObject rejects screen DC sentinel");
+    check(DeleteObject(dc) == FALSE, "DeleteObject rejects memory DC sentinel");
+    check(DeleteObject(bmp) == TRUE, "DeleteObject frees DIB section");
+    check(DeleteDC(dc) == TRUE, "DeleteDC succeeds");
+
+    // Bounds and overflow hardening on CreateDIBSection.
+    void *badBits = (void *)0x1;
+    check(CreateDIBSection(dc, NULL, DIB_RGB_COLORS, &badBits, NULL, 0) == NULL && badBits == NULL, "NULL bmi rejected");
+    bmi.bmiHeader.biWidth = 0;
+    badBits = (void *)0x1;
+    check(CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &badBits, NULL, 0) == NULL && badBits == NULL, "zero width rejected");
+    bmi.bmiHeader.biWidth = 16;
+    bmi.bmiHeader.biHeight = INT_MIN;
+    badBits = (void *)0x1;
+    check(CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &badBits, NULL, 0) == NULL && badBits == NULL, "INT_MIN height rejected without UB");
+    bmi.bmiHeader.biWidth = 65536;
+    bmi.bmiHeader.biHeight = -65536;
+    badBits = (void *)0x1;
+    check(CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &badBits, NULL, 0) == NULL && badBits == NULL, "oversized DIB rejected");
+    bmi.bmiHeader.biWidth = 16;
+    bmi.bmiHeader.biHeight = -16;
+    bmi.bmiHeader.biBitCount = 7;
+    badBits = (void *)0x1;
+    check(CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &badBits, NULL, 0) == NULL && badBits == NULL, "invalid bpp rejected");
+    puts("linux user gdi passed");
+    return 0;
+}
+"""
+        )
+        exe = self.out / "linux_user_gdi"
+        built = subprocess.run(
+            [os.environ.get("CXX", "g++"), "-std=c++14", "-g", "-Wall", "-Wextra", "-Werror", *SANITIZE,
+             f"-I{ROOT / 'port/include'}", f"-I{ROOT / 'port/include/linux'}",
+             f"-I{deps.DATA / 'dxvk-native/usr/include/dxvk'}", str(program), "-o", str(exe)],
+            capture_output=True, text=True, timeout=180, preexec_fn=no_core
+        )
+        self.assertEqual(built.returncode, 0, built.stderr)
+        ran = self.run_exe(exe)
+        self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
+        self.assertIn("linux user gdi passed", ran.stdout)
+
+    def test_dxfont_lifecycle_zstate_and_generation_cache(self):
+        src = SOURCE.read_text()
+        ns_start = src.index("namespace\n{")
+        ctor_start = src.index("CDXBitmapFont::CDXBitmapFont()")
+        ns_block = src[ns_start:ctor_start]
+        dtor_fn = definition(src, "CDXBitmapFont::~CDXBitmapFont()")
+        sys_fn = definition(src, "void\tCDXBitmapFont::InitFromSysFont()")
+        prep_fn = definition(src, "static void\tPrepareFont(CDXBitmapFont *font)")
+        draw_fn = definition(src, "HRESULT\tCDXBitmapFont::DrawTextScaled(")
+
+        program = self.out / "dxfont_lifecycle.cpp"
+        program.write_text(
+            r"""#include <math.h>
+#include <stdarg.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <vector>
+
+typedef unsigned char UBYTE, BYTE;
+typedef unsigned int DWORD, UINT;
+typedef int INT, BOOL;
+typedef float FLOAT;
+typedef long HRESULT;
+typedef uint16_t WCHAR;
+typedef char TCHAR;
+typedef const char *LPCTSTR;
+typedef void VOID;
+#define TRUE 1
+#define FALSE 0
+#define S_OK ((HRESULT)0)
+#define E_FAIL ((HRESULT)0x80004005L)
+#define SUCCEEDED(hr) (((HRESULT)(hr)) >= 0)
+#define FAILED(hr) (((HRESULT)(hr)) < 0)
+#define ZeroMemory(p, n) memset((p), 0, (n))
+#define RGB(r, g, b) ((DWORD)(((BYTE)(r)) | ((DWORD)((BYTE)(g)) << 8) | ((DWORD)((BYTE)(b)) << 16)))
+
+enum {
+    BI_RGB = 0, DIB_RGB_COLORS = 0, MM_TEXT = 1, LOGPIXELSY = 90,
+    FW_NORMAL = 400, FW_BOLD = 700, DEFAULT_CHARSET = 1,
+    OUT_DEFAULT_PRECIS = 0, CLIP_DEFAULT_PRECIS = 0, ANTIALIASED_QUALITY = 4, VARIABLE_PITCH = 2,
+    TA_TOP = 0, ETO_OPAQUE = 2,
+    D3DFVF_XYZRHW = 0x004, D3DFVF_DIFFUSE = 0x040, D3DFVF_TEX1 = 0x100,
+    D3DFMT_A8R8G8B8 = 21, D3DFMT_INDEX16 = 101,
+    D3DPOOL_DEFAULT = 0, D3DPOOL_MANAGED = 1,
+    D3DUSAGE_WRITEONLY = 8, D3DUSAGE_DYNAMIC = 512,
+    D3DPT_TRIANGLELIST = 4, D3DLOCK_READONLY = 16, D3DLOCK_NOSYSLOCK = 2048,
+    D3DRS_ZENABLE = 7, INVALID_STATE = 0x7fffffff,
+    MEMTYPE_TEXTURE = 1, TEXFMT_A8R8G8B8 = 21
+};
+typedef DWORD COLORREF, D3DFORMAT, D3DPOOL;
+struct SIZE { INT cx, cy; };
+struct RECT { INT left, top, right, bottom; };
+struct BITMAPINFOHEADER {
+    DWORD biSize; INT biWidth; INT biHeight; uint16_t biPlanes; uint16_t biBitCount;
+    DWORD biCompression; DWORD biSizeImage; INT biXPelsPerMeter; INT biYPelsPerMeter; DWORD biClrUsed; DWORD biClrImportant;
+};
+struct BITMAPINFO { BITMAPINFOHEADER bmiHeader; DWORD bmiColors[1]; };
+typedef void *HGDIOBJ, *HDC, *HBITMAP, *HFONT, *HANDLE;
+struct D3DXVECTOR4 {
+    FLOAT x, y, z, w;
+    D3DXVECTOR4() : x(0), y(0), z(0), w(0) {}
+    D3DXVECTOR4(FLOAT a, FLOAT b, FLOAT c, FLOAT d) : x(a), y(b), z(c), w(d) {}
+};
+struct D3DSURFACE_DESC { D3DFORMAT Format; UINT Width, Height; };
+struct D3DLOCKED_RECT { INT Pitch; void *pBits; };
+struct D3DCAPS9 { DWORD MaxTextureWidth, MaxTextureHeight; };
+
+enum PortSessionCategory { PORT_SESSION_VIDEO = 0 };
+static int gLogErrors = 0;
+void PortSessionLog(PortSessionCategory, bool isError, const char *, ...) { if (isError) ++gLogErrors; }
+DWORD GetTickCount() { return 1000; }
+INT MulDiv(INT a, INT b, INT c) { return (INT)(((int64_t)a * b) / c); }
+const char *ToTCHAR(const char *s) { return s; }
+
+static uint64_t gDeviceGen = 1;
+extern "C" uint64_t PortCeD3dDeviceGeneration(void) __attribute__((weak));
+extern "C" uint64_t PortCeD3dDeviceGeneration(void) { return gDeviceGen; }
+struct TweakStub { int mValue; } USE_MODULATE_2X = {1};
+float FONT_U_OFFSET = 0.0f, FONT_V_OFFSET = 0.0f;
+static int gWideActive = 1, gSharpUi = 1;
+int PortWideActive() { return gWideActive; }
+int PortSharpUi() { return gSharpUi; }
+float PortUiScale() { return 1.0f; }
+float PortUiLeft() { return 0.0f; }
+float PortUiTop() { return 0.0f; }
+
+static int gLiveTextures = 0;
+static bool gFailCreateTex = false, gFailDstLock = false, gFailSysLock = false;
+static INT gSysPitchOverride = 0;
+
+struct IDirect3DTexture9 {
+    UINT w, h;
+    INT pitch;
+    D3DFORMAT fmt;
+    int refs = 1;
+    bool isSysTex = false;
+    std::vector<BYTE> storage;
+    IDirect3DTexture9(UINT ww, UINT hh, D3DFORMAT ff, INT pp = 0)
+        : w(ww), h(hh), pitch(pp ? pp : (INT)(ww * 4)), fmt(ff), storage((size_t)(pitch > 0 ? pitch : 4) * hh, 0)
+    { ++gLiveTextures; }
+    ~IDirect3DTexture9() { --gLiveTextures; }
+    void Release() { if (--refs == 0) delete this; }
+    HRESULT GetLevelDesc(UINT, D3DSURFACE_DESC *d) { d->Format = fmt; d->Width = w; d->Height = h; return S_OK; }
+    HRESULT LockRect(UINT, D3DLOCKED_RECT *lr, const RECT *, DWORD)
+    {
+        if ((isSysTex && gFailSysLock) || (!isSysTex && w >= 64 && gFailDstLock)) { lr->pBits = NULL; lr->Pitch = 0; return E_FAIL; }
+        lr->Pitch = (isSysTex && gSysPitchOverride) ? gSysPitchOverride : pitch;
+        if (lr->Pitch > 0 && (size_t)lr->Pitch * h > storage.size()) storage.resize((size_t)lr->Pitch * h, 0xee);
+        lr->pBits = storage.data();
+        return S_OK;
+    }
+    HRESULT UnlockRect(UINT) { return S_OK; }
+};
+
+struct IDirect3DDevice9 {
+    DWORD maxW = 1024, maxH = 1024;
+    DWORD devZ = TRUE;
+    HRESULT GetDeviceCaps(D3DCAPS9 *c) { c->MaxTextureWidth = maxW; c->MaxTextureHeight = maxH; return S_OK; }
+    HRESULT CreateTexture(UINT w, UINT h, UINT, DWORD, D3DFORMAT fmt, D3DPOOL, IDirect3DTexture9 **out, HANDLE *)
+    {
+        if (gFailCreateTex) { *out = NULL; return E_FAIL; }
+        *out = new IDirect3DTexture9(w, h, fmt);
+        return S_OK;
+    }
+    HRESULT GetRenderState(DWORD, DWORD *v) { *v = devZ; return S_OK; }
+};
+
+struct LtStub {
+    IDirect3DDevice9 *dev = NULL;
+    DWORD mRenderStates[16];
+    int srsCalls = 0;
+    IDirect3DTexture9 *boundTex = NULL;
+    LtStub() { for (int i = 0; i < 16; ++i) mRenderStates[i] = TRUE; }
+    IDirect3DDevice9 *GetDevice() { return dev; }
+    void SRS(DWORD state, DWORD val) { mRenderStates[state] = val; ++srsCalls; }
+    void D3D_SetTexture(DWORD, IDirect3DTexture9 *t) { boundTex = t; }
+} LT;
+
+struct FastVbStub {
+    std::vector<BYTE> buf;
+    int renders = 0;
+    FastVbStub() : buf(2600 * 4 * 32, 0) {}
+    void Create() {}
+    UINT LockAligned(void **out, int verts) { *out = buf.data(); (void)verts; return 0; }
+    void Render() { ++renders; }
+} FASTVB;
+
+struct FrontendStub { bool IsRunning() { return false; } } FRONTEND;
+struct PlatformStub { float GetWindowWidth() { return 640.f; } float GetWindowHeight() { return 480.f; } } PLATFORM;
+
+struct CDXTexture {
+    IDirect3DTexture9 *tex = NULL;
+    char mName[64] = {};
+    int refs = 1;
+    static void *operator new(size_t sz, int) { return ::operator new(sz); }
+    static void operator delete(void *p) { ::operator delete(p); }
+    static void operator delete(void *p, int) { ::operator delete(p); }
+    bool InitEmpty(DWORD w, DWORD h, int fmt, int, int, int)
+    {
+        if (gFailCreateTex) return false;
+        tex = new IDirect3DTexture9(w, h, (D3DFORMAT)fmt);
+        tex->isSysTex = true;
+        return true;
+    }
+    IDirect3DTexture9 *GetTexture() { return tex; }
+    void Release() { if (--refs == 0) { if (tex) tex->Release(); delete this; } }
+};
+
+struct CVBufTexture {
+    int refs = 1;
+    static CVBufTexture *GetOrCreate(CDXTexture *, int) { return new CVBufTexture; }
+    void SetupV(DWORD, DWORD, int, DWORD, D3DPOOL) {}
+    void SetupI(D3DFORMAT, DWORD, int, D3DPOOL) {}
+    void Release() { if (--refs == 0) delete this; }
+};
+
+enum GdiKind { GDI_STOCK_BMP = 1, GDI_STOCK_FONT = 2, GDI_BMP = 3, GDI_FONT = 4, GDI_DC = 5 };
+struct GdiObj {
+    GdiKind kind;
+    bool selected = false;
+    std::vector<DWORD> px;
+    explicit GdiObj(GdiKind k) : kind(k) {}
+};
+static GdiObj gStockBmpObj(GDI_STOCK_BMP), gStockFontObj(GDI_STOCK_FONT);
+struct GdiDc : GdiObj {
+    GdiObj *curBmp = &gStockBmpObj;
+    GdiObj *curFont = &gStockFontObj;
+    GdiDc() : GdiObj(GDI_DC) {}
+};
+
+static bool gLinuxSelectSemantics = false;
+static bool gFailDc = false, gFailDib = false, gFailFont = false, gFailSelectBmp = false, gFailSelectFont = false, gFailExtent = false;
+static int gLiveDcs = 0, gLiveBitmaps = 0, gLiveFonts = 0, gSelectOrderViolations = 0;
+
+HDC CreateCompatibleDC(HDC)
+{
+    if (gFailDc) return NULL;
+    ++gLiveDcs;
+    return (HDC)(new GdiDc());
+}
+BOOL DeleteDC(HDC h)
+{
+    if (!h) return FALSE;
+    GdiDc *dc = (GdiDc *)h;
+    if (!gLinuxSelectSemantics && (dc->curBmp != &gStockBmpObj || dc->curFont != &gStockFontObj))
+        ++gSelectOrderViolations;
+    --gLiveDcs;
+    delete dc;
+    return TRUE;
+}
+HBITMAP CreateDIBSection(HDC, const BITMAPINFO *bmi, UINT, VOID **bits, HANDLE, DWORD)
+{
+    if (gFailDib) { *bits = NULL; return NULL; }
+    int w = bmi->bmiHeader.biWidth;
+    int h = bmi->bmiHeader.biHeight < 0 ? -bmi->bmiHeader.biHeight : bmi->bmiHeader.biHeight;
+    GdiObj *b = new GdiObj(GDI_BMP);
+    b->px.assign((size_t)w * (size_t)h, 0x000000a0u);
+    *bits = b->px.data();
+    ++gLiveBitmaps;
+    return (HBITMAP)b;
+}
+INT SetMapMode(HDC, INT) { return MM_TEXT; }
+INT GetDeviceCaps(HDC, INT) { return 96; }
+HFONT CreateFont(INT, INT, INT, INT, INT, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, LPCTSTR)
+{
+    if (gFailFont) return NULL;
+    ++gLiveFonts;
+    return (HFONT)(new GdiObj(GDI_FONT));
+}
+HGDIOBJ SelectObject(HDC hdc, HGDIOBJ hobj)
+{
+    GdiDc *dc = (GdiDc *)hdc;
+    GdiObj *obj = (GdiObj *)hobj;
+    if (!dc || !obj) return NULL;
+    if (obj->kind == GDI_BMP || obj->kind == GDI_STOCK_BMP)
+    {
+        if (gFailSelectBmp && obj->kind == GDI_BMP) return (HGDIOBJ)(intptr_t)-1;
+        GdiObj *old = dc->curBmp;
+        old->selected = false;
+        dc->curBmp = obj;
+        obj->selected = (obj->kind == GDI_BMP);
+        return gLinuxSelectSemantics ? hobj : (HGDIOBJ)old;
+    }
+    if (obj->kind == GDI_FONT || obj->kind == GDI_STOCK_FONT)
+    {
+        if (gFailSelectFont && obj->kind == GDI_FONT) return (HGDIOBJ)(intptr_t)-1;
+        GdiObj *old = dc->curFont;
+        old->selected = false;
+        dc->curFont = obj;
+        obj->selected = (obj->kind == GDI_FONT);
+        return gLinuxSelectSemantics ? hobj : (HGDIOBJ)old;
+    }
+    return NULL;
+}
+BOOL DeleteObject(HGDIOBJ hobj)
+{
+    if (!hobj || hobj == (HGDIOBJ)(intptr_t)-1) return FALSE;
+    GdiObj *obj = (GdiObj *)hobj;
+    if (!gLinuxSelectSemantics && obj->selected) ++gSelectOrderViolations;
+    if (obj->kind == GDI_BMP) { --gLiveBitmaps; delete obj; return TRUE; }
+    if (obj->kind == GDI_FONT) { --gLiveFonts; delete obj; return TRUE; }
+    return FALSE;
+}
+COLORREF SetTextColor(HDC, COLORREF c) { return c; }
+COLORREF SetBkColor(HDC, COLORREF c) { return c; }
+UINT SetTextAlign(HDC, UINT a) { return a; }
+BOOL GetTextExtentPoint32(HDC, LPCTSTR, INT, SIZE *sz)
+{
+    if (gFailExtent) return FALSE;
+    sz->cx = 8; sz->cy = 16;
+    return TRUE;
+}
+BOOL ExtTextOut(HDC, INT, INT, UINT, const RECT *, LPCTSTR, UINT, const INT *) { return TRUE; }
+
+struct CDXBitmapFont {
+    CDXTexture *mTexture = NULL;
+    CVBufTexture *mVBufTexture = NULL;
+    CVBufTexture *mVBufTexture2 = NULL;
+    BOOL mSysFont = FALSE;
+    DWORD mHeight = 16, mFlags = 0, mTexWidth = 16, mTexHeight = 16;
+    FLOAT mTextScale = 1.f;
+    char mFontName[80] = "Arial";
+    char mTextureName[256] = "font";
+    FLOAT mTexCoords[256][4] = {};
+    CDXBitmapFont() { mTexCoords[0][3] = 1.f; }
+    ~CDXBitmapFont();
+    int RemapChar(WCHAR c) { return (c >= 32 && c < 127) ? (int)(c - 32) : 0; }
+    void InitFromTexture() {}
+    void InitFromSysFont();
+    HRESULT DrawTextScaled(float x, float y, float z, float scalex, float scaley, DWORD colour, WCHAR *text, int flags, DWORD *colours);
+};
+"""
+            + ns_block + dtor_fn + sys_fn + prep_fn + draw_fn
+            + r"""
+static void check(bool ok, const char *what)
+{
+    if (!ok) { fprintf(stderr, "FAIL: %s\n", what); exit(2); }
+}
+static void resetFaults()
+{
+    gFailCreateTex = gFailDstLock = gFailSysLock = false;
+    gFailDc = gFailDib = gFailFont = gFailSelectBmp = gFailSelectFont = gFailExtent = false;
+    gSysPitchOverride = 0;
+}
+int main()
+{
+    IDirect3DDevice9 dev;
+    LT.dev = &dev;
+
+    // 1. InitFromSysFont: Windows stock-handle semantics + padded destination pitch + deselection before DeleteObject.
+    for (bool linuxSel : {false, true})
+    {
+        resetFaults();
+        gLinuxSelectSemantics = linuxSel;
+        gSysPitchOverride = 256 * 4 + 32;
+        CDXBitmapFont f;
+        f.mSysFont = TRUE;
+        f.mHeight = 16;
+        f.InitFromSysFont();
+        check(f.mTexture != NULL && f.mTexture->GetTexture() != NULL, "InitFromSysFont succeeds");
+        check(gLiveDcs == 0 && gLiveBitmaps == 0 && gLiveFonts == 0, "all GDI handles cleaned up on success");
+        check(gSelectOrderViolations == 0, "GDI objects deselected before DeleteObject/DeleteDC");
+        const BYTE *firstRow = f.mTexture->GetTexture()->storage.data();
+        DWORD firstPx = 0;
+        memcpy(&firstPx, firstRow, 4);
+        check(firstPx == 0xa0ffffffu, "alpha intensity copied cleanly with padded Pitch");
+    }
+
+    // 2. InitFromSysFont failure paths: zero leaked GDI handles or partial textures.
+    gLinuxSelectSemantics = false;
+    for (int fault = 0; fault < 7; ++fault)
+    {
+        resetFaults();
+        if (fault == 0) gFailDc = true;
+        if (fault == 1) gFailDib = true;
+        if (fault == 2) gFailFont = true;
+        if (fault == 3) gFailSelectBmp = true;
+        if (fault == 4) gFailSelectFont = true;
+        if (fault == 5) gFailExtent = true;
+        if (fault == 6) gFailSysLock = true;
+        {
+            CDXBitmapFont f;
+            f.mSysFont = TRUE;
+            f.mHeight = 16;
+            f.InitFromSysFont();
+            check(f.mTexture == NULL, "failed InitFromSysFont releases and nulls mTexture");
+        }
+        check(gLiveDcs == 0 && gLiveBitmaps == 0 && gLiveFonts == 0 && gSelectOrderViolations == 0 && gLiveTextures == 0,
+              "every InitFromSysFont failure cleans up all GDI and D3D objects");
+    }
+    resetFaults();
+
+    // 3. DrawTextScaled: null/empty/>2500 glyphs never mutate D3DRS_ZENABLE; prior FALSE and TRUE Z states are restored.
+    {
+        CDXBitmapFont f;
+        f.mSysFont = FALSE;
+        f.mHeight = 16;
+        f.mTexWidth = 16;
+        f.mTexHeight = 16;
+        f.mTexture = new(MEMTYPE_TEXTURE) CDXTexture;
+        f.mTexture->InitEmpty(16, 16, TEXFMT_A8R8G8B8, 1, 0, 1);
+
+        LT.mRenderStates[D3DRS_ZENABLE] = TRUE;
+        LT.srsCalls = 0;
+        check(f.DrawTextScaled(0, 0, 0, 1, 1, 0xffffffffu, NULL, 0, NULL) == S_OK && LT.srsCalls == 0, "NULL text untouched Z");
+
+        std::vector<WCHAR> huge(2502, (WCHAR)'A');
+        huge.back() = 0;
+        check(f.DrawTextScaled(0, 0, 0, 1, 1, 0xffffffffu, huge.data(), 0, NULL) == S_OK, ">2500 glyphs returns S_OK");
+        check(LT.mRenderStates[D3DRS_ZENABLE] == TRUE && LT.srsCalls == 0, ">2500 glyphs does not leave ZENABLE disabled");
+
+        WCHAR hi[] = {'H', 'i', 0};
+        LT.mRenderStates[D3DRS_ZENABLE] = FALSE;
+        f.DrawTextScaled(0, 0, 0, 1.f, 1.f, 0xffffffffu, hi, 0, NULL);
+        check(LT.mRenderStates[D3DRS_ZENABLE] == FALSE, "caller disabled ZENABLE is restored on exit");
+
+        LT.mRenderStates[D3DRS_ZENABLE] = TRUE;
+        f.DrawTextScaled(0, 0, 0, 1.f, 1.f, 0xffffffffu, hi, 0, NULL);
+        check(LT.mRenderStates[D3DRS_ZENABLE] == TRUE, "caller enabled ZENABLE is restored on exit");
+
+        // CrispTexture cache: generation change at same IDirect3DDevice9* rebuilds; transient failure retries and logs once.
+        gDeviceGen = 10;
+        IDirect3DTexture9 *t1 = CrispTexture(&f, 2.5f);
+        check(t1 != NULL, "crisp texture built for generation 10");
+        check(CrispTexture(&f, 2.5f) == t1, "cached within same generation");
+
+        // Advance generation at identical device pointer; fail first two attempts, then succeed on third.
+        gDeviceGen = 11;
+        gFailCreateTex = true;
+        gLogErrors = 0;
+        check(CrispTexture(&f, 2.5f) == NULL, "gen 11 failed build returns NULL instead of stale gen 10 texture");
+        check(CrispTexture(&f, 2.5f) == NULL, "second failed call returns NULL");
+        check(gLogErrors == 1, "failure logged at most once per generation");
+        gFailCreateTex = false;
+        IDirect3DTexture9 *t2 = CrispTexture(&f, 2.5f);
+        check(t2 != NULL, "CrispTexture retries and succeeds once CreateTexture recovers");
+    }
+    check(gLiveTextures == 0, "destructor released font and crisp textures");
+    puts("dxfont lifecycle passed");
+    return 0;
+}
+"""
+        )
+        exe = self.out / "dxfont_lifecycle"
+        built = subprocess.run(
+            [os.environ.get("CXX", "g++"), "-std=c++14", "-g", "-Wall", "-Wextra", "-Wno-unused-function", "-Wno-address",
+             "-Werror", *SANITIZE, str(program), "-o", str(exe)],
+            capture_output=True, text=True, timeout=180, preexec_fn=no_core
+        )
+        self.assertEqual(built.returncode, 0, built.stderr)
+        ran = self.run_exe(exe)
+        self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
+        self.assertIn("dxfont lifecycle passed", ran.stdout)
 
 
 if __name__ == "__main__":

@@ -78,8 +78,11 @@ extern "C" bool PortCeMuseumVisitTakeNotice(const char **sentence);
 extern "C" void PortCeDodgeAssistRefresh(void) __attribute__((weak));
 extern "C" void PortCeMultiBeRefreshSettings(void) __attribute__((weak));
 float PortCeLabelLeft(int page);					// ce_menu_fit.cpp
+float PortCeLabelLeftAt(int page, float y);			// ce_menu_fit.cpp
 float PortCeValueGap();								// ce_menu_fit.cpp
+float PortCeValueRightAt(int page, float y);		// ce_menu_fit.cpp
 WCHAR *PortCeValueFit(WCHAR *text, float x, float *scale);	// ce_menu_fit.cpp
+WCHAR *PortCeValueFit(WCHAR *text, float x, float right, float *scale);	// ce_menu_fit.cpp
 
 #define CE_LINKS	"github.com/dlprentice/onslaught-ce"
 
@@ -314,7 +317,7 @@ static int	WrapLines(SWordWrapFill *fill, const WCHAR *text, CDXBitmapFont *font
 		fill->c[lines++][n] = 0;
 		p += n;
 	}
-	if (len && (lines < kMaxLines))
+	if ((len || (p > text && p[-1] == '\n')) && (lines < kMaxLines))
 		wcscpy(fill->c[lines++], cur);
 	for (int l = 0; l < lines; l++)
 		for (WCHAR *c = fill->c[l]; *c; c++)
@@ -491,19 +494,25 @@ public:
 		if (selected && fmod(PLATFORM.GetSysTimeFloat(), 1.f) < .5f) {
 			CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL); SIZE extent;
 			font->GetTextExtent(mLabel, &extent);
+			float scale = 1.f;
+			float tx = x - float(extent.cx) * .5f;
+			if (extent.cx > 0 && tx < 5.f) {
+				scale = (x - 5.f) / (float(extent.cx) * .5f);
+				tx = 5.f;
+			}
 			static WCHAR cursor[] = L"I";
-			font->DrawTextWithShadow(x + float(extent.cx) * .5f + 1.f, y, 0xff00c0ff, cursor, 0, 0, 1.f, 1.f);
+			font->DrawTextWithShadow(tx + float(extent.cx) * scale + 1.f, y, 0xff00c0ff, cursor, 0, 0, 1.f, 1.f);
 		}
 	}
 	char mValue[CE_CATALOGUE_QUERY_MAX + 1];
 };
 template <class A, class B> struct CeSameType { static constexpr bool value = false; };
 template <class A> struct CeSameType<A, A> { static constexpr bool value = true; };
-void CatalogueKeyTrap(WORD key, KeyEventType event);
+bool CatalogueKeyTrap(WORD key, KeyEventType event);
 pKeyTrapper CatalogueTrap()
 {
-	static_assert(CeSameType<decltype(&CatalogueKeyTrap), pKeyTrapper>::value, "CatalogueKeyTrap must match pKeyTrapper");
-	return &CatalogueKeyTrap;
+	static_assert(CeSameType<decltype(&CatalogueKeyTrap), bool (*)(WORD, KeyEventType)>::value, "CatalogueKeyTrap must match mouse.cpp bool trap");
+	return (pKeyTrapper)(void (*)(void))&CatalogueKeyTrap;
 }
 void CatalogueTextEnd() { if (LT.GetKeytrap() == CatalogueTrap()) LT.SetKeytrap(NULL); }
 
@@ -673,6 +682,7 @@ public:
 		static WCHAR off[] = L"Off", on[] = L"On", unavailable[] = L"Unavailable", restart[] = L"Restart to retry";
 		return n < 0 ? (CE_CheatRestartRequired(mCheat) ? restart : unavailable) : n ? on : off;
 	}
+	virtual void	Render(float x, float y, BOOL selected);
 
 	int		mCheat;
 };
@@ -759,7 +769,7 @@ public:
 		}
 		// the note ends a little above the page's help bar (CFEPCommon::RenderHelpText draws it at y 455)
 		if (mNote)
-			Lines(font, mNote, 449.f, kNoteGrey, true, 0.f, 500.f);
+			Lines(font, mNote, 449.f, kNoteGrey, true, 0.f, 420.f);
 	}
 
 	// 0xa8 on the screen: text colours are authored for a doubling colour stage (StageColour in port/platform/public/DXFont.cpp), so
@@ -832,7 +842,7 @@ static const char kSpecialThanks[] =
 	"Onslaught CE contributors,\n"
 	"including work made with\ntheir own coding agents.\n"
 	"BEA community and\npreservation projects.\n\n"
-	"The original game's credits\nare in Options > Credits.";
+	"The original game's credits\nare in Options > Credits.\n";
 
 // What a row does when chosen. The first values are the old page's, kept; the plans are CEA_PLAN_FIRST + their index, the
 // five Race Challenges CEA_RACE_FIRST + 0..4 (levels 901-905, ce_bonus.cpp), the Goodies Gallery CEA_MUSEUM (ce_museum.h), the pages
@@ -855,6 +865,8 @@ enum ECeAction
 	CEA_MODS,
 	CEA_CARRIER_CLASH,
 	CEA_LIVING_SANDBOX,
+	CEA_FLAGSHIP_DUEL_1P,
+	CEA_FLAGSHIP_DUEL_2P,
 	CEA_CATALOGUE = 300, CEA_CAT_MODELS, CEA_CAT_TURN = CEA_CAT_MODELS + CE_CATALOGUE_GROUPS, CEA_CAT_ENTRY,
 	CEA_CAT_FIND = CEA_CAT_ENTRY + CE_CATALOGUE_SLOTS, CEA_CAT_CLEAR, CEA_CAT_FIELD, CEA_CAT_APPLY, CEA_CAT_ERASE,
 	CEA_PAGE_BONUS = 120,
@@ -976,7 +988,9 @@ static bool	ExperimentalOffered(int action)
 static const SCeRow	kBonusRows[] = {
 	{L"Aquila Prototype", CEA_BONUS, {L"1 player. Interception, from the original's demo.", 0}},
 	{L"Building Defence", CEA_COOP, {L"2 players on this PC, in split screen.", 0}},
-	{L"Carrier Clash", CEA_CARRIER_CLASH, {L"1 player. Venturer vs. Fenrir over open seas.", 0}},
+	{L"Carrier Clash", CEA_CARRIER_CLASH, {L"1 player. Onslaught CE original: F.S. Venturer vs. Fenrir over basalt seas.", 0}},
+	{L"Flagship Duel (1P)", CEA_FLAGSHIP_DUEL_1P, {L"1 player. Defend F.S. Venturer against Fenrir over open seas.", 0}},
+	{L"Flagship Duel (2P)", CEA_FLAGSHIP_DUEL_2P, {L"2 players on this PC, split screen. F.S. Venturer vs. Fenrir.", 0}},
 	{L"Living Sandbox", CEA_LIVING_SANDBOX, {L"1 player. Open 512m combined-arms war theater with Sanctuary Citadel, endless waves & Play Any Unit.", 0}},
 	{L"Race Challenge 1", CEA_RACE_FIRST + 0, {L"1 player. Three laps against the clock.", 0}},
 	{L"Race Challenge 2", CEA_RACE_FIRST + 1, {L"1 player. Three laps against the clock.", 0}},
@@ -1096,14 +1110,14 @@ static const SCeLab	kLabs[] = {
 	{L"Mods Menu:", "mods_menu",
 	 {L"Adds the Mods page to manage your mods.", 0}, true, 1},
 	{L"Solo Skirmish:", "solo_skirmish",
-	 {L"1P vs AI instead of 2P split screen.", 0}, false, 0},
+	 {L"1P vs AI instead of split screen. Starts Off.", 0}, false, 0},
 	{L"Extras:", "extras",
 	 {L"Service record, music, lore and backups.", 0}, false, 1},
 	{L"Catalogue:", "catalogue",
 	 {L"Browse installed models, textures and sounds.", 0}, false, 1},
 };
 #define CE_NUM_LABS	int(sizeof(kLabs) / sizeof(kLabs[0]))
-static WCHAR		kLabsNote[] = L"Changes apply on next restart (Solo Skirmish starts Off).";
+static WCHAR		kLabsNote[] = L"Changes apply on next restart.";
 
 // Where the lists are centred: MenuOptionsList.cpp's Render centres its items of 20 pixels on y, so with n of them (Back among them)
 // the first is at y - 10n - 15 and Back, the last, at y + 10n - 35, and Back draws the hint from 28 pixels below its top. The title
@@ -1111,7 +1125,7 @@ static WCHAR		kLabsNote[] = L"Changes apply on next restart (Solo Skirmish start
 // three-line hints clear a standing footer note; the hub, which can hold up to thirteen items with every optional and experimental row
 // on, on 275; CE Settings, with fourteen, on 260, which puts its first row at 105 and leaves room for a hint of three lines under Back
 // (the white lines and the grey one: three end at 441).
-static const float		kCeListY = 285.f, kCeSettingsY = 260.f, kCeHubY = 275.f;
+static const float		kCeListY = 285.f, kCeSettingsY = 260.f, kCeHubY = 275.f, kCeBonusY = 265.f;
 
 static const SCeRow	kHelpRows[] = {
 	{L"Controls & Tips", CEA_TIPS, {L"Dodge, zoom, Photo Mode, screenshots, the console, the free camera and the commander view.", 0}},
@@ -1132,7 +1146,7 @@ static const SCeRow	kHelpRows[] = {
 
 static const char kTipsRest[] =
 	"Zoom: mouse wheel, or the gamepad bumpers.\n"
-	"Single-player levels: F11 Photo Mode, F12\nscreenshot, the grave key (left of 1): console.\n"
+	"Single-player levels: F11 Photo Mode,\nF12 screenshot, grave key (left of 1): console.\n"
 	"F: free camera, with the Free Camera cheat on.";
 // The commander view's line, added to the note only with commander=1 under [Experimental] in ce.ini, that is, only when Commander is on:
 // it names the keys and gives no step to take, and says that the view M opens does not pause the battle (0.1.13's M opened the paused
@@ -1185,7 +1199,7 @@ static void	ControlsTips(char *out, int n, bool commander)
 	if (PortCeExperimental("play_unit") && !PortCeActionConflict(CeControlAction::TakeUnit, PortCeActionKey(CeControlAction::TakeUnit)))
 		snprintf(playUnitLine, sizeof(playUnitLine), kControlsTipsPlayUnit, PortCeActionName(CeControlAction::TakeUnit));
 	const char *museumLine = PortCeExperimental("museum") ? kControlsTipsMuseumSprint : "";
-	const char *sections[]={dodge,gesture,kTipsRest,commanderLine,playUnitLine,museumLine};
+	const char *sections[]={dodge,gesture,kTipsRest,commanderLine,playUnitLine,museumLine,"\n"};
     size_t used=0;
     for(const char *part:sections) {
         size_t len=strlen(part);
@@ -1304,6 +1318,8 @@ static const char	*PlanText(int index)
 bool	PortCeBonusStart(int level);		// ce_bonus.cpp
 bool	PortCeBonusStartCarrierClash();		// ce_bonus.cpp: standalone Carrier Clash bonus session (archive 742)
 bool	PortCeBonusStartLivingSandbox();	// ce_bonus.cpp: standalone Living Sandbox bonus session (archive 700)
+bool	PortCeBonusStartFlagshipDuel1P();	// ce_bonus.cpp: standalone Flagship Duel 1P bonus session (level 788)
+bool	PortCeBonusStartFlagshipDuel2P();	// ce_bonus.cpp: standalone Flagship Duel 2P bonus session (level 888)
 int		PortCeBonusTakeReturn();			// ce_bonus.cpp: the bonus level the front end has just come back from, or 0
 int		PortCeBonusTakeModReturn();			// ce_bonus.cpp: the level a mod adds that the front end has just come back from, or 0
 extern "C" bool PortCeCarrierClashBegin(void);
@@ -1314,6 +1330,11 @@ extern "C" bool PortCeLivingSandboxBegin(void);
 extern "C" void PortCeLivingSandboxCancel(void);
 extern "C" const char *PortCeLivingSandboxMessage(void);
 extern "C" bool PortCeLivingSandboxTakeNotice(const char **sentence);
+extern "C" bool PortCeFlagshipDuelBegin1P(void);
+extern "C" bool PortCeFlagshipDuelBegin2P(void);
+extern "C" void PortCeFlagshipDuelCancel(void);
+extern "C" const char *PortCeFlagshipDuelMessage(void);
+extern "C" bool PortCeFlagshipDuelTakeNotice(const char **sentence, int *outLevel);
 
 // The level a Bonus Levels row starts (ce_bonus.cpp), or 0 for any other action.
 static int	BonusLevel(int action)
@@ -1324,6 +1345,10 @@ static int	BonusLevel(int action)
 		return 856;
 	if (action == CEA_CARRIER_CLASH)
 		return 742;
+	if (action == CEA_FLAGSHIP_DUEL_1P)
+		return 788;
+	if (action == CEA_FLAGSHIP_DUEL_2P)
+		return 888;
 	if (action == CEA_LIVING_SANDBOX)
 		return 700;
 	if ((action >= CEA_RACE_FIRST) && (action < CEA_RACE_FIRST + CE_NUM_RACES))
@@ -1427,6 +1452,37 @@ static void	ShowMusicFolder(const char *key)
 	ShowMessage(text);
 }
 
+// Closed two-state row (CE Settings Yes/No, Cheats On/Off, Experimental Features On/Off):
+// focused label uses menu yellow while the value keeps its crisp state hue (teal for On/Yes, soft grey for Off/No).
+static const DWORD	kCeBoolOn = 0xff347f58u;
+static const DWORD	kCeBoolOff = 0xff545454u;
+
+static void	RenderCeBoolClosed(CMenuMenuItem *item, int selection, float x, float y, BOOL selected, bool on)
+{
+	CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);
+	if (!font)
+		return;
+	const BOOL enabled = item->IsEnabled();
+	const DWORD labelCol = !enabled ? 0xff505050u : (selected ? 0xffffcc00u : 0xffffffffu);
+	const DWORD valCol = !enabled ? 0xff505050u : (on ? kCeBoolOn : kCeBoolOff);
+	WCHAR *label = item->GetText();
+	SIZE size;
+	font->GetTextExtent(label, &size);
+	const float ceLeft = PortCeLabelLeftAt(FEP_CE, y);
+	const float lx = x + PortCeValueGap();
+	float scale = 1.f;
+	float tx = x - float(size.cx);
+	if (tx < ceLeft)
+	{
+		scale = (x - ceLeft) / float(size.cx);
+		tx = ceLeft;
+	}
+	font->DrawTextWithShadow(tx, y, labelCol, label, 0, 0, scale, 1.f);
+	float valScale = 1.f;
+	WCHAR *valText = PortCeValueFit(item->GetChoiceText(selection), lx, PortCeValueRightAt(FEP_CE, y), &valScale);
+	font->DrawTextWithShadow(lx, y, valCol, valText, 0, 0, valScale, 1.f);
+}
+
 // A CE Settings row as an item of its list: a choice among the texts its ce.ini line can hold, drawn and driven by the game's own
 // choice item (CMenuMenuItem: the label, the choice, and the list of choices that drops down when it is chosen). The list asks
 // GetValue every frame and calls SetValue when a choice is made, so the choice is looked up in ce.ini once, when the page opens
@@ -1484,6 +1540,22 @@ public:
 
 	const SCeSetting	*mSetting;
 	int					mIndex;			// the choice shown, or -1 until it is looked up
+
+	virtual void	Render(float x, float y, BOOL selected)
+	{
+		if ((mSetting->mChoices != kNoYes) || mExpanded)
+		{
+			CMenuMenuItem::Render(x, y, selected);
+			return;
+		}
+		int value = GetValue();
+		if (value != mValue)
+		{
+			mValue = value;
+			mSelection = value;
+		}
+		RenderCeBoolClosed(this, mSelection, x, y, selected, mSelection > 0);
+	}
 };
 
 // Your Music: read only, because the folder is a path and the page cannot take one. It shows the folder's own name (the last part
@@ -1586,30 +1658,7 @@ public:
 			mValue = value;
 			mSelection = value;
 		}
-		CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);
-		if (!font)
-			return;
-		const bool on = (mSelection != 0);
-		DWORD labelCol = !IsEnabled() ? 0xff505050u : (selected ? 0xffffcc00u : 0xffffffffu);
-		// 2x colour stage (StageColour): crisp teal-green for On vs soft grey for Off; distinct when selected too.
-		DWORD valCol = !IsEnabled() ? 0xff505050u
-			: (selected ? (on ? 0xff487f38u : 0xff7f6e28u) : (on ? 0xff347f58u : 0xff545454u));
-		WCHAR *label = GetText();
-		SIZE size;
-		font->GetTextExtent(label, &size);
-		const float ceLeft = PortCeLabelLeft(FEP_CE);
-		const float lx = x + PortCeValueGap();
-		float scale = 1.f;
-		float tx = x - float(size.cx);
-		if (tx < ceLeft)
-		{
-			scale = (x - ceLeft) / float(size.cx);
-			tx = ceLeft;
-		}
-		font->DrawTextWithShadow(tx, y, labelCol, label, 0, 0, scale, 1.f);
-		float valScale = 1.f;
-		WCHAR *valText = PortCeValueFit(GetChoiceText(mSelection), lx, &valScale);
-		font->DrawTextWithShadow(lx, y, valCol, valText, 0, 0, valScale, 1.f);
+		RenderCeBoolClosed(this, mSelection, x, y, selected, mSelection != 0);
 	}
 
 	const SCeLab	*mLab;
@@ -1627,6 +1676,22 @@ CPauseMenu::CPauseMenu(EPortCeNoLists) : mActive(FALSE), mPage(0), mCloseTime(-1
 	mQuitConfirm = NULL;
 	mNoFade = FALSE;
 	mFirstRenderTime = 0;
+}
+
+void CCeCheatSwitch::Render(float x, float y, BOOL selected)
+{
+	if (mExpanded)
+	{
+		CMenuMenuItem::Render(x, y, selected);
+		return;
+	}
+	int value = GetValue();
+	if (value != mValue)
+	{
+		mValue = value;
+		mSelection = value;
+	}
+	RenderCeBoolClosed(this, mSelection, x, y, selected, mSelection > 0);
 }
 
 class CCeMenu : public CPauseMenu
@@ -1653,7 +1718,7 @@ public:
 				mHubRows[mHubCount++] = kHubRows[i];
 		}
 		AddPage(CEP_HUB, mHubRows, mHubCount, NULL, kCeHubY);
-		AddPage(CEP_BONUS, kBonusRows, CE_NUM_BONUS, kBonusNote);
+		AddPage(CEP_BONUS, kBonusRows, CE_NUM_BONUS, kBonusNote, kCeBonusY);
 		// CE Settings is its table, a row each (kSettings), centred higher than
 		// the other pages for its items.
 		mSettingCount = 0;
@@ -2038,6 +2103,48 @@ public:
 			}
 			return;
 		}
+		if (action == CEA_FLAGSHIP_DUEL_1P)
+		{
+			if (!mActive)
+				return;
+			if (PortCeFlagshipDuelBegin1P())
+			{
+				if (PortCeBonusStartFlagshipDuel1P())
+					Leave();
+				else
+				{
+					PortCeFlagshipDuelCancel();
+					ShowMessage("Flagship Duel could not be started.");
+				}
+			}
+			else if (const char *fdWhy = PortCeFlagshipDuelMessage())
+			{
+				if (*fdWhy)
+					ShowMessage(fdWhy);
+			}
+			return;
+		}
+		if (action == CEA_FLAGSHIP_DUEL_2P)
+		{
+			if (!mActive)
+				return;
+			if (PortCeFlagshipDuelBegin2P())
+			{
+				if (PortCeBonusStartFlagshipDuel2P())
+					Leave();
+				else
+				{
+					PortCeFlagshipDuelCancel();
+					ShowMessage("Flagship Duel could not be started.");
+				}
+			}
+			else if (const char *fdWhy = PortCeFlagshipDuelMessage())
+			{
+				if (*fdWhy)
+					ShowMessage(fdWhy);
+			}
+			return;
+		}
 		if (action == CEA_LIVING_SANDBOX)
 		{
 			if (!mActive)
@@ -2192,7 +2299,7 @@ public:
 					 "own copy of the game.\n\nAn unofficial fan project, not affiliated with or endorsed by the game's "
 					 "developer, publisher or rights holders. Free software under the GNU General Public License, version 3, with no "
 					 "warranty.\n\nSource code, new versions and problem reports:\n"
-					 CE_LINKS, CE_VERSION,
+					 CE_LINKS "\n", CE_VERSION,
 					 *build ? ", build " : "", build);
 			ShowMessage(text);
 			mBoxTitle = CEBT_ABOUT;
@@ -2207,7 +2314,7 @@ public:
 			const bool on = !CE_SettingLauncherIs("update_check", "0");
 			snprintf(text, sizeof(text), "%s\n\nUpdates keep your careers, settings and the previous version. "
 					 "To go back, follow the steps under Updates in the\xa0README.\n\nIf you still have Onslaught CE 0.1.6 or older, do not "
-					 "start its launcher. See the README.",
+					 "start its launcher. See the README.\n",
 					 on ? "Onslaught CE looks for a new version when it starts, and asks before installing it. Check for Updates at "
 					 "Start in CE Settings turns this off." :
 					 "Onslaught CE does not look for new versions when it starts. Check for Updates at Start in CE Settings turns "
@@ -2405,6 +2512,16 @@ public:
 					ShowMessage(sbNotice);
 			}
 		}
+		{
+			const char *fdNotice = NULL;
+			int fdLevel = 788;
+			if (PortCeFlagshipDuelTakeNotice(&fdNotice, &fdLevel))
+			{
+				mMenu->ShowBonus(fdLevel);
+				if (fdNotice && *fdNotice)
+					ShowMessage(fdNotice);
+			}
+		}
 		// A museum visit has just ended (the player left it, or its load was refused): the hub on the museum's row, and the reason if it was
 		// refused (ce_museum_visit.h).
 		{
@@ -2456,9 +2573,10 @@ void	PortCeCatalogueListFind()
 		sCePage.mMenu->CatalogueFindFromList();
 }
 
-void CatalogueKeyTrap(WORD key, KeyEventType event)
+bool CatalogueKeyTrap(WORD key, KeyEventType event)
 {
 	if (sCePage.mMenu && LT.GetKeytrap() == CatalogueTrap()) sCePage.mMenu->CatalogueKeys(key, event);
+	return false;
 }
 
 CFrontEndPage	*PortCePage()

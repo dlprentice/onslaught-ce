@@ -8,6 +8,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <algorithm>
+#include <string>
+#include <vector>
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -27,6 +30,18 @@ bool OggName(const char *name)
 	if (n < 5 || name[0] == '.') return false;
 	const char *e = name + n - 4;
 	return e[0] == '.' && (e[1] | 0x20) == 'o' && (e[2] | 0x20) == 'g' && (e[3] | 0x20) == 'g';
+}
+bool NameBefore(const std::string &a, const std::string &b)
+{
+	const size_t n = a.size() < b.size() ? a.size() : b.size();
+	for (size_t i = 0; i < n; ++i)
+	{
+		const unsigned char x = (a[i] >= 'A' && a[i] <= 'Z') ? (unsigned char)(a[i] + 32) : (unsigned char)a[i];
+		const unsigned char y = (b[i] >= 'A' && b[i] <= 'Z') ? (unsigned char)(b[i] + 32) : (unsigned char)b[i];
+		if (x != y) return x < y;
+	}
+	if (a.size() != b.size()) return a.size() < b.size();
+	return a < b;
 }
 }
 
@@ -83,9 +98,9 @@ extern "C" int CE_MusicScan(const char *dir, int (*add)(const char *path, void *
 	memcpy(base, dir, n + 1);
 #ifdef _WIN32
 	const char sep = '\\';
-	bool absolute = (((base[0] | 0x20) >= 'a' && (base[0] | 0x20) <= 'z') && base[1] == ':' &&
-					 (base[2] == '\\' || base[2] == '/')) || (base[0] == '\\' && base[1] == '\\');
 	for (char *c = base; *c; ++c) if (*c == '/') *c = '\\';
+	bool absolute = (((base[0] | 0x20) >= 'a' && (base[0] | 0x20) <= 'z') && base[1] == ':' &&
+					 base[2] == '\\') || (base[0] == '\\' && base[1] == '\\');
 	while (n > 3 && base[n - 1] == '\\') base[--n] = 0;
 #else
 	const char sep = '/';
@@ -95,7 +110,7 @@ extern "C" int CE_MusicScan(const char *dir, int (*add)(const char *path, void *
 	if (!absolute) return -1;
 	const bool rootSep = base[n - 1] == sep;
 	int added = 0, looked = 0;
-	char path[1300];
+	std::vector<std::string> names;
 #ifdef _WIN32
 	char spec[1100];
 	snprintf(spec, sizeof(spec), "%s%s*", base, rootSep ? "" : "\\");
@@ -106,17 +121,26 @@ extern "C" int CE_MusicScan(const char *dir, int (*add)(const char *path, void *
 	{
 		if (++looked > kScanEntries) { if (truncated) *truncated = 1; break; }
 		if (find.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) continue;
-		const char *name = find.cFileName;
+		if (OggName(find.cFileName)) names.push_back(find.cFileName);
+	} while (FindNextFileA(h, &find));
+	FindClose(h);
 #else
 	DIR *d = opendir(base);
 	if (!d) return -1;
 	for (struct dirent *e; (e = readdir(d));)
 	{
 		if (++looked > kScanEntries) { if (truncated) *truncated = 1; break; }
-		const char *name = e->d_name;
+		if (OggName(e->d_name)) names.push_back(e->d_name);
+	}
+	closedir(d);
 #endif
-		if (!OggName(name)) continue;
-		int len = snprintf(path, sizeof(path), "%s%s%s", base, rootSep ? "" : (sep == '/' ? "/" : "\\"), name);
+	// Sort candidate .ogg names deterministically (case-insensitively, matching ce_music.cpp) so directory
+	// enumeration order never drops alphabetically earlier tracks when the caller's track cap is hit.
+	std::sort(names.begin(), names.end(), NameBefore);
+	char path[1300];
+	for (const std::string &entry : names)
+	{
+		int len = snprintf(path, sizeof(path), "%s%s%s", base, rootSep ? "" : (sep == '/' ? "/" : "\\"), entry.c_str());
 		if (len < 0 || (size_t)len > kTrackPath || !Playable(path))
 		{
 			if (skipped) ++*skipped;
@@ -124,13 +148,7 @@ extern "C" int CE_MusicScan(const char *dir, int (*add)(const char *path, void *
 		}
 		if (!add(path, ctx)) break;
 		++added;
-#ifdef _WIN32
-	} while (FindNextFileA(h, &find));
-	FindClose(h);
-#else
 	}
-	closedir(d);
-#endif
 	return added;
 }
 

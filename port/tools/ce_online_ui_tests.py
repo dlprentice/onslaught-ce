@@ -19,6 +19,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 MODEL_H = ROOT / "port/game/ce_online_ui_model.h"
+UI_H = ROOT / "port/game/ce_online_ui.h"
 BRIDGE_CPP = ROOT / "port/game/ce_online_ui_bridge.cpp"
 UI_CPP = ROOT / "port/game/ce_online_ui.cpp"
 
@@ -439,7 +440,7 @@ static void TestGeometryBounds() {
     {
         std::vector<CeOnlineRect> r;
         r.push_back(CeOnlineLayout::HeaderBar());
-        r.push_back(CeOnlineLayout::FooterBar());
+        r.push_back(CeOnlineLayout::RoomFooterBar());
         r.push_back(CeOnlineLayout::RoomInfoBar());
         r.push_back(CeOnlineLayout::RoomCopyCodeBtn());
         r.push_back(CeOnlineLayout::RoomMapBar());
@@ -461,6 +462,12 @@ static void TestGeometryBounds() {
         r.push_back(CeOnlineLayout::RoomChatCompose());
         r.push_back(CeOnlineLayout::RoomChatSendBtn());
         CheckNonOverlappingSet(r, "Room layout in 640x480 safe band without overlaps");
+        CHECK(CeOnlineLayout::RoomRosterHeader().x0 == 84.f && CeOnlineLayout::RoomRosterHeader().x1 == 556.f,
+              "Room roster header spans full 84..556 width");
+        CHECK(CeOnlineLayout::RoomMapBtn().x1 == CeOnlineLayout::RoomReadyBtn().x1 &&
+              CeOnlineLayout::RoomModeBtn().x1 == CeOnlineLayout::RoomSideBtn().x1 &&
+              CeOnlineLayout::RoomSlotBtn().x1 == CeOnlineLayout::RoomBeBtn().x1,
+              "Player and Host button rows share first three column stops");
     }
     // Profile page
     {
@@ -485,8 +492,8 @@ static void TestGeometryBounds() {
     }
     // Multiplayer entry bar clears level grid (y<=400) and help text (y>=455)
     CeOnlineRect mpBar = CeOnlineLayout::MultiplayerEntryBar();
-    CHECK(mpBar.x0 >= 110.f && mpBar.x1 <= 530.f && mpBar.y0 >= 404.f && mpBar.y1 <= 450.f,
-          "Multiplayer entry bar clears grid and help bar");
+    CHECK(mpBar.x0 == 125.f && mpBar.x1 == 515.f && mpBar.y0 == 412.f && mpBar.y1 == 442.f,
+          "Multiplayer entry bar aligned to 125..515 x 412..442");
 }
 
 static void TestProfileAndHome() {
@@ -643,6 +650,92 @@ static void TestBrowserPagingFilterPassword() {
     CHECK(ui.FilteredRooms().size() == 64 && ui.BrowserPageCount() == 11, "64 rooms paginate across 11 pages");
     ui.BrowserSelectIndex(63);
     CHECK(ui.BrowserCurrentPage() == 11, "64th room is on page 11");
+    ui.SetBrowserPagerFocus(CeOnlineUiModel::BROWSER_PG_PREV);
+    ui.BrowserPrevPage();
+    CHECK(ui.BrowserPagerFocus() == CeOnlineUiModel::BROWSER_PG_PREV,
+          "pager keeps focus while the previous button remains enabled");
+    be.lobbies.resize(1);
+    ui.SyncFromBackend(110);
+    CHECK(ui.BrowserCurrentPage() == 1 &&
+          ui.BrowserPagerFocus() == CeOnlineUiModel::BROWSER_PG_JOIN,
+          "a shrinking browser moves focus to an enabled pager button");
+    be.lobbies.clear();
+    ui.SyncFromBackend(120);
+    CHECK(ui.BrowserZoneFocus() == CeOnlineUiModel::BROWSER_ZONE_TOOLBAR,
+          "an empty browser moves focus off the disabled pager");
+}
+
+static void TestBrowserErrorsAndDraftLifetime() {
+    FakeOnlineBackend be;
+    CeOnlineUiModel ui;
+    ui.SetBackend(&be);
+    be.lobbiesErr = "Could not fetch lobbies.";
+    ui.Open(true);
+    CHECK(ui.StatusIsError() && ui.StatusNotice() == be.lobbiesErr,
+          "browser reports a fetch error");
+    be.lobbiesErr.clear();
+    ui.SyncFromBackend(100);
+    CHECK(!ui.StatusIsError() && ui.StatusNotice().empty(),
+          "a successful fetch clears the fetch error");
+    be.pendingOpError = "Incorrect lobby password.";
+    be.lobbiesErr = "Could not fetch lobbies.";
+    ui.SyncFromBackend(110);
+    CHECK(ui.StatusIsError() && ui.StatusNotice() == "Incorrect lobby password.",
+          "a fetch error cannot overwrite an action error");
+    be.lobbiesErr.clear();
+    ui.SyncFromBackend(120);
+    ui.BrowserRefresh();
+    CHECK(ui.StatusIsError() && ui.StatusNotice() == "Incorrect lobby password.",
+          "polling and manual refresh preserve the action error");
+
+    ui.EnterJoinCode(CE_ONLINE_PAGE_BROWSER);
+    ui.SetJoinCodeFocus(CeOnlineUiModel::JOIN_PASTE_BTN);
+    be.clipboard = "\r\nab-cd12\t";
+    CHECK(ui.CanPasteIntoActiveField() && ui.PasteIntoActiveField() && ui.JoinCodeInput() == "ABCD12",
+          "Ctrl+V works on the Paste Code button");
+    be.clipboard = "$";
+    CHECK(!ui.PasteIntoActiveField() && ui.JoinCodeInput() == "ABCD12",
+          "invalid code paste reports failure and preserves the previous code");
+    ui.SetJoinCodeFocus(CeOnlineUiModel::JOIN_PASSWORD_INPUT);
+    be.clipboard = "sec\r\nret\t";
+    CHECK(ui.PasteIntoActiveField() && ui.JoinPasswordInput() == "secret",
+          "password paste strips clipboard line breaks and tabs");
+
+    for (int exitKind = 0; exitKind < 3; ++exitKind) {
+        ui.Open(false);
+        ui.EnterCreate(CE_ONLINE_PAGE_HOME);
+        ui.SetCreateRoomName("Draft lifetime");
+        CHECK(ui.CreateSubmit(), "created a room for the draft lifetime check");
+        ui.SyncFromBackend(130 + 20 * exitKind);
+        ui.RoomOpenChat();
+        be.clipboard = "\r\n\t";
+        CHECK(!ui.PasteIntoActiveField() && ui.ChatDraft().empty(),
+              "control-only chat paste accepts no text");
+        be.clipboard = "$@";
+        CHECK(!ui.PasteIntoActiveField() && ui.ChatDraft().empty(),
+              "unsupported chat paste accepts no text");
+        be.clipboard = "hello\r\nworld\t";
+        CHECK(ui.PasteIntoActiveField() && ui.ChatDraft() == "hello world",
+              "chat paste normalizes embedded clipboard whitespace");
+        be.clipboard.assign(CE_ONLINE_UI_CHAT_MAX, 'a');
+        CHECK(ui.PasteIntoActiveField() && ui.ChatDraft().size() == CE_ONLINE_UI_CHAT_MAX &&
+              !ui.PasteIntoActiveField(), "paste reports whether the draft had any remaining space");
+        if (exitKind == 0) {
+            be.room.state = "closed";
+        } else if (exitKind == 1) {
+            be.room.active = false;
+        } else {
+            ui.Open(false);
+        }
+        ui.SyncFromBackend(140 + 20 * exitKind);
+        CHECK(!ui.ChatComposing() && ui.ChatDraft().empty(),
+              "room closure, disconnect, and Online open discard the prior draft");
+        if (exitKind == 1) {
+            ui.SyncFromBackend(175);
+            CHECK(ui.StatusIsError() && ui.StatusNotice() == "Disconnected from lobby.",
+                  "disconnect feedback persists across the next browser update");
+        }
+    }
 }
 
 static void TestCreateLobbyAndJoinCode() {
@@ -747,7 +840,7 @@ static void TestCreateLobbyAndJoinCode() {
     CHECK(ui.CreateRelayOnly(), "Relay Only toggled On");
     CHECK(std::string(ui.CreateRelayOnlyLabel()) == "On (Relay Only)", "On label matches");
     CHECK(std::string(CeOnlineUiModel::CreatePrivacyNotice()) ==
-          "Direct P2P shares your IP with the host. Relay Only hides your IP via TURN.",
+          "Direct P2P shows your IP to players who join. Relay Only hides your IP via TURN.",
           "exact privacy notice present");
 
     // Visibility & AI Fill toggles
@@ -1455,6 +1548,7 @@ int main() {
     TestGeometryBounds();
     TestProfileAndHome();
     TestBrowserPagingFilterPassword();
+    TestBrowserErrorsAndDraftLifetime();
     TestCreateLobbyAndJoinCode();
     TestRoom4SlotAnd64SlotAndGuardrails();
     TestLaunchClosePreservationAndGamepadNav();
@@ -1479,7 +1573,7 @@ MUTANTS = [
      "if (sel->seat == mRoom.hostSeat) {",
      "if (false && sel->seat == mRoom.hostSeat) {"),
     ("privacy-notice-altered",
-     '"Direct P2P shares your IP with the host. Relay Only hides your IP via TURN.";',
+     '"Direct P2P shows your IP to players who join. Relay Only hides your IP via TURN.";',
      '"Direct P2P hides your IP automatically.";'),
     ("browser-filter-ignored",
      "if (mCompatibleOnly && !mRooms[i].compatible) continue;",
@@ -1530,13 +1624,25 @@ def check_ui_source_guards(report):
     ui_guards = ("FitWideTextToWidth(" in ui_txt and
                  "DIK_SPACE" in ui_txt and
                  "GetTransitionTo() == FEP_MULTIPLAYER" in ui_txt and
-                 "GetTransitionFrom() == FEP_MULTIPLAYER" in ui_txt)
-    report(ui_guards, "source guard: ce_online_ui.cpp has pixel-width ellipsizer, DIK_SPACE, and MP transition guards")
+                 "GetTransitionFrom() == FEP_MULTIPLAYER" in ui_txt and
+                 '"Play Online (2-4 Players)  O key / Y pad"' in ui_txt)
+    report(ui_guards, "source guard: ce_online_ui.cpp has pixel-width ellipsizer, DIK_SPACE, MP entry label, and MP transition guards")
+
+    # 5. Domain 3 visual QA guards: zone-aware selection borders, real Start Match enabled state, Next Mode label
+    d3_guards = ("rsZone ? kBorderSel : kBorderHover" in bridge_txt and
+                 "listZone ? kBorderSel : kBorderHover" in bridge_txt and
+                 "(void)rsZone" not in bridge_txt and
+                 "(void)listZone" not in bridge_txt and
+                 '"Next Mode"' in bridge_txt and
+                 "canStart, mx, my, canClick, canStart ? kReady : 0, canStart" in bridge_txt)
+    report(d3_guards, "source guard: bridge uses zone-aware selection borders, real canStart enabled state, and Next Mode label")
 
 
-def compile_and_run(work_dir: Path, header_text: str, std_flag: str, sanitize: bool) -> tuple:
+def compile_and_run(work_dir: Path, header_text: str, std_flag: str, sanitize: bool,
+                    ui_header_text: str) -> tuple:
     work_dir.mkdir(parents=True, exist_ok=True)
     (work_dir / "ce_online_ui_model.h").write_text(header_text, encoding="utf-8")
+    (work_dir / "ce_online_ui.h").write_text(ui_header_text, encoding="utf-8")
     drv = work_dir / "driver.cpp"
     drv.write_text(DRIVER_CPP, encoding="utf-8")
     exe = work_dir / "driver"
@@ -1557,6 +1663,7 @@ def compile_and_run(work_dir: Path, header_text: str, std_flag: str, sanitize: b
 
 def main() -> int:
     header = MODEL_H.read_text(encoding="utf-8")
+    ui_header = UI_H.read_text(encoding="utf-8")
     ok = True
 
     def report(passed: bool, label: str, detail: str = ""):
@@ -1570,20 +1677,21 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="ce-online-ui-tests-") as tmp:
         root = Path(tmp)
         # 1. C++14 + ASan/UBSan
-        p14, out14 = compile_and_run(root / "cpp14", header, "-std=c++14", True)
+        p14, out14 = compile_and_run(root / "cpp14", header, "-std=c++14", True, ui_header)
         report(p14, f"C++14 ASan/UBSan full model/geometry/font suite ({out14})", out14)
 
         # 2. C++17 + ASan/UBSan
-        p17, out17 = compile_and_run(root / "cpp17", header, "-std=c++17", True)
+        p17, out17 = compile_and_run(root / "cpp17", header, "-std=c++17", True, ui_header)
         report(p17, f"C++17 ASan/UBSan full model/geometry/font suite ({out17})", out17)
 
         # 3. Causal mutants (each must fail)
         for name, old, new in MUTANTS:
-            if header.count(old) != 1:
-                report(False, f"mutant {name}: anchor count={header.count(old)} (expected 1)")
+            count = header.count(old) + ui_header.count(old)
+            if count != 1:
+                report(False, f"mutant {name}: anchor count={count} (expected 1)")
                 continue
-            mutated = header.replace(old, new, 1)
-            mpass, mout = compile_and_run(root / ("mut-" + name), mutated, "-std=c++14", False)
+            mpass, mout = compile_and_run(root / ("mut-" + name), header.replace(old, new, 1),
+                                         "-std=c++14", False, ui_header.replace(old, new, 1))
             report(not mpass, f"mutant {name} is caught", mout if mpass else "")
 
         # 4. Bridge/UI source-level regression guards

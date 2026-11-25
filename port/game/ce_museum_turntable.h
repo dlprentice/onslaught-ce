@@ -12,7 +12,7 @@
 
 namespace CeMuseumTurntable {
 
-constexpr float kDefaultRateRadPerSec = 12.0f * 3.14159265f / 180.0f; // ~12 deg/s (~30 s / rev)
+constexpr float kDefaultRateRadPerSec = 4.5f * 3.14159265f / 180.0f; // ~4.5 deg/s (~80 s / rev; calm gallery inspection pace)
 constexpr float kStudRadius = 0.28f;
 constexpr float kStudMaxRange = 5.5f;
 // All 45/45 retail GT_MESH Goodie 3D exhibits stay resident simultaneously so sightlines across wings never pop in.
@@ -60,7 +60,7 @@ static const Spec kManifest[kManifestCount] = {
      5.8f, -1.6f, 0.90f, 1.15f, 2.5f, 0.0f, -1.0f, 0.0f, false},
     {20, CeMuseumTour::kWingCourtyard, kStageFlight,
      "XF-28 Venom", "Forseti Advanced Interceptor",
-     "Mach 2 successor to the F-24 Valkyrie banked on the western coastal showcase pylon.",
+     "Mach 2 successor to the F-24 Valkyrie, banked on the western coastal showcase pylon.",
      -10.2f, 0.5f, 2.35f, 1.40f, 3.2f, 0.34f, 1.0f, 0.0f, false},
     {37, CeMuseumTour::kWingCourtyard, kStageFlight,
      "ASX-9 Storm", "Muspell Advanced Tactical Fighter",

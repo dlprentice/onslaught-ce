@@ -138,6 +138,11 @@ inline float	CeListTrackLength(const SCeScrollList *list = NULL)
 	return CeListBottom(list) - CeListTopOf(list) - 10.f;
 }
 
+inline bool	CeListHasBar(const SCeScrollList *list)
+{
+	return list && (list->mCount > CeListRowsOf(list));
+}
+
 inline float	CeListBarLength(const SCeScrollList *list)
 {
 	const float track = CeListTrackLength(list);

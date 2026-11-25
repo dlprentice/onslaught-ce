@@ -208,8 +208,13 @@ bool RuntimeCue(char *title, unsigned titleCap, char *line, unsigned lineCap,
 
 } // namespace CeMuseumAudioKiosk
 
+extern "C" void PortCeMuseumCinemaBeforeSoundReinit(void);   // ce_museum_hall.cpp: closes the projector's film
+
 extern "C" void PortCeSoundBeforeReinit(void) {
     CeMuseumAudioKiosk::RuntimeBeforeSoundReinit();
+    // The projector's film plays its track through the device being rebuilt:
+    // close it before the device goes, never after.
+    PortCeMuseumCinemaBeforeSoundReinit();
     CeCmdVoiceStop();
     PortCeCatalogueSoundStop();
 }

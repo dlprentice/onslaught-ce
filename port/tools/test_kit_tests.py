@@ -150,6 +150,21 @@ def main():
     _, second = run(driver, work, "repeat-b", SCENARIOS["pass"][0])
     if first != second:
         failures.append("the same steps gave two different outputs")
+    # Ensure ce_frontend_testkit.cpp's kCePages stays in lockstep with ECePage (CEP_COUNT) in ce_frontend.cpp.
+    import re
+    fe_src = (ROOT / "port/game/ce_frontend.cpp").read_text()
+    tk_src = (ROOT / "port/game/ce_frontend_testkit.cpp").read_text()
+    m_enum = re.search(r"enum ECePage\s*\{(.*?)\};", fe_src, re.S)
+    m_names = re.search(r"kCePages\[\]\s*=\s*\{(.*?)\};", tk_src, re.S)
+    if not m_enum or not m_names:
+        failures.append("could not locate ECePage or kCePages for test-kit parity check")
+    else:
+        enum_entries = [e for e in re.findall(r"\b(CEP_\w+)\b", m_enum.group(1)) if e != "CEP_COUNT"]
+        page_names = re.findall(r'"([^"]+)"', m_names.group(1))
+        if len(page_names) != len(enum_entries):
+            failures.append(f"kCePages has {len(page_names)} entries, ECePage has {len(enum_entries)}")
+        if "labs" not in page_names:
+            failures.append("kCePages omits 'labs' (CEP_LABS)")
     failures += check_binaries(a.kit_bin, a.plain_bin)
     (work / "result.json").write_text(json.dumps({"passed": not failures, "failures": failures, "ends": report}, indent=1) + "\n")
     print(json.dumps({"passed": not failures, "scenarios": len(SCENARIOS) + 1, "binaries": len(a.kit_bin) + len(a.plain_bin),

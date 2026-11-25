@@ -15,10 +15,13 @@
 #ifndef PORT_CE_SCRIPT_GUARD_H
 #define PORT_CE_SCRIPT_GUARD_H
 
+// Whether an active mod supplies the level's archive (data/resources/NNN_res_PC.aya) or world file
+// (data/worlds/worldNNN.wrd). False for stock levels and whenever mods are off, fenced or refused.
+bool PortModLevelSupplied(int level);
+
 // Whether the notification `entry` ("startedDying" or "died") of the script of level `level`, entered while the script VM is
-// running, is to be deferred a frame: yes when an active mod supplies the level's archive (data/resources/NNN_res_PC.aya) or its
-// world file (data/worlds/worldNNN.wrd), whether it replaces the game's or adds one; no for every other level (and whenever mods
-// are off, fenced or refused). A yes is counted and logged once for each entry.
+// running, is to be deferred a frame: yes when PortModLevelSupplied(level) is true; no for every other level.
+// A yes is counted and logged once for each entry.
 bool PortCeScriptDeferNested(int level, const char *entry);
 
 // How many notifications were deferred in this run.

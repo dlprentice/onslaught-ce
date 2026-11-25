@@ -36,6 +36,9 @@ struct State {
 } s;
 const DWORD kFloorDark=0xff39444b,kCarpet=0xff4b3539,kUpholstery=0xff913f43,kSeatCap=0xffb16961;
 const DWORD kBronze=0xffb99262,kStone=0xff69767a,kProscenium=0xff1c272d,kIdleScreen=0xff91a3a3;
+// The idle screen's drawn curtain (the sconces and aisle strips are placed by CeCinemaRoom, ce_museum_cinema.h).
+const unsigned kCurtainFolds = 14u;
+const DWORD kCurtainValleyLow=0xff160d12, kCurtainCrestLow=0xff2a161d, kCurtainCrestHigh=0xff4a2630, kCurtainValleyHigh=0xff26141b;
 }
 
 extern "C" int PortCeTutorialPrintableKey(int key,char *out,int size);
@@ -55,6 +58,14 @@ CeMuseumFilm::Film film = CeMuseumFilm::None();
 }
 extern "C" int PortBinkHasSound(HBINK bink) __attribute__((weak));	// port/bink: whether the film's track was loaded
 extern "C" int PortBinkPause(HBINK bink, int pause) __attribute__((weak));	// port/bink: hold a film, sound and clock
+// The cinema stands still while the game is paused or Photo Mode holds the frame:
+// the film's frame clock, its sound crossfade and the music duck all read one
+// clock, and that clock does not run during a hold (CeMuseumCinemaHeldClock in
+// ce_museum_cinema.h). Nothing catches up afterwards: the film resumes on the
+// frame it stopped on and the duck resumes its ramp where it was.
+bool CinemaHeld() {
+    return GAME.IsPaused() || PortCePhotoOn();
+}
 double CinemaClock() {
     LARGE_INTEGER now, rate;
     QueryPerformanceCounter(&now); QueryPerformanceFrequency(&rate);
@@ -62,7 +73,8 @@ double CinemaClock() {
     static LONGLONG firstQpc = 0;
     static bool haveFirst = false;
     if (!haveFirst) { firstQpc = now.QuadPart; haveFirst = true; }
-    return double(now.QuadPart - firstQpc) / double(rate.QuadPart);
+    static CeMuseumCinemaHeldClock held = CeMuseumCinemaHeldClockNew();
+    return CeMuseumCinemaHeldClockRead(&held, double(now.QuadPart - firstQpc) / double(rate.QuadPart), CinemaHeld());
 }
 extern "C" long PortCeMuseumMusicDuck(void) {
     if (!PortCeMuseumVisitActive()) { Cinema::duck = CeMuseumMusicDuck::Off(); return 0; }
@@ -139,9 +151,21 @@ void CinemaShell(bool planned, float floor, float height) {
         // keeping dark acoustic panelling strictly on the interior theater lining.
         const float wall = CeMuseumExhibition::kWallHalf;
         g.current = kMatCinemaWall;
-        // Inner dark acoustic theater lining (East, South, West returns inside x > kLeft + wall)
+        // Inner dark acoustic theater lining (East, South, and West returns framing Portal 6 inside x > kLeft + wall)
         box(kRight - 0.16f, (kFront + kBack) * 0.5f, 0.16f, (kBack - kFront) * 0.5f - 0.16f, 0, roof, kWall, kWallCap);
         box((kLeft + kRight) * 0.5f, kFront + 0.16f, (kRight - kLeft) * 0.5f - 0.16f, 0.16f, 0, roof, kWall, kWallCap);
+        {
+            const float westX = kLeft + wall + 0.14f;
+            const float doorLo = kDoorY - kDoorHalf;
+            const float doorHi = kDoorY + kDoorHalf;
+            const float doorClear = 4.6f;
+            if (doorLo > kFront + 0.32f)
+                box(westX, (kFront + 0.16f + doorLo) * 0.5f, 0.14f, (doorLo - (kFront + 0.16f)) * 0.5f, 0, roof, kWall, kWallCap);
+            if (kBack - 0.16f > doorHi)
+                box(westX, (doorHi + kBack - 0.16f) * 0.5f, 0.14f, ((kBack - 0.16f) - doorHi) * 0.5f, 0, roof, kWall, kWallCap);
+            if (roof > doorClear)
+                box(westX, kDoorY, 0.14f, kDoorHalf + 0.02f, doorClear, roof - doorClear, kWall, kWallCap);
+        }
         // Outer coastal limestone facade cladding on the exposed South (y = 7.0) and East (x = 56.0) faces
         g.current = kMatWall;
         box((kLeft + kRight) * 0.5f, kFront - 0.18f, (kRight - kLeft) * 0.5f + 0.32f, 0.18f, 0, roof, 0xfff5f1e8, 0xfff8f4eb);
@@ -152,13 +176,30 @@ void CinemaShell(bool planned, float floor, float height) {
         g.current = kMatTrim;
         box((kLeft + kRight) * 0.5f, kFront - 0.38f, (kRight - kLeft) * 0.5f + 0.34f, 0.10f, 5.20f, 0.38f, kBrass, kBrass);
         // Warm recessed theater wall sconces & ceiling cove light strips (dimmed smoothly when film plays)
-        g.current = kMatWarmGlow;
-        box(kRight - 0.36f, (kFront + kBack) * 0.5f, 0.08f, (kBack - kFront) * 0.42f, roof - 0.38f, 0.16f, kLight, kLight);
-        box(kLeft + wall + 0.10f, (kFront + kBack) * 0.5f, 0.08f, (kBack - kFront) * 0.42f, roof - 0.38f, 0.16f, kLight, kLight);
-        for (unsigned s = 0; s < 3u; ++s) {
-            const float sy = kFront + 4.0f + float(s) * 5.8f;
-            box(kRight - 0.36f, sy, 0.09f, 0.18f, 2.35f, 1.35f, kLight, kLight);
+        g.current = kMatCinemaGlow;
+        const DWORD kWarmStrip = 0xff181004;
+        box(kRight - 0.36f, (kFront + kBack) * 0.5f, 0.08f, (kBack - kFront) * 0.42f, roof - 0.38f, 0.16f, kWarmStrip, kWarmStrip);
+        box(kLeft + wall + 0.34f, (kFront + kBack) * 0.5f, 0.08f, (kBack - kFront) * 0.42f, roof - 0.38f, 0.16f, kWarmStrip, kWarmStrip);
+        // Three wall sconces on the east lining: a small amber lamp on a brass backplate (where a tall white slab
+        // used to glare), each over a soft wash on the acoustic wall. The wash is four wall panels meeting at the
+        // lamp, so the baked sconce light (BakeGrandVertexColour) falls off smoothly from their shared centre.
+        for (unsigned s = 0; s < kSconceCount; ++s) {
+            const float sy = SconceY(s);
+            g.current = kMatCinemaWall;
+            for (int qy = -1; qy <= 1; qy += 2)
+                for (int qz = 0; qz < 2; ++qz)
+                    box(kRight - 0.335f, sy + float(qy) * kSconceWashHalf * 0.5f, 0.012f, kSconceWashHalf * 0.5f,
+                        kSconceHeight - kSconceWashHalf + float(qz) * kSconceWashHalf, kSconceWashHalf, kWall, kWallCap);
+            g.current = kMatTrim;
+            box(kRight - 0.37f, sy, 0.03f, 0.17f, kSconceHeight - 0.34f, 0.68f, kBrass, kBrass);
+            g.current = kMatMuspellGlow;   // deeper amber diffuse + emissive stays true warm amber (not clipped yellow)
+            box(kRight - 0.43f, sy, 0.05f, 0.10f, kSconceHeight - 0.20f, 0.40f, 0xff883808, 0xff883808);
         }
+        // Warm strip lights along both edges of the centre aisle, from the rear rows to the front of the house.
+        g.current = kMatCinemaGlow;
+        for (int side = -1; side <= 1; side += 2)
+            box(kAisleX + float(side) * kAisleHalf, (kAisleFront + kAisleBack) * 0.5f, 0.035f,
+                (kAisleBack - kAisleFront) * 0.5f, 0.036f, 0.022f, kWarmStrip, kWarmStrip);
     } else {
         g.current = kMatCinemaWall;
         box(kRight,(kFront+kBack)*.5f,.33f,(kBack-kFront)*.5f,0,roof ? roof : 6.8f,kWall,kWallCap);
@@ -176,7 +217,8 @@ void CinemaShell(bool planned, float floor, float height) {
     // Screen frame in refined dark stone + warm brass accent fillet
     g.current = kMatScreenFrame;
     box(kScreenX,kScreenY+.20f,kScreenHalfW+.48f,.17f,-(kScreenZ+kScreenHalfH)-.36f,2*kScreenHalfH+.72f,kBronze,kStone);
-    // A stopped screen is dark glass: near-black, with a subtle dark sheen.
+    // A stopped screen is a drawn house curtain: deep wine folds, dim enough to sit behind the room, lighter at
+    // the top where the proscenium light catches them. (The film's own quad is drawn in front of it.)
     g.current = kMatScreenIdle;
     box(kScreenX,kScreenY+.10f,kScreenHalfW,.10f,-(kScreenZ+kScreenHalfH),2*kScreenHalfH,0xff0e1016,0xff0e1016);
     {
@@ -184,9 +226,17 @@ void CinemaShell(bool planned, float floor, float height) {
         float ground=0;
         if (g.ground(centre.x,centre.y,&ground)) {
             const float bottom=ground+(kScreenZ+kScreenHalfH),top=bottom-2*kScreenHalfH;
-            const CeHallPoint left=Offset(centre,-kScreenHalfW,0),right=Offset(centre,kScreenHalfW,0);
-            Quad(Point(left,bottom,0xff0f1218),Point(right,bottom,0xff0c0e13),
-                 Point(right,top,0xff141820),Point(left,top,0xff1e242e));
+            const float fold = 2.0f * kScreenHalfW / float(kCurtainFolds);
+            for (unsigned i = 0; i < kCurtainFolds; ++i) {
+                const CeHallPoint a=Offset(centre,-kScreenHalfW+fold*float(i),0);
+                const CeHallPoint m=Offset(centre,-kScreenHalfW+fold*(float(i)+0.5f),0);
+                const CeHallPoint b=Offset(centre,-kScreenHalfW+fold*float(i+1),0);
+                // Each fold: shadowed in its valleys (a, b), lit along its crest (m).
+                Quad(Point(a,bottom,kCurtainValleyLow),Point(m,bottom,kCurtainCrestLow),
+                     Point(m,top,kCurtainCrestHigh),Point(a,top,kCurtainValleyHigh));
+                Quad(Point(m,bottom,kCurtainCrestLow),Point(b,bottom,kCurtainValleyLow),
+                     Point(b,top,kCurtainValleyHigh),Point(m,top,kCurtainCrestHigh));
+            }
         }
     }
     g.current = kMatAuto;
@@ -259,7 +309,9 @@ bool CinemaStartFilm(void *, const CeMuseumCinemaCatalogue::Entry &entry) {
     s.film = BinkOpen(path, BINKPRELOADALL);
     if (!s.film) return false;
     BinkSetVolume(s.film, 0, 0);	// silent until CeMuseumFilm::Start
-    if (!s.film->Frames || !s.film->Width || !s.film->Height || s.film->Width>2048 || s.film->Height>2048 || !CinemaProjectionTarget()) { CinemaClose(Missing); return false; }
+    // A film that cannot be shown is closed to Idle here; CinemaOpen decides what the
+    // console says about it (only "no film at all can be shown" locks it).
+    if (!s.film->Frames || !s.film->Width || !s.film->Height || s.film->Width>2048 || s.film->Height>2048 || !CinemaProjectionTarget()) { CinemaClose(Idle); return false; }
     const bool track = PortBinkHasSound ? PortBinkHasSound(s.film) != 0 : true;
     CeMuseumFilm::Start(&film, CinemaFilmCalls(), CAREER.GetSoundVolume(), track, CinemaClock(), &duck);
     s.phase = Playing;
@@ -268,8 +320,20 @@ bool CinemaStartFilm(void *, const CeMuseumCinemaCatalogue::Entry &entry) {
 void CinemaOpen(unsigned selected) {
     using namespace Cinema;
     CinemaCatalogueLoad();
+    const bool scanning = s.firstPlayable;
     const int opened = CeMuseumCinemaCatalogue::Play(s.catalogue, static_cast<int>(selected), s.firstPlayable, CinemaStartFilm, 0);
-    if (opened < 0) { CinemaClose(Missing); s.playing = -1; return; }
+    if (opened < 0) {
+        // Missing ("films cannot be shown") locks the console until the visitor
+        // leaves the room, so it is kept for the one case it describes: the first
+        // scan of the whole list found nothing playable. One chosen film that
+        // will not open returns the console to Idle, ready for another choice.
+        CinemaClose(CeMuseumCinemaAfterOpenFailure(scanning) ? Missing : Idle);
+        s.playing = -1;
+        s.firstPlayable = false;
+        PortSessionLog(PORT_SESSION_GAME, false, "Museum cinema: %s",
+                       scanning ? "no film in the list could be shown" : "the chosen film could not be shown");
+        return;
+    }
     CinemaControls::Select(&s.controls, s.catalogue.count, opened);
     s.playing = opened;
     s.firstPlayable = false;
@@ -314,7 +378,7 @@ CinemaControls::Input CinemaControllerInput() {
     in.museumActive = view.museumActive;
     in.inRoom = view.inRoom;
     in.fireDown = s.fireHeld;
-    in.paused = view.paused || view.photo;
+    in.paused = view.paused || view.photo;   // the same hold CinemaHeld() gives the clocks
     in.focused = view.focused;
     in.films = s.catalogue.count;
     in.decoder = CinemaDecoder();
@@ -524,7 +588,7 @@ void CinemaScreen(IDirect3DDevice9 *dev) {
     if(!dev || !s.inRoom || s.phase!=Playing || !s.film)return;
     if(s.texture && (s.textureDevice != dev || s.textureDeviceGen != CurrentMuseumDeviceGen())) {
         s.texture->Release(); s.texture = 0; s.textureDevice = 0; s.textureDeviceGen = 0;
-        if(!CinemaProjectionTarget()) { CinemaClose(Missing); return; }
+        if(!CinemaProjectionTarget()) { CinemaClose(Idle); return; }
         s.frame = 0;
         D3DLOCKED_RECT image = {};
         if(SUCCEEDED(s.texture->LockRect(0, &image, 0, 0)) && image.pBits) {
@@ -536,11 +600,12 @@ void CinemaScreen(IDirect3DDevice9 *dev) {
     }
     if(!s.texture)return;
     const CeMuseumFilm::Calls calls=CinemaFilmCalls();
-    const CeMuseumFilm::Step step=CeMuseumFilm::Tick(&film,calls,GAME.IsPaused(),CinemaClock());
+    const CeMuseumFilm::Step step=CeMuseumFilm::Tick(&film,calls,CinemaHeld(),CinemaClock());
     if(step==CeMuseumFilm::kEnded) { CinemaClose(Finished);return; }
     if(step==CeMuseumFilm::kShow) {
         D3DLOCKED_RECT image={};
-        if(FAILED(s.texture->LockRect(0,&image,0,0))||!image.pBits) {CinemaClose(Missing);return;}
+        // A frame that cannot be written ends this showing; the console stays usable.
+        if(FAILED(s.texture->LockRect(0,&image,0,0))||!image.pBits) {CinemaClose(Idle);return;}
         BinkCopyToBuffer(s.film,image.pBits,image.Pitch,s.bitmapH,0,0,BINKSURFACE32A|BINKCOPYNOSCALING|BINKCOPYALL);
         s.texture->UnlockRect(0);
         CeMuseumFilm::Shown(&film,calls);s.frame=film.shown;

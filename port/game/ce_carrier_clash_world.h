@@ -50,6 +50,13 @@ constexpr float kDeepSeaFloorZ = 6.5f;         // 16.5 m deep naval corridor sea
 constexpr float kBastionX = 258.0f;            // player coastal launch headland centre
 constexpr float kBastionY = 144.0f;
 constexpr float kBastionTopZ = -17.0f;         // 7.0 m above waterline
+// Flagship opening stations: West lane vs East lane, 160 m apart, 20 m altitude stagger.
+constexpr float kVenturerStartX = 180.0f;
+constexpr float kVenturerStartY = 262.0f;
+constexpr float kVenturerStartZ = -30.0f;
+constexpr float kFenrirStartX = 340.0f;
+constexpr float kFenrirStartY = 266.0f;
+constexpr float kFenrirStartZ = -50.0f;
 
 // Canonical retail PC unit and mesh identifiers (never Fenrir Multiplayer).
 constexpr const char *kPlayerConfig = "Standard";
@@ -100,6 +107,28 @@ inline const char *PreloadTextureName(unsigned index) {
 	return index < kPreloadTextureCount ? kTextures[index] : nullptr;
 }
 
+// Standalone retail meshes this battle can put on screen but that 742_res_PC.aya
+// does not pack. A mesh the engine cannot find is drawn as its missing-mesh
+// marker (default.msh, a green "?" cube): here that was every rocket in flight
+// and every escape pod leaving a downed fighter (the engine names m_rocket.msh
+// itself, in Rocket.cpp and EscapePod.cpp), and a destroyed Tara Wildcat. Each is
+// optional: a file an install lacks is skipped and logged, never a refusal, and
+// these stay out of the strict preflight above. `texture` names the one texture
+// the level archive lacks too (nullptr when it already holds all the mesh needs).
+struct SupportMeshSpec {
+	const char *mesh;
+	const char *texture;
+};
+
+constexpr unsigned kSupportMeshCount = 2u;
+inline const SupportMeshSpec &SupportMesh(unsigned index) {
+	static const SupportMeshSpec kMeshes[kSupportMeshCount] = {
+		{"m_rocket.msh",                "meshtex\\m_rocket.TGA"},
+		{"fa_wildcard_t_destroyed.msh", nullptr},
+	};
+	return kMeshes[index < kSupportMeshCount ? index : 0u];
+}
+
 inline int AsciiLower(int c) {
 	return (c >= 'A' && c <= 'Z') ? (c + ('a' - 'A')) : c;
 }
@@ -142,102 +171,385 @@ inline bool IsAllowedUnitName(const char *unitName) {
 }
 
 // ---------------------------------------------------------------------------
-// Clean-room procedural 512 x 512 m maritime battleground heightfield.
-// Wide deep-water naval corridor through the centre framed by craggy rocky
-// sea-stacks/islets around the perimeter plus a flat coastal launch bastion
-// for the player Battle Engine on the South-West flank.
+// Sunset key light. One to-sun vector (Z counts downward, so -Z is up) shared by
+// the engine sun (flare, unit light, water glint), the terrain lightmap and the
+// host tests: low over the north-north-west horizon, behind F.S. Venturer as
+// seen from the launch headland. kSunAz* is its unit horizontal bearing.
 // ---------------------------------------------------------------------------
-struct SeaStack {
-	float cx, cy;
-	float radiusX, radiusY;
-	float heightAboveSea;  // metres above kWaterLevel (positive lifts toward -Z)
-	float flatTop;         // [0..1] plateau flattening factor
-	float cragAmp;         // harmonic ridge relief in metres
+constexpr float kSunDirX = -0.524f;
+constexpr float kSunDirY = 0.838f;
+constexpr float kSunDirZ = -0.150f;            // ~8.6 degrees above the horizon, in the sunset glow band
+constexpr float kSunAzX = -0.530f;
+constexpr float kSunAzY = 0.848f;
+
+// ---------------------------------------------------------------------------
+// Clean-room procedural 512 x 512 m volcanic basalt archipelago heightfield.
+// Elevations below are metres above sea level (positive up); the engine height
+// is Z = kWaterLevel - elevation. Each landform has its own character, a steep
+// face toward the sun and a long tail in its lee:
+//   - a tall jagged sea-stack landmark dead ahead of the launch headland (~38 m)
+//   - a crescent island around a sheltered shallow cove, east of the strait (~19 m)
+//   - a long low stepped reef bar north-west, under F.S. Venturer (~6 m)
+//   - tilted ridge islands, a needle and skerry shoals around the rim
+//   - the player's terraced launch headland with a flat landing pad
+// The strait between them is open deep water by construction (StraitGate).
+// Everything is deterministic arithmetic on an integer lattice hash.
+// ---------------------------------------------------------------------------
+constexpr float kSeabedElev = kWaterLevel - kDeepSeaFloorZ;   // -16.5 m
+constexpr float kShelfElev = -1.5f;            // wave-cut shelf fringing every shore
+constexpr float kBastionElev = kWaterLevel - kBastionTopZ;    // +7.0 m
+constexpr float kBastionPadRadius = 10.0f;     // exactly flat landing pad
+constexpr float kMaxLandElev = 43.0f;          // Z >= -53.0 m
+constexpr float kReefMaxElev = 6.5f;           // below the pad: never breaks its horizon
+constexpr float kStackX = 280.0f;              // sea-stack landmark
+constexpr float kStackY = 440.0f;
+constexpr float kStackPeakElev = 30.5f;
+constexpr float kCrescentX = 428.0f;           // crescent island and its cove
+constexpr float kCrescentY = 292.0f;
+constexpr float kCrescentRingRadius = 42.0f;
+constexpr float kCoveFloorElev = -3.2f;
+constexpr float kReefStartX = 58.0f;           // reef bar spine, south-west end
+constexpr float kReefStartY = 356.0f;
+constexpr float kReefDirX = 0.807f;            // unit, toward its north-east end
+constexpr float kReefDirY = 0.591f;
+constexpr float kReefLength = 138.8f;
+// Deep-water keep-out around the flagship lanes: no land inside it.
+constexpr float kStraitMinX = 152.0f;
+constexpr float kStraitMaxX = 363.0f;
+constexpr float kStraitMinY = 176.0f;
+constexpr float kStraitMaxY = 356.0f;
+constexpr float kStraitShoulder = 20.0f;       // land fades in over this distance outside it
+// Player eye at the opening station, for the Venturer sightline fan.
+constexpr float kLaunchEyeX = kBastionX;
+constexpr float kLaunchEyeY = kBastionY + 5.5f;
+
+inline float Clamp01(float t) {
+	return t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+}
+
+inline float SmoothRange(float lo, float hi, float v) {
+	const float t = Clamp01((v - lo) / (hi - lo));
+	return t * t * (3.0f - 2.0f * t);
+}
+
+inline float Mix(float a, float b, float t) {
+	return a + (b - a) * t;
+}
+
+inline uint32_t TerrainHash(int32_t ix, int32_t iy, uint32_t seed) {
+	uint32_t h = static_cast<uint32_t>(ix) * 0x9E3779B1u;
+	h ^= static_cast<uint32_t>(iy) * 0x85EBCA77u;
+	h ^= seed * 0xC2B2AE3Du;
+	h ^= h >> 15;
+	h *= 0x2C1B3C6Du;
+	h ^= h >> 12;
+	h *= 0x297A2D39u;
+	h ^= h >> 15;
+	return h;
+}
+
+// Smooth lattice value noise in [-1, +1].
+inline float ValueNoise(float x, float y, uint32_t seed) {
+	const float fx = floorf(x);
+	const float fy = floorf(y);
+	const int32_t ix = static_cast<int32_t>(fx);
+	const int32_t iy = static_cast<int32_t>(fy);
+	float tx = x - fx;
+	float ty = y - fy;
+	tx = tx * tx * (3.0f - 2.0f * tx);
+	ty = ty * ty * (3.0f - 2.0f * ty);
+	const float kScale = 2.0f / 65535.0f;
+	const float a = static_cast<float>(TerrainHash(ix, iy, seed) & 0xffffu) * kScale - 1.0f;
+	const float b = static_cast<float>(TerrainHash(ix + 1, iy, seed) & 0xffffu) * kScale - 1.0f;
+	const float c = static_cast<float>(TerrainHash(ix, iy + 1, seed) & 0xffffu) * kScale - 1.0f;
+	const float d = static_cast<float>(TerrainHash(ix + 1, iy + 1, seed) & 0xffffu) * kScale - 1.0f;
+	const float ab = a + (b - a) * tx;
+	const float cd = c + (d - c) * tx;
+	return ab + (cd - ab) * ty;
+}
+
+// Three-octave ridge noise in [-1, +1]: sharp crests, rounded gullies.
+inline float CragNoise(float x, float y, uint32_t seed) {
+	float sum = 0.0f;
+	float amp = 1.0f;
+	float fx = x, fy = y;
+	for (uint32_t o = 0u; o < 3u; ++o) {
+		const float n = 1.0f - fabsf(ValueNoise(fx, fy, seed + o));
+		sum += amp * n * n;
+		amp *= 0.5f;
+		fx = fx * 2.07f + 11.3f;
+		fy = fy * 2.07f - 7.1f;
+	}
+	return sum * (2.0f / 1.75f) - 1.0f;
+}
+
+// A flat tread then a riser every `step` metres, with a tread at `base`.
+inline float Terrace(float elev, float step, float base, float tread) {
+	const float q = (elev - base) / step;
+	const float n = floorf(q);
+	return base + step * (n + SmoothRange(tread, 1.0f, q - n));
+}
+
+// Shore cross-section at normalised distance q from a crest (0) to open water
+// (1): a steep submarine pedestal up to the wave-cut shelf, then the dry
+// profile from the shoreline to the crest, flat inside `flat`.
+inline float ShoreProfile(float q, float flat, float crestElev) {
+	return kSeabedElev +
+	       (kShelfElev - kSeabedElev) * (1.0f - SmoothRange(0.72f, 1.0f, q)) +
+	       (crestElev - kShelfElev) * (1.0f - SmoothRange(flat, 0.86f, q));
+}
+
+// 0 inside the deep-water strait, rising to 1 one shoulder outside it.
+inline float StraitGate(float x, float y) {
+	const float dx = x < kStraitMinX ? kStraitMinX - x : (x > kStraitMaxX ? x - kStraitMaxX : 0.0f);
+	const float dy = y < kStraitMinY ? kStraitMinY - y : (y > kStraitMaxY ? y - kStraitMaxY : 0.0f);
+	return SmoothRange(0.0f, kStraitShoulder, sqrtf(dx * dx + dy * dy));
+}
+
+struct LandPoint {
+	float elev;   // metres above sea level
+	float bare;   // 0 = soil that carries grass on its flats, 1 = wave-washed or sheer basalt
 };
 
-inline float HeightAt(float x, float y) {
+inline void LandRaise(LandPoint &acc, float elev, float bare, float gate) {
+	const float e = kSeabedElev + (elev - kSeabedElev) * gate;
+	if (e > acc.elev) {
+		acc.elev = e;
+		acc.bare = bare;
+	}
+}
+
+// Sea-stack landmark: a broad terraced basalt stack rising out of deep water
+// with a steep sunward scarp, all-round wave-cut ledges, and a long buttressed lee.
+inline void StackLand(float u, float v, float gate, LandPoint &acc) {
+	const float px = u - kStackX;
+	const float py = v - kStackY;
+	if (px < -72.0f || px > 72.0f || py < -72.0f || py > 72.0f) return;
+	const float lee = -(px * kSunAzX + py * kSunAzY);
+	const float side = px * kSunAzY - py * kSunAzX;
+	const float wobble = 1.0f + 0.16f * ValueNoise(u * 0.11f, v * 0.11f, 71u);
+	const float ra = (lee < 0.0f ? lee / 16.0f : lee / 48.0f) * wobble;
+	const float rb = (side < 0.0f ? side / 18.0f : side / 24.0f) * wobble;
+	const float r = sqrtf(ra * ra + rb * rb);
+	if (r >= 1.0f) return;
+	const float wall = 1.0f - SmoothRange(0.52f, 1.0f, r);
+	const float crown = 1.0f - SmoothRange(0.06f, 0.5f, r);
+	float elev = kSeabedElev + (kStackPeakElev - kSeabedElev) * (0.68f * wall + 0.32f * crown * crown);
+	const float terraceMix = Mix(0.52f, 0.85f, SmoothRange(-6.0f, 14.0f, lee)) *
+	                         SmoothRange(1.5f, 5.5f, elev);
+	elev = Mix(elev, Terrace(elev, 6.0f, 1.2f, 0.48f), terraceMix);
+	elev += 2.8f * SmoothRange(0.0f, 6.0f, elev) * CragNoise(u * 0.09f, v * 0.09f, 73u);
+	LandRaise(acc, elev, 1.0f, gate);
+}
+
+// A lone basalt needle off the stack's shoulder.
+inline void NeedleLand(float u, float v, float gate, LandPoint &acc) {
+	const float px = u - 306.0f;
+	const float py = v - 456.0f;
+	if (px < -15.0f || px > 15.0f || py < -15.0f || py > 15.0f) return;
+	const float r = sqrtf(px * px + py * py) / 12.0f;
+	if (r >= 1.0f) return;
+	float elev = kSeabedElev + (11.0f - kSeabedElev) * (1.0f - SmoothRange(0.28f, 1.0f, r));
+	elev += 1.4f * SmoothRange(0.0f, 4.0f, elev) * CragNoise(u * 0.16f, v * 0.16f, 79u);
+	LandRaise(acc, elev, 1.0f, gate);
+}
+
+// Long low reef bar: three asymmetric volcanic ribs parted by a deep surge
+// channel at t ~ 0.29 and a shallow wash-over saddle at t ~ 0.74, with craggy
+// wave-cut ledges instead of flat uniform slabs.
+inline void ReefLand(float u, float v, float gate, LandPoint &acc) {
+	if (u < 6.0f || u > 222.0f || v < 304.0f || v > 490.0f) return;
+	const float px = u - kReefStartX;
+	const float py = v - kReefStartY;
+	const float t = Clamp01((px * kReefDirX + py * kReefDirY) / kReefLength);
+	const float cx = px - kReefDirX * kReefLength * t;
+	const float cy = py - kReefDirY * kReefLength * t;
+	const float d = sqrtf(cx * cx + cy * cy);
+	const float lean = d > 0.01f ? (cx * kSunAzX + cy * kSunAzY) / d : 0.0f;
+	const float width = Mix(34.0f, 13.0f, SmoothRange(-0.5f, 0.5f, lean)) *
+	                    (1.0f + 0.22f * ValueNoise(t * 6.0f, 3.3f, 97u));
+	const float q = d / width;
+	if (q >= 1.0f) return;
+	float crest = 6.0f - 1.5f * SmoothRange(0.24f, 0.33f, t) - 2.1f * SmoothRange(0.69f, 0.79f, t);
+	const float gapA = 1.0f - SmoothRange(0.0f, 0.052f, fabsf(t - 0.29f));
+	const float gapB = 1.0f - SmoothRange(0.0f, 0.042f, fabsf(t - 0.74f));
+	crest = Mix(crest, -2.6f, gapA);
+	crest = Mix(crest, -0.4f, gapB);
+	float elev = ShoreProfile(q, 0.08f, crest);
+	elev = Mix(elev, Terrace(elev, 1.8f, 0.6f, 0.50f), 0.5f * SmoothRange(0.6f, 1.6f, elev));
+	elev += 1.2f * SmoothRange(0.3f, 2.0f, elev) * CragNoise(u * 0.13f, v * 0.13f, 101u);
+	if (elev > kReefMaxElev) elev = kReefMaxElev;
+	LandRaise(acc, elev, 1.0f, gate);
+}
+
+// Crescent island: a ring ridge open to the south-west around a shallow cove.
+// The rim is highest at the back and toward the sun, where its outer face is a
+// cliff; inside it shelves gently to a beach, and the horns sink into a sill.
+inline void CrescentLand(float u, float v, float gate, LandPoint &acc) {
+	const float px = u - kCrescentX;
+	const float py = v - kCrescentY;
+	if (px < -82.0f || px > 82.0f || py < -82.0f || py > 82.0f) return;
+	const float r = sqrtf(px * px + py * py);
+	const float inv = r > 0.5f ? 1.0f / r : 0.0f;
+	const float back = 0.5f * (1.0f + (px * 0.780f + py * 0.626f) * inv);   // 0 at the mouth, 1 behind the cove
+	const float sunLean = (px * kSunAzX + py * kSunAzY) * inv;
+	const float rim = SmoothRange(0.16f, 0.62f, back);
+	const float crest = -4.0f + rim * (15.0f + 7.0f * back + 2.5f * sunLean) *
+	                    (1.0f + 0.12f * ValueNoise(u * 0.045f, v * 0.045f, 113u));
+	const float rho = r - kCrescentRingRadius;
+	float elev;
+	if (rho < 0.0f) {
+		// Cove side: the rim's inner wall, then a wide gentle beach down to the
+		// lagoon floor. The beach thins out toward the horns, so the mouth
+		// stays an open channel.
+		const float q = -rho / 34.0f;
+		const float beachTop = Mix(kCoveFloorElev, 1.5f, rim);
+		elev = kCoveFloorElev +
+		       (beachTop - kCoveFloorElev) * (1.0f - SmoothRange(0.35f, 1.0f, q)) +
+		       (crest - beachTop) * (1.0f - SmoothRange(0.08f, 0.5f, q));
+	} else {
+		elev = ShoreProfile(rho / Mix(26.0f, 10.0f, SmoothRange(-0.3f, 0.5f, sunLean)), 0.08f, crest);
+	}
+	const float lagoon = kSeabedElev + (kCoveFloorElev - kSeabedElev) *
+	                     (1.0f - SmoothRange(kCrescentRingRadius - 2.0f, kCrescentRingRadius + 15.0f, r));
+	if (lagoon > elev) elev = lagoon;
+	elev = Mix(elev, Terrace(elev, 5.5f, 1.2f, 0.5f), 0.7f * SmoothRange(4.0f, 8.0f, elev));
+	elev += 2.0f * SmoothRange(1.0f, 7.0f, elev) * CragNoise(u * 0.075f, v * 0.075f, 117u);
+	LandRaise(acc, elev, 0.0f, gate);
+}
+
+// Tilted ridge island: its crest runs across the sun's bearing, with a short
+// scarp facing the sun and a long terraced dip slope behind it.
+inline void RidgeLand(float u, float v, float gate, LandPoint &acc,
+                      float cx, float cy, float halfLen, float scarp, float dip,
+                      float crestElev, uint32_t seed) {
+	const float px = u - cx;
+	const float py = v - cy;
+	const float reach = 1.2f * (halfLen > dip ? halfLen : dip);
+	if (px < -reach || px > reach || py < -reach || py > reach) return;
+	const float along = (px * kSunAzY - py * kSunAzX) / halfLen;
+	const float across = px * kSunAzX + py * kSunAzY;
+	const float rb = across > 0.0f ? across / scarp : across / dip;
+	const float r = sqrtf(along * along + rb * rb) *
+	                (1.0f + 0.14f * ValueNoise(u * 0.07f, v * 0.07f, seed));
+	if (r >= 1.0f) return;
+	float elev = ShoreProfile(r, 0.10f, crestElev);
+	const float step = (crestElev - 1.0f) * (1.0f / 3.0f);
+	elev = Mix(elev, Terrace(elev, step, 1.0f, 0.5f),
+	           0.75f * SmoothRange(0.0f, 8.0f, -across) * SmoothRange(1.0f, 3.0f, elev));
+	elev += 0.13f * crestElev * SmoothRange(0.5f, 5.0f, elev) * CragNoise(u * 0.08f, v * 0.08f, seed + 3u);
+	LandRaise(acc, elev, 0.0f, gate);
+}
+
+// Skerry shoal: a shallow bank with scattered rocks breaking the surface.
+inline void SkerryLand(float u, float v, float gate, LandPoint &acc,
+                       float cx, float cy, float radius, float topElev, uint32_t seed) {
+	const float px = u - cx;
+	const float py = v - cy;
+	if (px < -radius || px > radius || py < -radius || py > radius) return;
+	const float r = sqrtf(px * px + py * py) / radius;
+	if (r >= 1.0f) return;
+	const float bank = 1.0f - SmoothRange(0.25f, 1.0f, r);
+	const float rocks = CragNoise(u * 0.055f, v * 0.055f, seed);
+	const float top = -4.5f + (topElev + 4.5f) * SmoothRange(-0.25f, 0.75f, rocks);
+	LandRaise(acc, kSeabedElev + (top - kSeabedElev) * bank, 1.0f, gate);
+}
+
+// The player's launch headland: an exactly flat landing pad at (kBastionX,
+// kBastionY) on a rocky overlook whose broken lip drops sheer into the bay to
+// the north, a high back terrace behind it, a sunward cliff and benches
+// stepping down to a beach in its lee.
+inline void HeadlandLand(float x, float y, LandPoint &acc) {
+	if (x < 174.0f || x > 326.0f || y < 18.0f || y > 182.0f) return;
+	const float dxp = x - kBastionX;
+	const float dyp = y - kBastionY;
+	const float rPad = sqrtf(dxp * dxp + dyp * dyp);
+	if (rPad <= kBastionPadRadius) {
+		LandRaise(acc, kBastionElev, 1.0f, 1.0f);
+		return;
+	}
+	// The outline wanders only away from the pad, so the pad's rim is exact.
+	const float wander = 8.0f * SmoothRange(kBastionPadRadius, kBastionPadRadius + 16.0f, rPad);
+	const float u = x + wander * ValueNoise(x * 0.027f, y * 0.027f, 131u);
+	const float v = y + wander * ValueNoise(x * 0.027f, y * 0.027f, 137u);
+	// Spine from the overlook tip (260, 152) south-south-west to (238, 78).
+	const float sx = -22.0f, sy = -74.0f;
+	const float px = u - 260.0f;
+	const float py = v - 152.0f;
+	const float t = Clamp01((px * sx + py * sy) / (sx * sx + sy * sy));
+	const float cx = px - sx * t;
+	const float cy = py - sy * t;
+	const float d = sqrtf(cx * cx + cy * cy);
+	const float lean = d > 0.01f ? (cx * kSunAzX + cy * kSunAzY) / d : 0.0f;
+	const float width = Mix(46.0f, 21.0f, SmoothRange(-0.35f, 0.55f, lean));
+	if (d >= width) return;
+	const float crest = kBastionElev + 6.0f * SmoothRange(0.40f, 0.62f, t) - 4.0f * SmoothRange(0.86f, 1.0f, t);
+	float elev = ShoreProfile(d / width, 12.5f / width, crest);
+	elev = Mix(elev, Terrace(elev, 3.0f, 1.0f, 0.55f), 0.85f * SmoothRange(1.0f, 2.5f, elev));
+	elev += 1.1f * SmoothRange(1.0f, 5.0f, elev) * CragNoise(u * 0.10f, v * 0.10f, 139u);
+	// Broken rocky lip around the pad, notched below it; nothing ahead of the
+	// pad stands above it.
+	const float lip = SmoothRange(kBastionPadRadius + 0.3f, kBastionPadRadius + 2.0f, rPad) *
+	                  (1.0f - SmoothRange(kBastionPadRadius + 3.5f, kBastionPadRadius + 6.5f, rPad));
+	const float notch = CragNoise(x * 0.21f, y * 0.21f, 149u);
+	elev -= 1.5f * lip * (notch > 0.0f ? notch : 0.0f);
+	const float cap = kBastionElev + 8.0f * SmoothRange(0.36f, 0.50f, t);
+	if (elev > cap) elev = cap;
+	elev = Mix(kBastionElev, elev, SmoothRange(kBastionPadRadius, kBastionPadRadius + 6.0f, rPad));
+	// The launch headland is bare volcanic basalt out into the strait's deep bay.
+	LandRaise(acc, elev, 1.0f, 1.0f - SmoothRange(166.0f, 181.0f, y));
+}
+
+inline LandPoint LandAt(float x, float y) {
+	LandPoint acc = {kSeabedElev, 0.0f};
+	HeadlandLand(x, y, acc);
+	const float gate = StraitGate(x, y);
+	if (gate <= 0.0f) return acc;
+	// Two-octave domain warp: island outlines wander by up to 12.5 m. Its
+	// gradient stays below 1, so the warp never folds the map.
+	const float u = x + 10.0f * ValueNoise(x * 0.0205f, y * 0.0205f, 11u) +
+	                2.5f * ValueNoise(x * 0.05f, y * 0.05f, 13u);
+	const float v = y + 10.0f * ValueNoise(x * 0.0205f, y * 0.0205f, 23u) +
+	                2.5f * ValueNoise(x * 0.05f, y * 0.05f, 29u);
+	StackLand(u, v, gate, acc);
+	NeedleLand(u, v, gate, acc);
+	SkerryLand(u, v, gate, acc, 252.0f, 416.0f, 26.0f, 3.5f, 83u);
+	ReefLand(u, v, gate, acc);
+	CrescentLand(u, v, gate, acc);
+	RidgeLand(u, v, gate, acc, 70.0f, 178.0f, 44.0f, 16.0f, 46.0f, 14.0f, 151u);   // west ridge
+	RidgeLand(u, v, gate, acc, 404.0f, 438.0f, 30.0f, 11.0f, 31.0f, 11.0f, 157u);  // north-east islet
+	RidgeLand(u, v, gate, acc, 134.0f, 88.0f, 28.0f, 11.0f, 29.0f, 9.0f, 163u);    // south-west islet
+	SkerryLand(u, v, gate, acc, 392.0f, 98.0f, 42.0f, 4.5f, 167u);                 // south-east shoal
+	if (acc.elev > kMaxLandElev) acc.elev = kMaxLandElev;
+	return acc;
+}
+
+struct TerrainSample {
+	float z;      // engine height (Z counts downward)
+	float bare;   // LandPoint::bare
+};
+
+inline TerrainSample SampleTerrain(float x, float y) {
 	if (!(x >= 0.0f && x <= static_cast<float>(kCells)) ||
 	    !(y >= 0.0f && y <= static_cast<float>(kCells))) {
-		return kDeepSeaFloorZ;
+		return {kDeepSeaFloorZ, 0.0f};
 	}
-
-	// Gently undulating seabed beneath the deep naval corridor.
+	const LandPoint land = LandAt(x, y);
+	// Gently undulating seabed beneath open water; it fades out under land.
 	const float swell =
 		1.1f * sinf(x * 0.031f + y * 0.019f) +
 		0.7f * cosf(x * 0.053f - y * 0.041f);
-	float z = kDeepSeaFloorZ + swell;
-
-	// Framing rocky sea-stacks and asymmetric basalt headlands surrounding the
-	// ~280 m central ocean strait. Every peak keeps well inside [-54 m, +14 m]
-	// and leaves the central corridor (x in [180..340], y in [185..345]) wide open
-	// while framing an open sunlit sea horizon between distant headland clusters.
-	static const SeaStack kStacks[] = {
-		// West basalt cliff cluster (layered headland + outer sea-stack)
-		{ 76.0f, 224.0f, 52.0f, 36.0f, 38.0f, 0.22f, 5.2f},
-		{108.0f, 256.0f, 28.0f, 24.0f, 23.0f, 0.14f, 3.8f},
-		{ 88.0f, 376.0f, 46.0f, 32.0f, 33.0f, 0.18f, 4.4f},
-		// Distant North-West & North-East archipelago framing open center horizon
-		{146.0f, 444.0f, 54.0f, 30.0f, 31.0f, 0.20f, 4.6f},
-		{384.0f, 448.0f, 58.0f, 34.0f, 36.0f, 0.22f, 5.0f},
-		{422.0f, 412.0f, 32.0f, 26.0f, 21.0f, 0.16f, 3.4f},
-		// East craggy archipelago
-		{448.0f, 298.0f, 46.0f, 44.0f, 41.0f, 0.16f, 5.0f},
-		{416.0f, 216.0f, 34.0f, 30.0f, 27.0f, 0.18f, 4.0f},
-		// South-West & South-East outer shoal crags behind the launch headland
-		{132.0f,  96.0f, 42.0f, 30.0f, 28.0f, 0.18f, 3.6f},
-		{382.0f,  94.0f, 44.0f, 32.0f, 26.0f, 0.20f, 3.5f},
-	};
-
-	const unsigned stackCount = static_cast<unsigned>(sizeof(kStacks) / sizeof(kStacks[0]));
-	for (unsigned i = 0; i < stackCount; ++i) {
-		const SeaStack &s = kStacks[i];
-		const float dx = (x - s.cx) / s.radiusX;
-		const float dy = (y - s.cy) / s.radiusY;
-		const float r2 = dx * dx + dy * dy;
-		if (r2 >= 4.5f) continue;
-		const float env = expf(-r2 * 1.15f);
-		float lift = env * (s.heightAboveSea + (kDeepSeaFloorZ - kWaterLevel));
-		if (s.flatTop > 0.0f && env > (1.0f - s.flatTop)) {
-			const float cap = (1.0f - s.flatTop) * (s.heightAboveSea + (kDeepSeaFloorZ - kWaterLevel));
-			if (lift > cap) lift = cap + (lift - cap) * 0.25f;
-		}
-		const float crag =
-			s.cragAmp * env *
-			(0.6f * sinf(x * 0.19f + y * 0.13f + float(i) * 1.7f) +
-			 0.4f * cosf(x * 0.27f - y * 0.23f - float(i) * 0.9f));
-		const float stackZ = kDeepSeaFloorZ - lift + crag;
-		if (stackZ < z) z = stackZ;
-	}
-
-	// Player coastal launch headland: compact rocky overlook at (258, 144), Z = -17.0 m
-	// (7.0 m above the -10.0 m waterline), dropping cleanly into the open bay ahead.
-	{
-		const float dx = x - kBastionX;
-		const float dy = y - kBastionY;
-		const float dist = sqrtf(dx * dx + dy * dy);
-		const float flatR = 9.5f;
-		const float slopeR = 23.0f;
-		if (dist < slopeR) {
-			float t = 0.0f;
-			if (dist <= flatR) {
-				t = 1.0f;
-			} else {
-				const float u = (dist - flatR) / (slopeR - flatR);
-				// Smooth cubic Hermite falloff from plateau edge down into ocean floor
-				t = 1.0f - u * u * (3.0f - 2.0f * u);
-			}
-			const float rimNoise = (dist > flatR)
-				? (1.2f * t * (1.0f - t) * sinf(x * 0.29f + y * 0.23f))
-				: 0.0f;
-			const float bastionZ = kDeepSeaFloorZ + (kBastionTopZ - kDeepSeaFloorZ) * t + rimNoise;
-			if (bastionZ < z) z = bastionZ;
-		}
-	}
+	float z = kWaterLevel - land.elev +
+	          swell * (1.0f - SmoothRange(0.0f, 5.0f, land.elev - kSeabedElev));
 
 	// Strict +/- 55 m heightfield clamp (retail CDXLandscape clamps tiles at +/- 60 m).
 	if (z < kMinZBound + 1.0f) z = kMinZBound + 1.0f;
 	if (z > kMaxZBound - 1.0f) z = kMaxZBound - 1.0f;
-	return z;
+	return {z, land.bare};
+}
+
+inline float HeightAt(float x, float y) {
+	return SampleTerrain(x, y).z;
 }
 
 inline int16_t QuantizeHeight(float z) {
@@ -269,8 +581,9 @@ inline void FillHeightSamples(int16_t *outSamples) {
 	}
 }
 
-// Computes unit-normal lighting value in [14..62] for MIXERMAP.mMap[y * 512 + x].
-inline uint8_t ComputeCellLight(int x, int y, float sunX, float sunY, float sunZ) {
+// Cosine of the angle between the terrain's upward normal at a cell and the
+// to-sun vector, clamped to [0, 1].
+inline float CellSunDot(int x, int y, float sunX, float sunY, float sunZ) {
 	const float x0 = static_cast<float>(x > 0 ? x - 1 : 0);
 	const float x1 = static_cast<float>(x < kCells - 1 ? x + 1 : kCells - 1);
 	const float y0 = static_cast<float>(y > 0 ? y - 1 : 0);
@@ -289,10 +602,124 @@ inline uint8_t ComputeCellLight(int x, int y, float sunX, float sunY, float sunZ
 	float ndotl = nx * lx + ny * ly + nz * lz;
 	if (ndotl < 0.0f) ndotl = 0.0f;
 	if (ndotl > 1.0f) ndotl = 1.0f;
-	const int shade = static_cast<int>(18.0f + ndotl * 44.0f + 0.5f);
+	return ndotl;
+}
+
+// Lightmap byte for a lit fraction in [0, 1]: 16 in full shadow, 46 square to the sunset key
+// so CHeightField's 2x colour-table scaling warms sunward scarps without clipping to noon white.
+inline uint8_t LightFromSunDot(float lit) {
+	const int shade = static_cast<int>(16.0f + lit * 30.0f + 0.5f);
 	if (shade < 14) return 14u;
-	if (shade > 62) return 62u;
+	if (shade > 46) return 46u;
 	return static_cast<uint8_t>(shade);
+}
+
+// Computes unit-normal lighting value in [14..46] for MIXERMAP.mMap[y * 512 + x].
+inline uint8_t ComputeCellLight(int x, int y, float sunX, float sunY, float sunZ) {
+	return LightFromSunDot(CellSunDot(x, y, sunX, sunY, sunZ));
+}
+
+// How much of the sun a cell sees past the terrain between it and the sun:
+// 0 in full cast shadow, 1 in the open, with a penumbra that widens with
+// distance. Cells under the sea are hidden by it and are left open.
+inline float SunOpenAt(int x, int y, float sunX, float sunY, float sunZ) {
+	const float horiz = sqrtf(sunX * sunX + sunY * sunY);
+	if (!(horiz > 1e-4f) || !(sunZ < 0.0f)) return 1.0f;
+	const float elev = kWaterLevel - HeightAt(static_cast<float>(x), static_cast<float>(y));
+	if (elev < -1.0f) return 1.0f;
+	const float ux = sunX / horiz;
+	const float uy = sunY / horiz;
+	const float rise = -sunZ / horiz;
+	float open = 1.0f;
+	for (float t = 2.5f; t < 160.0f; t += 2.5f + t * 0.06f) {
+		const float px = static_cast<float>(x) + ux * t;
+		const float py = static_cast<float>(y) + uy * t;
+		if (px < 0.0f || px > static_cast<float>(kCells) ||
+		    py < 0.0f || py > static_cast<float>(kCells)) break;
+		const float ray = elev + 0.5f + rise * t;
+		if (ray > kMaxLandElev + 1.0f) break;
+		const float clear = (ray - (kWaterLevel - HeightAt(px, py))) / (0.6f + 0.12f * t);
+		if (clear < open) {
+			open = clear;
+			if (open <= 0.0f) return 0.0f;
+		}
+	}
+	return open;
+}
+
+// ComputeCellLight with cast shadows: the lee of every cliff and stack falls dark.
+inline uint8_t ComputeCellLightShadowed(int x, int y, float sunX, float sunY, float sunZ) {
+	const float lit = CellSunDot(x, y, sunX, sunY, sunZ);
+	if (lit <= 0.0f) return LightFromSunDot(0.0f);
+	return LightFromSunDot(lit * SunOpenAt(x, y, sunX, sunY, sunZ));
+}
+
+// ---------------------------------------------------------------------------
+// MIXERMAP layer alphas over the base (grass) texture: layer 0 sand, layer 1
+// basalt rock. CHeightField's mixer adds a texel's signed top byte [-32, +31]
+// to a layer's alpha and compares signed 32-bit differences against what is
+// already there, so both alphas stay inside [-62, +62] with
+// rock >= max(0, sand) - 62. That set is convex, so the mixer's bilinear spans
+// between samples stay inside it and no difference can wrap. Each ramp is
+// narrow and saturates: a sand skirt along the waterline, bare rock on steep
+// faces, on wave-washed reefs and on the stack, and clean grass on the flats
+// above, so no half-blended patches smear down the cliffs.
+// ---------------------------------------------------------------------------
+constexpr int kMixAlphaMin = -62;
+constexpr int kMixAlphaMax = 62;
+constexpr float kMixSeabedElev = -7.0f;        // at and below this the base texture is left alone
+
+struct MixAlphas {
+	int sand;
+	int rock;
+};
+
+// Terrain steepness (rise over run) across a 3 m stencil: wider than the
+// finest crag octave, narrow enough to tell a terrace riser from its tread.
+inline float SlopeAt(float x, float y) {
+	const float kMax = static_cast<float>(kCells);
+	const float x0 = x >= 1.5f ? x - 1.5f : 0.0f;
+	const float x1 = x <= kMax - 1.5f ? x + 1.5f : kMax;
+	const float y0 = y >= 1.5f ? y - 1.5f : 0.0f;
+	const float y1 = y <= kMax - 1.5f ? y + 1.5f : kMax;
+	const float gx = (HeightAt(x1, y) - HeightAt(x0, y)) / ((x1 - x0) > 0.5f ? (x1 - x0) : 1.0f);
+	const float gy = (HeightAt(x, y1) - HeightAt(x, y0)) / ((y1 - y0) > 0.5f ? (y1 - y0) : 1.0f);
+	return sqrtf(gx * gx + gy * gy);
+}
+
+inline int MixAlphaFromWeight(float w) {
+	const float a = static_cast<float>(kMixAlphaMin) +
+	                static_cast<float>(kMixAlphaMax - kMixAlphaMin) * Clamp01(w);
+	int v = static_cast<int>(a >= 0.0f ? a + 0.5f : a - 0.5f);
+	if (v < kMixAlphaMin) v = kMixAlphaMin;
+	if (v > kMixAlphaMax) v = kMixAlphaMax;
+	return v;
+}
+
+inline MixAlphas ComputeMixAlphas(float x, float y) {
+	MixAlphas out = {kMixAlphaMin, kMixAlphaMin};
+	const TerrainSample s = SampleTerrain(x, y);
+	const float elev = kWaterLevel - s.z;
+	if (elev <= kMixSeabedElev) return out;
+	const float steep = SmoothRange(0.62f, 0.95f, SlopeAt(x, y));
+	// Rock: steep faces, bare summits, and bare volcanic landforms (the launch
+	// headland, sea-stack, needle, reefs and skerries); fades out under the sea.
+	float rock = steep;
+	const float summit = SmoothRange(27.0f, 30.0f, elev);
+	if (summit > rock) rock = summit;
+	const float washed = s.bare * SmoothRange(-0.6f, 0.6f, elev);
+	if (washed > rock) rock = washed;
+	rock *= SmoothRange(-5.0f, -2.0f, elev);
+	// Sand: shoreline skirt on sheltered soil-bearing islands and coves only,
+	// never a pale ring around bare basalt stacks, reefs or the launch headland.
+	const float sand = (1.0f - s.bare) *
+	                   SmoothRange(kMixSeabedElev, -3.5f, elev) *
+	                   (1.0f - SmoothRange(1.3f, 2.7f, elev)) * (1.0f - steep);
+	out.sand = MixAlphaFromWeight(sand);
+	out.rock = MixAlphaFromWeight(rock);
+	const int rockFloor = (out.sand > 0 ? out.sand : 0) + kMixAlphaMin;
+	if (out.rock < rockFloor) out.rock = rockFloor;
+	return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -331,32 +758,35 @@ inline unsigned BuildDefaultOrderOfBattle(UnitSpawnSpec *outUnits, unsigned capa
 	static constexpr float kYawENE = -1.25f;
 	static constexpr float kYawWNW =  1.35f;
 	unsigned n = 0u;
-	// Capital flagships framed cleanly left-vs-right across the open strait
+	// Capital flagships open 160 m apart, each on its own side of the strait and
+	// its own altitude band (Fenrir 20 m above the Venturer): two ~100 m hulls
+	// trade broadsides across open water and never share airspace. These match
+	// the first patrol waypoints of CeCarrierClashDirector.
 	outUnits[n++] = {"ce.cc.venturer", kVenturerUnit, kAllegianceForseti,
-	                 {216.0f, 236.0f, -32.0f}, {kYawENE, 0.0f, 0.0f}};
+	                 {kVenturerStartX, kVenturerStartY, kVenturerStartZ}, {kYawENE, 0.0f, 0.0f}};
 	outUnits[n++] = {"ce.cc.fenrir", fenrirDef, kAllegianceMuspell,
-	                 {304.0f, 240.0f, -36.0f}, {kYawWNW, 0.0f, 0.0f}};
+	                 {kFenrirStartX, kFenrirStartY, kFenrirStartZ}, {kYawWNW, 0.0f, 0.0f}};
 	// Forseti naval cruisers (FSV Marshall) flanking Venturer in the deep channel
 	outUnits[n++] = {"ce.cc.marshall.1", kEscortCruiserUnit, kAllegianceForseti,
-	                 {208.0f, 198.0f, kWaterLevel}, {kYawENE, 0.0f, 0.0f}};
+	                 {176.0f, 214.0f, kWaterLevel}, {kYawENE, 0.0f, 0.0f}};
 	outUnits[n++] = {"ce.cc.marshall.2", kEscortCruiserUnit, kAllegianceForseti,
-	                 {242.0f, 268.0f, kWaterLevel}, {-1.45f, 0.0f, 0.0f}};
+	                 {214.0f, 290.0f, kWaterLevel}, {-1.45f, 0.0f, 0.0f}};
 	// Forseti Wildcat air patrol orbiting above Venturer
 	outUnits[n++] = {"ce.cc.wildcat.1", kWildcatJasonUnit, kAllegianceForseti,
-	                 {212.0f, 224.0f, -48.0f}, {kYawENE, 0.0f, 0.0f}};
+	                 {176.0f, 248.0f, -48.0f}, {kYawENE, 0.0f, 0.0f}};
 	outUnits[n++] = {"ce.cc.wildcat.2", kWildcatBillyUnit, kAllegianceForseti,
-	                 {236.0f, 218.0f, -50.0f}, {kYawENE, 0.0f, 0.0f}};
+	                 {202.0f, 242.0f, -50.0f}, {kYawENE, 0.0f, 0.0f}};
 	outUnits[n++] = {"ce.cc.wildcat.3", kWildcatTaraUnit, kAllegianceForseti,
-	                 {226.0f, 250.0f, -54.0f}, {kYawENE, 0.0f, 0.0f}};
+	                 {192.0f, 276.0f, -54.0f}, {kYawENE, 0.0f, 0.0f}};
 	// Muspell Advanced Fighter screen ahead of Fenrir
 	outUnits[n++] = {"ce.cc.atf.1", kMuspellFighterUnit, kAllegianceMuspell,
-	                 {286.0f, 226.0f, -48.0f}, {kYawWNW, 0.0f, 0.0f}};
+	                 {320.0f, 250.0f, -62.0f}, {kYawWNW, 0.0f, 0.0f}};
 	outUnits[n++] = {"ce.cc.atf.2", kMuspellFighterUnit, kAllegianceMuspell,
-	                 {296.0f, 252.0f, -52.0f}, {kYawWNW, 0.0f, 0.0f}};
+	                 {330.0f, 280.0f, -66.0f}, {kYawWNW, 0.0f, 0.0f}};
 	outUnits[n++] = {"ce.cc.atf.3", kMuspellFighterUnit, kAllegianceMuspell,
-	                 {314.0f, 232.0f, -50.0f}, {kYawWNW, 0.0f, 0.0f}};
+	                 {350.0f, 256.0f, -64.0f}, {kYawWNW, 0.0f, 0.0f}};
 	outUnits[n++] = {"ce.cc.atf.4", kMuspellFighterUnit, kAllegianceMuspell,
-	                 {282.0f, 246.0f, -56.0f}, {kYawWNW, 0.0f, 0.0f}};
+	                 {316.0f, 272.0f, -68.0f}, {kYawWNW, 0.0f, 0.0f}};
 	return n;
 }
 

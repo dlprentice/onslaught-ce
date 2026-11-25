@@ -87,6 +87,7 @@ bool SDLCALL PadWatch(void *, SDL_Event *e)
 	case SDL_EVENT_GAMEPAD_REMAPPED:
 		v.device = e->gdevice.which; break;
 	case SDL_EVENT_WINDOW_FOCUS_LOST: case SDL_EVENT_WINDOW_FOCUS_GAINED:
+	case SDL_EVENT_WINDOW_MINIMIZED: case SDL_EVENT_WINDOW_RESTORED: case SDL_EVENT_WINDOW_MAXIMIZED:
 		v.window = e->window.windowID; break;
 	default:
 		return true;
@@ -628,14 +629,17 @@ struct Device : public IDirectInputDevice8A
 	DWORD cooperative = 0;
 	bool acquired = false;
 	bool triggerDown[2] = { false, false };
+	Uint64 lastRebindTry = 0;
 	LONG rangeMin = -1000, rangeMax = 1000;
 #ifdef CE_VERSION
 	float ceMouseRemainderX = 0, ceMouseRemainderY = 0;
 	unsigned ceMouseFocusVersion = 0;
+	bool ceMouseWasFocused = true;
 	CePadQueue ceButtons;
 	SDL_JoystickID ceIdentity = 0;
 	Uint64 ceInputSince = 0;
 	bool ceFocused = true;
+	bool ceMinimized = false;
 	bool ceMappingKnown = false;
 	uint32_t ceSampleOnly = 0;
 #endif
@@ -744,8 +748,18 @@ struct Device : public IDirectInputDevice8A
 		{
 			ceButtons.Reset();
 			ceInputSince = SDL_GetTicksNS();
-			if (SDL_Window *w = PortSdlWindow(window))
-				ceFocused = (SDL_GetWindowFlags(w) & SDL_WINDOW_INPUT_FOCUS) != 0;
+			SDL_Window *w = !(cooperative & DISCL_BACKGROUND) ? PortSdlWindow(window) : NULL;
+			if (w)
+			{
+				SDL_WindowFlags wf = SDL_GetWindowFlags(w);
+				ceFocused = (wf & SDL_WINDOW_INPUT_FOCUS) != 0;
+				ceMinimized = (wf & SDL_WINDOW_MINIMIZED) != 0;
+			}
+			else
+			{
+				ceFocused = true;
+				ceMinimized = false;
+			}
 		}
 #endif
 		if (getenv("BEA_PORT_INPUT_LOG"))
@@ -761,6 +775,7 @@ struct Device : public IDirectInputDevice8A
 			ceMouseRemainderX = ceMouseRemainderY = 0;
 			SDL_LockSpinlock(&gWheelLock);
 			ceMouseFocusVersion = gWheelFocusVersion;
+			ceMouseWasFocused = gWheelFocused && !gWheelMinimized;
 			SDL_UnlockSpinlock(&gWheelLock);
 #endif
 			PortSessionLog(PORT_SESSION_WINDOW, false, "mouse acquired cooperative=%08lx relative_mode=requested", (unsigned long)cooperative);
@@ -863,6 +878,32 @@ struct Device : public IDirectInputDevice8A
 				return DI_OK;
 			}
 #endif
+			SDL_Window *padWindow = !(cooperative & DISCL_BACKGROUND) ? PortSdlWindow(window) : NULL;
+			if (padWindow)
+			{
+				SDL_WindowFlags padFlags = SDL_GetWindowFlags(padWindow);
+				if (!(padFlags & SDL_WINDOW_INPUT_FOCUS) || (padFlags & SDL_WINDOW_MINIMIZED))
+				{
+					triggerDown[0] = triggerDown[1] = false;
+#ifdef CE_VERSION
+					if (ceFocused || !(padFlags & SDL_WINDOW_MINIMIZED) != !ceMinimized)
+					{
+						ceFocused = (padFlags & SDL_WINDOW_INPUT_FOCUS) != 0;
+						ceMinimized = (padFlags & SDL_WINDOW_MINIMIZED) != 0;
+						ceButtons.Reset();
+						ceInputSince = SDL_GetTicksNS();
+					}
+#endif
+					if (size >= sizeof(DIJOYSTATE))
+					{
+						DIJOYSTATE2 *j = (DIJOYSTATE2 *)data;
+						LONG centre = rangeMin + (rangeMax - rangeMin) / 2;
+						j->lX = j->lY = j->lZ = j->lRx = j->lRy = j->lRz = centre;
+						for (int i = 0; i < 4; ++i) j->rgdwPOV[i] = 0xFFFFFFFF;
+					}
+					return DI_OK;
+				}
+			}
 		}
 		if (kind == KEYBOARD)
 		{
@@ -923,18 +964,43 @@ struct Device : public IDirectInputDevice8A
 			SDL_Window* mouseWindow = PortSdlWindow(window);
 			SDL_WindowFlags mouseFlags = mouseWindow ? SDL_GetWindowFlags(mouseWindow) : 0;
 			bool windowFocused = (mouseFlags & SDL_WINDOW_INPUT_FOCUS) && !(mouseFlags & SDL_WINDOW_MINIMIZED);
+			bool foreground = mouseWindow && !(cooperative & DISCL_BACKGROUND);
 			SDL_MouseButtonFlags b = SDL_GetRelativeMouseState(&dx, &dy);
+			SDL_LockSpinlock(&gWheelLock);
+			unsigned focusVersion = gWheelFocusVersion;
+			bool wheelActive = gWheelFocused && !gWheelMinimized;
+			float wheel = windowFocused && wheelActive ? gWheel : 0.0f;
+			gWheel = 0;
+			SDL_UnlockSpinlock(&gWheelLock);
+			if (foreground && (!windowFocused || !wheelActive))
+			{
+#ifdef CE_VERSION
+				ceMouseRemainderX = ceMouseRemainderY = 0;
+				ceMouseFocusVersion = focusVersion;
+				ceMouseWasFocused = false;
+#endif
+#ifndef CE_NETWORK_OFF
+				LONG ignoredX = 0, ignoredY = 0;
+				SDL_MouseButtonFlags ignoredButtons = 0;
+				DiagnosticMousePoll(mouseWindow, &ignoredX, &ignoredY, &ignoredButtons);
+#endif
+				if (PORT_FEEL_ON())
+				{
+					long ax = 0, ay = 0;
+					PortFeelMouseTake(&ax, &ay);
+					PortFeelMousePoll(0, 0, 0);
+				}
+				return DI_OK;
+			}
 #ifdef CE_VERSION
 			if (OrdinaryCeInput())
 			{
-				SDL_LockSpinlock(&gWheelLock);
-				unsigned focusVersion = gWheelFocusVersion;
-				bool focused = windowFocused && gWheelFocused && !gWheelMinimized;
-				SDL_UnlockSpinlock(&gWheelLock);
-				if (!focused || focusVersion != ceMouseFocusVersion)
+				bool focused = !mouseWindow || (windowFocused && wheelActive);
+				if (!focused || !ceMouseWasFocused || focusVersion != ceMouseFocusVersion)
 				{
 					ceMouseRemainderX = ceMouseRemainderY = 0;
 					ceMouseFocusVersion = focusVersion;
+					ceMouseWasFocused = focused;
 					// SDL's own accumulator has no per-event epoch. Discard the first poll after a focus transition:
 					// it may mix stale motion with new motion, so at most one interval of new movement is also discarded.
 					dx = dy = 0;
@@ -949,12 +1015,9 @@ struct Device : public IDirectInputDevice8A
 				m->lY = (LONG)dy;
 			}
 #ifndef CE_NETWORK_OFF
-			DiagnosticMousePoll(PortSdlWindow(window), &m->lX, &m->lY, &b);
+			DiagnosticMousePoll(mouseWindow, &m->lX, &m->lY, &b);
 #endif
-			SDL_LockSpinlock(&gWheelLock);
-			m->lZ = windowFocused && gWheelFocused && !gWheelMinimized ? (LONG)(gWheel * WHEEL_DELTA) : 0;
-			gWheel = 0;
-			SDL_UnlockSpinlock(&gWheelLock);
+			m->lZ = (LONG)(wheel * WHEEL_DELTA);
 			m->rgbButtons[0] = (b & SDL_BUTTON_LMASK) ? 0x80 : 0;
 			m->rgbButtons[1] = (b & SDL_BUTTON_RMASK) ? 0x80 : 0;
 			m->rgbButtons[2] = (b & SDL_BUTTON_MMASK) ? 0x80 : 0;
@@ -1173,8 +1236,18 @@ void DrainPadEvents()
 			{
 				d->ceButtons.Reset();
 				d->ceInputSince = SDL_GetTicksNS();
-				if (SDL_Window *w = PortSdlWindow(d->window))
-					d->ceFocused = (SDL_GetWindowFlags(w) & SDL_WINDOW_INPUT_FOCUS) != 0;
+				SDL_Window *w = !(d->cooperative & DISCL_BACKGROUND) ? PortSdlWindow(d->window) : NULL;
+				if (w)
+				{
+					SDL_WindowFlags wf = SDL_GetWindowFlags(w);
+					d->ceFocused = (wf & SDL_WINDOW_INPUT_FOCUS) != 0;
+					d->ceMinimized = (wf & SDL_WINDOW_MINIMIZED) != 0;
+				}
+				else
+				{
+					d->ceFocused = true;
+					d->ceMinimized = false;
+				}
 			}
 		PortSessionLog(PORT_SESSION_WINDOW, true, "controller event queue overflow; resynchronizing buttons");
 		return;
@@ -1186,11 +1259,21 @@ void DrainPadEvents()
 		{
 			if (!d || !d->acquired) continue;
 			if (v.timestamp && v.timestamp < d->ceInputSince) continue;
-			if (v.type == SDL_EVENT_WINDOW_FOCUS_LOST || v.type == SDL_EVENT_WINDOW_FOCUS_GAINED)
+			if (v.type == SDL_EVENT_WINDOW_FOCUS_LOST || v.type == SDL_EVENT_WINDOW_FOCUS_GAINED ||
+				v.type == SDL_EVENT_WINDOW_MINIMIZED || v.type == SDL_EVENT_WINDOW_RESTORED ||
+				v.type == SDL_EVENT_WINDOW_MAXIMIZED)
 			{
+				if (d->cooperative & DISCL_BACKGROUND) continue;
 				SDL_Window *w = PortSdlWindow(d->window);
-				if (v.window && (!w || SDL_GetWindowID(w) != v.window)) continue;
-				d->ceFocused = v.type == SDL_EVENT_WINDOW_FOCUS_GAINED;
+				if (!w || (v.window && SDL_GetWindowID(w) != v.window)) continue;
+				if (v.type == SDL_EVENT_WINDOW_FOCUS_LOST || v.type == SDL_EVENT_WINDOW_FOCUS_GAINED)
+					d->ceFocused = v.type == SDL_EVENT_WINDOW_FOCUS_GAINED;
+				else if (v.type == SDL_EVENT_WINDOW_MINIMIZED)
+					d->ceMinimized = true;
+				else if (d->ceMinimized)
+					d->ceMinimized = false;
+				else
+					continue;
 				d->ceButtons.Reset();
 				d->ceInputSince = v.timestamp;
 				continue;
@@ -1202,7 +1285,7 @@ void DrainPadEvents()
 				if (v.type == SDL_EVENT_GAMEPAD_REMAPPED) RefreshPadMapping(d);
 				continue;
 			}
-			if (!d->ceFocused || !d->ceButtons.active) continue;
+			if (!d->ceFocused || d->ceMinimized || !d->ceButtons.active) continue;
 			unsigned button;
 			bool down;
 			if ((v.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN || v.type == SDL_EVENT_GAMEPAD_BUTTON_UP) && d->pad)
@@ -1253,23 +1336,24 @@ void Rebind(Device *d)
 		return;
 	if ((d->pad && SDL_GamepadConnected(d->pad)) || (d->joy && SDL_JoystickConnected(d->joy)))
 		return;
-#ifdef CE_VERSION
-	d->ceButtons.Reset();
-	d->ceInputSince = SDL_GetTicksNS();
-	d->ceMappingKnown = false;
-#endif
-	static Uint64 lastTry;
-	Uint64 now = SDL_GetTicks();
-	if (lastTry && now - lastTry < 500)
-		return;
-	lastTry = now;
 	if (d->pad)
 		SDL_CloseGamepad(d->pad);
 	if (d->joy)
 		SDL_CloseJoystick(d->joy);
 	d->pad = NULL;
 	d->joy = NULL;
+	d->joystickId = 0;
 	d->triggerDown[0] = d->triggerDown[1] = false;
+#ifdef CE_VERSION
+	d->ceButtons.Reset();
+	d->ceInputSince = SDL_GetTicksNS();
+	d->ceMappingKnown = false;
+	d->ceSampleOnly = 0;
+#endif
+	Uint64 now = SDL_GetTicks();
+	if (d->lastRebindTry && now - d->lastRebindTry < 500)
+		return;
+	d->lastRebindTry = now;
 	int count = 0;
 	SDL_JoystickID *ids = SDL_GetJoysticks(&count);
 	for (int pass = 0; pass < 2 && ids && !d->pad && !d->joy; pass++)
@@ -1518,18 +1602,22 @@ int PortCePadNext(void *device, bool rotate, unsigned *out)
 	bool sampled = d->acquired && SUCCEEDED(d->GetDeviceState(sizeof(state), &state));
 	if (sampled && !d->ceMappingKnown) RefreshPadMapping(d);
 	DrainPadEvents();
-	if (SDL_Window *w = PortSdlWindow(d->window))
+	SDL_Window *w = !(d->cooperative & DISCL_BACKGROUND) ? PortSdlWindow(d->window) : NULL;
+	if (w)
 	{
-		bool focused = (SDL_GetWindowFlags(w) & SDL_WINDOW_INPUT_FOCUS) != 0;
-		if (focused != d->ceFocused)
+		SDL_WindowFlags wf = SDL_GetWindowFlags(w);
+		bool focused = (wf & SDL_WINDOW_INPUT_FOCUS) != 0;
+		bool min = (wf & SDL_WINDOW_MINIMIZED) != 0;
+		if (focused != d->ceFocused || min != d->ceMinimized)
 		{
 			d->ceFocused = focused;
+			d->ceMinimized = min;
 			d->ceButtons.Reset();
 			d->ceInputSince = SDL_GetTicksNS();
 		}
 	}
 	bool connected = (d->pad && SDL_GamepadConnected(d->pad)) || (d->joy && SDL_JoystickConnected(d->joy));
-	if (!sampled || !d->ceFocused || !connected)
+	if (!sampled || !d->ceFocused || d->ceMinimized || !connected)
 	{
 		d->ceButtons.Reset();
 		*out = 0;

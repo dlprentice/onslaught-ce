@@ -37,6 +37,7 @@ bool PortCeAuthoringSessionAllowed() noexcept;
 extern "C" bool PortCeEditorActive(void) __attribute__((weak));
 extern "C" bool PortCeLivingSandboxActive(void) __attribute__((weak));
 extern "C" bool PortCeCarrierClashActive(void) __attribute__((weak));
+extern "C" bool PortCeFlagshipDuelActive(void) __attribute__((weak));
 
 namespace {
 unsigned char gMuseumCareer[sizeof(CCareer)];
@@ -57,7 +58,8 @@ bool Begin(bool preparedCache) {
         !PortCeAuthoringSessionAllowed() || PortCeMuseumActive() ||
         (PortCeEditorActive && PortCeEditorActive()) ||
         (PortCeLivingSandboxActive && PortCeLivingSandboxActive()) ||
-        (PortCeCarrierClashActive && PortCeCarrierClashActive())) {
+        (PortCeCarrierClashActive && PortCeCarrierClashActive()) ||
+        (PortCeFlagshipDuelActive && PortCeFlagshipDuelActive())) {
         CeMuseumVisit::Refuse("Close mods, online play and the Map Editor, then open the museum.");
         PortSessionLog(PORT_SESSION_GAME, false, "museum refused before loading: another mode is open");
         return false;
@@ -534,6 +536,27 @@ bool Receive(const void *base, unsigned baseLength, const void *real, unsigned r
 // hall are out of bounds. A visitor that reaches the water (the one thing in a hall that ends a Battle Engine whatever its armour) or flies or walks past the hall's
 // edge (kCeMuseumHallRadius) is put back where it started, standing still, facing the exhibits, and the hall says so. Z counts downward, so a position within
 // kSea of the water, or below it, is in the sea's reach.
+// The heading a matrix faces, as the engine's yaw (forward +Y turns to (-sin yaw, cos yaw)).
+static float YawOfOrientation(const FMatrix &orientation)
+{
+    const FVector forward = orientation.GetColumnY();
+    if (forward.X * forward.X + forward.Y * forward.Y < 1.0e-8f) return 0.0f;
+    return std::atan2(-forward.X, forward.Y);
+}
+
+// Puts the visitor somewhere facing a heading, for good: position, orientation and
+// the engine's own pose state (its Euler angles, turn rates and shake) all agree, and
+// it stands still. Used by the Directory's quick-jump and the out-of-bounds return.
+static void PlaceVisitor(CBattleEngine *engine, const FVector &position, float yaw)
+{
+    engine->SetVelocity(FVector(0.0f, 0.0f, 0.0f));
+    engine->Teleport(position);
+    FMatrix facing;
+    facing.MakeRotationYawF(yaw);
+    engine->TeleportOrientation(facing);
+    engine->CeResetPoseForRecall(yaw);
+}
+
 extern "C" void PortCeMuseumVisitFrame(void) {
     if (!PortCeMuseumVisitActive()) return;
     CPlayer *player = GAME.GetPlayer(0);
@@ -560,9 +583,10 @@ extern "C" void PortCeMuseumVisitFrame(void) {
         float jz = gStartPosition.Z;
         GalleryGround(jumpX, jumpY, &jz);
         const FVector dest(jumpX, jumpY, jz);
-        engine->MoveTo(dest);
-        engine->GetOrientation().MakeRotationF(jumpYaw, 0.0f, 0.0f);
-        engine->SetVelocity(FVector(0.0f, 0.0f, 0.0f));
+        // A jump is a teleport with the pose reset, as the Sandbox's recall is. Writing
+        // the orientation matrix alone left the engine's own yaw (its Euler state and
+        // turn rates) where it was, so the next tick turned the visitor straight back.
+        PlaceVisitor(engine, dest, jumpYaw);
         gLastViewingPosition = dest;
     }
     FVector here = engine->GetPos();
@@ -620,9 +644,8 @@ extern "C" void PortCeMuseumVisitFrame(void) {
     const bool sea = CeMuseumInSeaReach(here.Z, MAP.GetWaterLevel(), kSea);
     const bool edge = CeMuseumPastHallEdge(here.X, here.Y, gStartPosition.X, gStartPosition.Y, kCeMuseumHallRadius);
     if (sea || edge) {
-        engine->MoveTo(gStartPosition);
-        engine->GetOrientation() = gStartOrientation;
-        engine->SetVelocity(FVector(0.0f, 0.0f, 0.0f));
+        PlaceVisitor(engine, gStartPosition, YawOfOrientation(gStartOrientation));
+        gLastViewingPosition = gStartPosition;
         // A visitor put back in jet mode would drift off again with the jets' own momentum: it lands as a walker.
         if (engine->GetState() == BATTLE_ENGINE_STATE_JET) engine->Morph();
         PortCeMuseumLabelsTitle("Out of bounds", sea ? "The sea is not part of the museum. Back at the start." : "That is the edge of the hall. Back at the start.");

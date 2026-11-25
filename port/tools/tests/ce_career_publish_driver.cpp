@@ -495,6 +495,90 @@ int	main(int argc, char **argv)
 		EXPECT(res.backupSet[0] != 0);
 		std::printf("target=%s\nbackup=%s\n", res.newFile, res.backupSet);
 	}
+	else if (mode == "absent_savegames_dirs")
+	{
+		std::vector<unsigned char> payload;
+		EXPECT(readFile(extFile, payload));
+		char target[80]{};
+		auto makeReq = [&](const std::string &u, const std::string &g, const std::string &p, const std::string &b) {
+			CeCareerPublishRequest req{};
+			req.userDir = u.c_str();
+			req.gameDir = g.c_str();
+			req.packageDir = p.c_str();
+			req.backupRoot = b.c_str();
+			req.sourceName = "Hero.bes";
+			req.targetName = "Hero.bes";
+			req.bytes = payload.data();
+			req.size = payload.size();
+			req.permitted = permitCb;
+			req.namePermitted = nameCb;
+			return req;
+		};
+
+		// 1) game/savegames absent, user/savegames populated: suggest + publish succeed without creating game/savegames.
+		const std::string g1 = gBase + "/no_game_saves/game";
+		const std::string u1 = gBase + "/no_game_saves/user";
+		const std::string p1 = gBase + "/no_game_saves/package";
+		const std::string b1 = gBase + "/no_game_saves/backup";
+		EXPECT(CeCareerPublishSuggest(CE_PUBLISH_IMPORT, u1.c_str(), g1.c_str(), "Existing.bes",
+									  nameCb, nullptr, target, sizeof(target)) == CE_PUBLISH_COMPLETE);
+		EXPECT(!std::strcmp(target, "Existing imported.bes"));
+		CeCareerPublishRequest req1 = makeReq(u1, g1, p1, b1);
+		const CeCareerPublishResult res1 = CeCareerPublishNew(&req1);
+		EXPECT(res1.status == CE_PUBLISH_COMPLETE);
+		struct stat st{};
+		EXPECT(lstat((g1 + "/savegames").c_str(), &st) != 0 && errno == ENOENT);
+		EXPECT(lstat((u1 + "/savegames/Hero.bes").c_str(), &st) == 0 && S_ISREG(st.st_mode));
+
+		// 2) user/savegames absent, game/savegames populated: suggest & failed gates MUST NOT create user/savegames;
+		//    authorized publish creates user/savegames after backup + gates pass.
+		const std::string g2 = gBase + "/no_user_saves/game";
+		const std::string u2 = gBase + "/no_user_saves/user";
+		const std::string p2 = gBase + "/no_user_saves/package";
+		const std::string b2 = gBase + "/no_user_saves/backup";
+		EXPECT(CeCareerPublishSuggest(CE_PUBLISH_IMPORT, u2.c_str(), g2.c_str(), "GameSlot.bes",
+									  nameCb, nullptr, target, sizeof(target)) == CE_PUBLISH_COMPLETE);
+		EXPECT(!std::strcmp(target, "GameSlot imported.bes"));
+		EXPECT(lstat((u2 + "/savegames").c_str(), &st) != 0 && errno == ENOENT);
+
+		CeCareerPublishRequest reqAuth = makeReq(u2, g2, p2, b2);
+		gPermit = false;
+		EXPECT(CeCareerPublishNew(&reqAuth).status == CE_PUBLISH_AUTHORITY);
+		EXPECT(lstat((u2 + "/savegames").c_str(), &st) != 0 && errno == ENOENT);
+		gPermit = true;
+
+		gNamePermit = false;
+		EXPECT(CeCareerPublishNew(&reqAuth).status == CE_PUBLISH_BAD_NAME);
+		EXPECT(lstat((u2 + "/savegames").c_str(), &st) != 0 && errno == ENOENT);
+		gNamePermit = true;
+
+		CeCareerPublishRequest reqNoFolder = makeReq(u2, g2, p2, "");
+		EXPECT(CeCareerPublishNew(&reqNoFolder).status == CE_PUBLISH_NO_FOLDER);
+		EXPECT(lstat((u2 + "/savegames").c_str(), &st) != 0 && errno == ENOENT);
+
+		const CeCareerPublishResult res2 = CeCareerPublishNew(&reqAuth);
+		EXPECT(res2.status == CE_PUBLISH_COMPLETE);
+		EXPECT(lstat((u2 + "/savegames/Hero.bes").c_str(), &st) == 0 && S_ISREG(st.st_mode));
+
+		// 3) Both user/savegames and game/savegames absent (zero existing files): backup gate refuses and leaves user/savegames absent.
+		const std::string g3 = gBase + "/both_absent/game";
+		const std::string u3 = gBase + "/both_absent/user";
+		const std::string p3 = gBase + "/both_absent/package";
+		const std::string b3 = gBase + "/both_absent/backup";
+		CeCareerPublishRequest req3 = makeReq(u3, g3, p3, b3);
+		EXPECT(CeCareerPublishNew(&req3).status == CE_PUBLISH_REFUSED);
+		EXPECT(lstat((u3 + "/savegames").c_str(), &st) != 0 && errno == ENOENT);
+
+		// 4) Non-directory (regular file or symlink) at savegames is strictly refused.
+		const std::string g4 = gBase + "/file_at_saves/game";
+		const std::string u4 = gBase + "/file_at_saves/user";
+		const std::string p4 = gBase + "/file_at_saves/package";
+		const std::string b4 = gBase + "/file_at_saves/backup";
+		EXPECT(CeCareerPublishSuggest(CE_PUBLISH_IMPORT, u4.c_str(), g4.c_str(), "Hero.bes",
+									  nameCb, nullptr, target, sizeof(target)) == CE_PUBLISH_REFUSED);
+		CeCareerPublishRequest req4 = makeReq(u4, g4, p4, b4);
+		EXPECT(CeCareerPublishNew(&req4).status == CE_PUBLISH_REFUSED);
+	}
 	else
 		return 2;
 
@@ -601,14 +685,20 @@ CeCareerStorageResult	CeCareerTakeFullSet(const CeCareerStorageRequest &request)
 		res.status = CeCareerStorageStatus::Refused;
 		return res;
 	}
-	const std::string srcFile = winJoin(winJoin(request.user, "savegames"), "Existing.bes");
+	std::string srcLeaf = "Existing.bes";
+	std::string srcFile = winJoin(winJoin(request.user, "savegames"), srcLeaf);
 	std::vector<unsigned char> data;
 	if (!readFile(srcFile, data))
 	{
-		res.status = CeCareerStorageStatus::Refused;
-		return res;
+		srcLeaf = "GameSlot.bes";
+		srcFile = winJoin(winJoin(request.game, "savegames"), srcLeaf);
+		if (!readFile(srcFile, data))
+		{
+			res.status = CeCareerStorageStatus::Refused;
+			return res;
+		}
 	}
-	const std::string dstFile = winJoin(setPath, "Existing.bes");
+	const std::string dstFile = winJoin(setPath, srcLeaf);
 	std::wstring wDst;
 	if (!ce_backup_paths::wide(dstFile.c_str(), wDst) ||
 		!writeWholeWinFile(wDst, data.data(), data.size()))
@@ -621,7 +711,7 @@ CeCareerStorageResult	CeCareerTakeFullSet(const CeCareerStorageRequest &request)
 		std::string("{\"Folder\":") + jsonEscape(request.user) +
 		",\"Game\":" + jsonEscape(request.game) +
 		",\"Created\":\"2026-11-21T12:00:00Z\",\"Reason\":\"All careers\",\"Target\":1,\"Files\":[{" +
-		"\"Name\":\"Existing.bes\",\"Original\":" + jsonEscape(srcFile) +
+		"\"Name\":" + jsonEscape(srcLeaf) + ",\"Original\":" + jsonEscape(srcFile) +
 		",\"Size\":" + std::to_string(data.size()) +
 		",\"Sha256\":" + jsonEscape(ce_backup_verify::digest(bytesStr)) + "}]}\n";
 	const std::string manifestPath = winJoin(setPath, "onslaught-backup.json");
@@ -995,6 +1085,78 @@ int	main(int argc, char **argv)
 		const CeCareerPublishResult res = CeCareerPublishNew(&req);
 		EXPECT(res.status == CE_PUBLISH_OCCUPIED);
 		EXPECT(res.possible == 0 && res.newFile[0] == 0);
+	}
+	else if (mode == "absent_savegames_dirs")
+	{
+		std::vector<unsigned char> payload;
+		EXPECT(readFile(extFile, payload));
+		char target[80]{};
+
+		auto winExists = [](const std::string &p) {
+			std::wstring wp;
+			return ce_backup_paths::wide(p.c_str(), wp) && GetFileAttributesW(wp.c_str()) != INVALID_FILE_ATTRIBUTES;
+		};
+		auto makeReq = [&](const std::string &u, const std::string &g, const std::string &p, const std::string &b) {
+			CeCareerPublishRequest req{};
+			req.userDir = u.c_str();
+			req.gameDir = g.c_str();
+			req.packageDir = p.c_str();
+			req.backupRoot = b.c_str();
+			req.sourceName = "Hero.bes";
+			req.targetName = "Hero.bes";
+			req.bytes = payload.data();
+			req.size = payload.size();
+			req.permitted = permitCb;
+			req.namePermitted = nameCb;
+			return req;
+		};
+
+		// 1) game\savegames absent, user\savegames populated.
+		const std::string g1 = winJoin(winJoin(gBase, "no_game_saves"), "game");
+		const std::string u1 = winJoin(winJoin(gBase, "no_game_saves"), "user");
+		const std::string p1 = winJoin(winJoin(gBase, "no_game_saves"), "package");
+		const std::string b1 = winJoin(winJoin(gBase, "no_game_saves"), "backup");
+		EXPECT(CeCareerPublishSuggest(CE_PUBLISH_IMPORT, u1.c_str(), g1.c_str(), "Existing.bes",
+									  nameCb, nullptr, target, sizeof(target)) == CE_PUBLISH_COMPLETE);
+		EXPECT(!std::strcmp(target, "Existing imported.bes"));
+		CeCareerPublishRequest req1 = makeReq(u1, g1, p1, b1);
+		EXPECT(CeCareerPublishNew(&req1).status == CE_PUBLISH_COMPLETE);
+		EXPECT(!winExists(winJoin(g1, "savegames")));
+		EXPECT(winExists(winJoin(winJoin(u1, "savegames"), "Hero.bes")));
+
+		// 2) user\savegames absent, game\savegames populated: suggest + failed gates leave user\savegames absent.
+		const std::string g2 = winJoin(winJoin(gBase, "no_user_saves"), "game");
+		const std::string u2 = winJoin(winJoin(gBase, "no_user_saves"), "user");
+		const std::string p2 = winJoin(winJoin(gBase, "no_user_saves"), "package");
+		const std::string b2 = winJoin(winJoin(gBase, "no_user_saves"), "backup");
+		EXPECT(CeCareerPublishSuggest(CE_PUBLISH_IMPORT, u2.c_str(), g2.c_str(), "GameSlot.bes",
+									  nameCb, nullptr, target, sizeof(target)) == CE_PUBLISH_COMPLETE);
+		EXPECT(!std::strcmp(target, "GameSlot imported.bes"));
+		EXPECT(!winExists(winJoin(u2, "savegames")));
+
+		CeCareerPublishRequest req2 = makeReq(u2, g2, p2, b2);
+		gPermit = false;
+		EXPECT(CeCareerPublishNew(&req2).status == CE_PUBLISH_AUTHORITY);
+		EXPECT(!winExists(winJoin(u2, "savegames")));
+		gPermit = true;
+
+		gFailBackup = true;
+		EXPECT(CeCareerPublishNew(&req2).status == CE_PUBLISH_REFUSED);
+		EXPECT(!winExists(winJoin(u2, "savegames")));
+		gFailBackup = false;
+
+		EXPECT(CeCareerPublishNew(&req2).status == CE_PUBLISH_COMPLETE);
+		EXPECT(winExists(winJoin(winJoin(u2, "savegames"), "Hero.bes")));
+
+		// 3) Regular file at savegames is refused.
+		const std::string g3 = winJoin(winJoin(gBase, "file_at_saves"), "game");
+		const std::string u3 = winJoin(winJoin(gBase, "file_at_saves"), "user");
+		const std::string p3 = winJoin(winJoin(gBase, "file_at_saves"), "package");
+		const std::string b3 = winJoin(winJoin(gBase, "file_at_saves"), "backup");
+		EXPECT(CeCareerPublishSuggest(CE_PUBLISH_IMPORT, u3.c_str(), g3.c_str(), "Hero.bes",
+									  nameCb, nullptr, target, sizeof(target)) == CE_PUBLISH_REFUSED);
+		CeCareerPublishRequest req3 = makeReq(u3, g3, p3, b3);
+		EXPECT(CeCareerPublishNew(&req3).status == CE_PUBLISH_REFUSED);
 	}
 	else
 		return 2;

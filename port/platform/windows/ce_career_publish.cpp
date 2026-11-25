@@ -324,6 +324,8 @@ bool	sameDirStamp(const DirStamp &a, const DirStamp &b)
 
 bool	existsEntry(HANDLE parent, const Wide &name)
 {
+	if (parent == INVALID_HANDLE_VALUE)
+		return false;
 	NTSTATUS st = 0;
 	Handle probe = openChildRaw(
 		parent, name, FILE_READ_ATTRIBUTES | SYNCHRONIZE, 0,
@@ -333,6 +335,33 @@ bool	existsEntry(HANDLE parent, const Wide &name)
 		return true;
 	require(st == kStatusNotFound || st == kStatusPathNotFound);
 	return false;
+}
+
+bool	savegamesStillAbsent(HANDLE parent)
+{
+	NTSTATUS st = 0;
+	Handle probe = openChildRaw(
+		parent, L"savegames", FILE_READ_ATTRIBUTES | SYNCHRONIZE, 0,
+		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN,
+		FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT, &st);
+	return !probe && (st == kStatusNotFound || st == kStatusPathNotFound);
+}
+
+void	openOptionalSavegames(HANDLE parent, Handle &out, FILE_ID_INFO &idOut, bool &present)
+{
+	closeNow(out);
+	idOut = {};
+	NTSTATUS st = 0;
+	Handle h = child(parent, L"savegames", true, false, &st);
+	if (h)
+	{
+		require(dirInfo(h.h, idOut));
+		assignHandle(out, std::move(h));
+		present = true;
+		return;
+	}
+	require((st == kStatusNotFound || st == kStatusPathNotFound) && savegamesStillAbsent(parent));
+	present = false;
 }
 
 template <class Visit>
@@ -374,7 +403,7 @@ bool	collectSlotNames(HANDLE dir, bool allowMissing, WideNames &out)
 	NTSTATUS st = 0;
 	Handle folder = child(dir, L"savegames", true, false, &st);
 	if (!folder)
-		return allowMissing && (st == kStatusNotFound || st == kStatusPathNotFound);
+		return allowMissing && (st == kStatusNotFound || st == kStatusPathNotFound) && savegamesStillAbsent(dir);
 	DirStamp before{};
 	if (!readDirStamp(folder.h, before))
 		return false;
@@ -924,16 +953,17 @@ CeCareerPublishResult	CeCareerPublishNew(const CeCareerPublishRequest *request)
 			Directory user, game, package, backupRoot;
 			require(user.open(userPath.c_str()) && game.open(gamePath.c_str()) &&
 					package.open(pkgPath.c_str()) && backupRoot.open(rootPath.c_str()));
-			Handle saves = child(user.h(), L"savegames", true, false);
-			Handle orig = child(game.h(), L"savegames", true, false);
+			Handle saves, orig;
 			FILE_ID_INFO savesId{}, origId{};
-			require(bool(saves) && dirInfo(saves.h, savesId) && bool(orig) && dirInfo(orig.h, origId));
-			require(isLocalNtfs(user.h()) && isLocalNtfs(backupRoot.h()) &&
-						isLocalNtfs(saves.h) && isLocalNtfs(orig.h),
+			bool savesPresent = false, origPresent = false;
+			openOptionalSavegames(user.h(), saves, savesId, savesPresent);
+			openOptionalSavegames(game.h(), orig, origId, origPresent);
+			require(isLocalNtfs(user.h()) && isLocalNtfs(game.h()) && isLocalNtfs(backupRoot.h()) &&
+						(!savesPresent || isLocalNtfs(saves.h)) && (!origPresent || isLocalNtfs(orig.h)),
 					CE_PUBLISH_UNSUPPORTED);
 			require(rootsDisjoint(user, game, package, backupRoot));
 			WideNames taken;
-			require(collectSlotNames(user.h(), false, taken) && collectSlotNames(game.h(), false, taken));
+			require(collectSlotNames(user.h(), true, taken) && collectSlotNames(game.h(), true, taken));
 			require(taken.count(targetWide) == 0 &&
 						!existsEntry(saves.h, targetWide) && !existsEntry(orig.h, targetWide),
 					CE_PUBLISH_OCCUPIED);
@@ -965,12 +995,13 @@ CeCareerPublishResult	CeCareerPublishNew(const CeCareerPublishRequest *request)
 		Directory user, game, package, backupRoot;
 		require(user.open(userPath.c_str()) && game.open(gamePath.c_str()) &&
 				package.open(pkgPath.c_str()) && backupRoot.open(rootPath.c_str()));
-		Handle saves = child(user.h(), L"savegames", true, false);
-		Handle orig = child(game.h(), L"savegames", true, false);
+		Handle saves, orig;
 		FILE_ID_INFO savesId{}, origId{};
-		require(bool(saves) && dirInfo(saves.h, savesId) && bool(orig) && dirInfo(orig.h, origId));
-		require(isLocalNtfs(user.h()) && isLocalNtfs(backupRoot.h()) &&
-					isLocalNtfs(saves.h) && isLocalNtfs(orig.h),
+		bool savesPresent = false, origPresent = false;
+		openOptionalSavegames(user.h(), saves, savesId, savesPresent);
+		openOptionalSavegames(game.h(), orig, origId, origPresent);
+		require(isLocalNtfs(user.h()) && isLocalNtfs(game.h()) && isLocalNtfs(backupRoot.h()) &&
+					(!savesPresent || isLocalNtfs(saves.h)) && (!origPresent || isLocalNtfs(orig.h)),
 				CE_PUBLISH_UNSUPPORTED);
 		require(rootsDisjoint(user, game, package, backupRoot));
 
@@ -983,12 +1014,22 @@ CeCareerPublishResult	CeCareerPublishNew(const CeCareerPublishRequest *request)
 			boundDir(game, gamePath, failStatus);
 			boundDir(package, pkgPath, failStatus);
 			boundDir(backupRoot, rootPath, failStatus);
-			Handle a = child(user.h(), L"savegames", true, false);
-			Handle b = child(game.h(), L"savegames", true, false);
-			FILE_ID_INFO aId{}, bId{};
-			require(bool(a) && bool(b) && dirInfo(a.h, aId) && dirInfo(b.h, bId) &&
-						sameId(aId, savesId) && sameId(bId, origId),
-					failStatus);
+			if (savesPresent)
+			{
+				Handle a = child(user.h(), L"savegames", true, false);
+				FILE_ID_INFO aId{};
+				require(bool(a) && dirInfo(a.h, aId) && sameId(aId, savesId), failStatus);
+			}
+			else
+				require(savegamesStillAbsent(user.h()), failStatus);
+			if (origPresent)
+			{
+				Handle b = child(game.h(), L"savegames", true, false);
+				FILE_ID_INFO bId{};
+				require(bool(b) && dirInfo(b.h, bId) && sameId(bId, origId), failStatus);
+			}
+			else
+				require(savegamesStillAbsent(game.h()), failStatus);
 			Handle held = openChildRaw(
 				user.h(), kLockWide, FILE_READ_ATTRIBUTES | SYNCHRONIZE, 0,
 				FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN,
@@ -1020,6 +1061,50 @@ CeCareerPublishResult	CeCareerPublishNew(const CeCareerPublishRequest *request)
 						checked.identity == backupRes.backupIdentity,
 					failStatus);
 		};
+
+		verifyRoots(CE_PUBLISH_CHANGED);
+		verifyBackup(CE_PUBLISH_CHANGED, true);
+		require(request->permitted(request->owner), CE_PUBLISH_AUTHORITY);
+		require(!(request->cancelled && request->cancelled(request->owner)), CE_PUBLISH_CANCELLED);
+		require(request->namePermitted(request->owner, sourceName.c_str(), target.c_str()), CE_PUBLISH_BAD_NAME);
+		{
+			WideNames preStageTaken;
+			require(collectSlotNames(user.h(), true, preStageTaken) &&
+					collectSlotNames(game.h(), true, preStageTaken));
+			require(preStageTaken.count(targetWide) == 0 &&
+						!existsEntry(saves.h, targetWide) && !existsEntry(orig.h, targetWide),
+				CE_PUBLISH_OCCUPIED);
+		}
+		if (!savesPresent)
+		{
+			NTSTATUS createSt = 0;
+			Handle created = openChildRaw(
+				user.h(), L"savegames",
+				FILE_READ_ATTRIBUTES | SYNCHRONIZE | FILE_LIST_DIRECTORY,
+				FILE_ATTRIBUTE_DIRECTORY, FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_CREATE,
+				FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT | FILE_DIRECTORY_FILE,
+				&createSt);
+			if (!created)
+			{
+				if (createSt == kStatusCollision)
+					throw Failure{CE_PUBLISH_CHANGED};
+				if (createSt == kStatusNotSupported || createSt == kStatusInvalidDeviceRequest)
+					throw Failure{CE_PUBLISH_UNSUPPORTED};
+				throw Failure{CE_PUBLISH_REFUSED};
+			}
+			FILE_ID_INFO createdId{};
+			require(dirInfo(created.h, createdId) && physicalLeaf(created.h, L"savegames"));
+			require(isLocalNtfs(created.h), CE_PUBLISH_UNSUPPORTED);
+			closeNow(created);
+			Handle reopened = child(user.h(), L"savegames", true, false);
+			DirStamp reopenedStamp{};
+			require(bool(reopened) && readDirStamp(reopened.h, reopenedStamp) &&
+						sameId(reopenedStamp.id, createdId) && physicalLeaf(reopened.h, L"savegames"),
+					CE_PUBLISH_CHANGED);
+			assignHandle(saves, std::move(reopened));
+			savesId = createdId;
+			savesPresent = true;
+		}
 
 		// Stage into an exclusive (shareAccess = 0) CSPRNG .pending-<18digits>.tmp inside user\savegames.
 		Wide stageName;
@@ -1054,7 +1139,7 @@ CeCareerPublishResult	CeCareerPublishNew(const CeCareerPublishRequest *request)
 		require(readFileStamp(stage.h, stageName, stageStamp, true));
 
 		WideNames taken;
-		require(collectSlotNames(user.h(), false, taken) && collectSlotNames(game.h(), false, taken));
+		require(collectSlotNames(user.h(), false, taken) && collectSlotNames(game.h(), true, taken));
 		require(taken.count(targetWide) == 0 &&
 					!existsEntry(saves.h, targetWide) && !existsEntry(orig.h, targetWide),
 				CE_PUBLISH_OCCUPIED);
@@ -1090,7 +1175,7 @@ CeCareerPublishResult	CeCareerPublishNew(const CeCareerPublishRequest *request)
 		{
 			WideNames postUser, postGame;
 			require(collectSlotNames(user.h(), false, postUser) &&
-						collectSlotNames(game.h(), false, postGame),
+						collectSlotNames(game.h(), true, postGame),
 					CE_PUBLISH_UNCERTAIN);
 			auto it = postUser.find(targetWide);
 			require(it != postUser.end() && *it == targetWide &&

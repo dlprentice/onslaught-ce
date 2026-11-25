@@ -156,6 +156,23 @@ void bound(int fd, const std::string &name, bool allowUserAncestors = false) {
   Fd again(directory(name, allowUserAncestors));
   require(same(status(fd), status(again.n)), Status::Changed);
 }
+bool savegamesAbsent(int parentFd) {
+  struct stat st{};
+  return fstatat(parentFd, "savegames", &st, AT_SYMLINK_NOFOLLOW) != 0 &&
+         errno == ENOENT;
+}
+int openOptionalSavegames(int parentFd, bool &present) {
+  int fd = openat(parentFd, "savegames",
+                  O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW);
+  if (fd >= 0) {
+    require(S_ISDIR(status(fd).st_mode));
+    present = true;
+    return fd;
+  }
+  require(errno == ENOENT && savegamesAbsent(parentFd));
+  present = false;
+  return -1;
+}
 std::string digest(const Bytes &bytes) {
   return ce_backup_verify::digest(std::string(bytes.begin(), bytes.end()));
 }
@@ -260,18 +277,18 @@ bool equal(const Snapshot &a, const Snapshot &b) {
 }
 struct Session {
   const CeCareerStorageRequest &r;
+  bool slotsPresent = false, originalPresent = false;
   Fd user, game, package, root, slots, original, lock;
   Snapshot saved;
   explicit Session(const CeCareerStorageRequest &in)
       : r(in), user(directory(r.user, true)), game(directory(r.game, true)),
         package(directory(r.package, true)), root(directory(r.backupRoot, false)),
-        slots(openat(user.n, "savegames",
-                     O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW)),
-        original(openat(game.n, "savegames",
-                        O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW)) {
+        slots(openOptionalSavegames(user.n, slotsPresent)),
+        original(openOptionalSavegames(game.n, originalPresent)) {
     permission();
-    require(slots.n >= 0 && original.n >= 0 && local(user.n) && local(root.n) &&
-                local(slots.n) && local(original.n),
+    require(local(user.n) && local(game.n) && local(root.n) &&
+                (!slotsPresent || local(slots.n)) &&
+                (!originalPresent || local(original.n)),
             Status::Unsupported);
     for (int protectedDir : {user.n, game.n, package.n})
       require(!ancestor(protectedDir, root.n) &&
@@ -285,6 +302,7 @@ struct Session {
     require(S_ISREG(ls.st_mode) && ls.st_nlink == 1 && ls.st_uid == geteuid());
     if (flock(lock.n, LOCK_EX | LOCK_NB))
       throw Failure{errno == EWOULDBLOCK ? Status::Busy : Status::Refused};
+    roots();
     saved = snapshot();
   }
   void permission(bool includeCancel = true) const {
@@ -297,24 +315,56 @@ struct Session {
     bound(game.n, r.game, true);
     bound(package.n, r.package, true);
     bound(root.n, r.backupRoot, false);
-    Fd a(openat(user.n, "savegames",
-                O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW));
-    Fd b(openat(game.n, "savegames",
-                O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW));
-    require(a.n >= 0 && b.n >= 0 && same(status(a.n), status(slots.n)) &&
-                same(status(b.n), status(original.n)),
-            Status::Changed);
+    if (slotsPresent) {
+      Fd a(openat(user.n, "savegames",
+                  O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW));
+      require(a.n >= 0 && same(status(a.n), status(slots.n)), Status::Changed);
+    } else
+      require(savegamesAbsent(user.n), Status::Changed);
+    if (originalPresent) {
+      Fd b(openat(game.n, "savegames",
+                  O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW));
+      require(b.n >= 0 && same(status(b.n), status(original.n)),
+              Status::Changed);
+    } else
+      require(savegamesAbsent(game.n), Status::Changed);
     struct stat held{};
     require(fstatat(user.n, ".ce-career-custody.lock", &held,
                     AT_SYMLINK_NOFOLLOW) == 0 &&
                 same(held, status(lock.n)) && held.st_nlink == 1,
             Status::Changed);
   }
+  void ensureUserSavegames() {
+    if (slotsPresent)
+      return;
+    roots();
+    if (mkdirat(user.n, "savegames", 0700) != 0)
+      throw Failure{errno == EEXIST ? Status::Changed : Status::Refused};
+    Fd created(openat(user.n, "savegames",
+                      O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW));
+    require(created.n >= 0, Status::Changed);
+    const struct stat createdStat = status(created.n);
+    struct stat byName{};
+    require(S_ISDIR(createdStat.st_mode) &&
+                fstatat(user.n, "savegames", &byName, AT_SYMLINK_NOFOLLOW) ==
+                    0 &&
+                same(createdStat, byName),
+            Status::Changed);
+    require(local(created.n), Status::Unsupported);
+    require(fsync(user.n) == 0);
+    slots.n = created.n;
+    created.n = -1;
+    slotsPresent = true;
+  }
   Snapshot snapshot(const std::string &exclude = "") const {
     Snapshot s;
     size_t total = 0;
     std::map<std::string, std::string> spelling;
     for (bool fromUser : {true, false}) {
+      if (!(fromUser ? slotsPresent : originalPresent)) {
+        require(savegamesAbsent(fromUser ? user.n : game.n), Status::Changed);
+        continue;
+      }
       int parent = fromUser ? slots.n : original.n;
       Fd copy(openat(parent, ".", O_RDONLY | O_CLOEXEC | O_DIRECTORY));
       require(copy.n >= 0);
@@ -428,15 +478,18 @@ std::string setStamp(const CeCareerStorageRequest &r, const std::string &path,
 }
 std::set<std::string> names(const CeCareerRestoreRequest &r) {
   Fd user(directory(r.user, true)), game(directory(r.game, true));
-  Fd slots(openat(user.n, "savegames",
-                  O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW));
-  Fd original(openat(game.n, "savegames",
-                     O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW));
-  require(slots.n >= 0 && original.n >= 0);
-  struct stat beforeUser = status(slots.n), beforeGame = status(original.n);
+  bool slotsPresent = false, originalPresent = false;
+  Fd slots(openOptionalSavegames(user.n, slotsPresent));
+  Fd original(openOptionalSavegames(game.n, originalPresent));
+  struct stat beforeUser = slotsPresent ? status(slots.n) : (struct stat){};
+  struct stat beforeGame =
+      originalPresent ? status(original.n) : (struct stat){};
   std::map<std::string, std::string> spellings;
   std::set<std::string> found;
-  for (int folder : {slots.n, original.n}) {
+  for (bool fromUser : {true, false}) {
+    if (!(fromUser ? slotsPresent : originalPresent))
+      continue;
+    int folder = fromUser ? slots.n : original.n;
     Fd copy(openat(folder, ".", O_RDONLY | O_CLOEXEC | O_DIRECTORY));
     require(copy.n >= 0);
     DIR *stream = fdopendir(copy.n);
@@ -460,13 +513,15 @@ std::set<std::string> names(const CeCareerRestoreRequest &r) {
       std::string key = lower(entry);
       auto was = spellings.find(key);
       require(was == spellings.end() ||
-              (was->second == entry && folder == original.n));
+              (was->second == entry && !fromUser));
       spellings[key] = entry;
       found.insert(key);
     }
   }
-  require(stamp(beforeUser, status(slots.n)) &&
-              stamp(beforeGame, status(original.n)),
+  require((slotsPresent ? stamp(beforeUser, status(slots.n))
+                        : savegamesAbsent(user.n)) &&
+              (originalPresent ? stamp(beforeGame, status(original.n))
+                               : savegamesAbsent(game.n)),
           Status::Changed);
   bound(user.n, r.user, true);
   bound(game.n, r.game, true);
@@ -640,6 +695,8 @@ void checkedBackup(Session &s, const CeCareerStorageResult &out) {
           Status::Changed);
 }
 bool exists(int at, const std::string &name) {
+  if (at < 0)
+    return false;
   struct stat entry{};
   if (fstatat(at, name.c_str(), &entry, AT_SYMLINK_NOFOLLOW) == 0)
     return true;
@@ -742,7 +799,16 @@ CeCareerRestoreAsNew(const CeCareerRestoreRequest &request) {
     const std::string target = request.targetName;
     for (const Member &member : session.saved.all)
       require(lower(member.name) != lower(target), Status::Occupied);
+    require(!exists(session.slots.n, target) &&
+                !exists(session.original.n, target),
+            Status::Occupied);
     backup(session, out, kRestoreReason);
+    checkedBackup(session, out);
+    require(selected(request) == payload, Status::Changed);
+    session.permission();
+    require(request.namePermitted(request.owner, request.sourceName, target));
+    session.check();
+    session.ensureUserSavegames();
     Fd stage(
         openat(session.slots.n, ".", O_RDWR | O_TMPFILE | O_CLOEXEC, 0600));
     require(stage.n >= 0, Status::Unsupported);

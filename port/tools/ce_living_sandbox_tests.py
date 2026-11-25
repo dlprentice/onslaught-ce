@@ -151,12 +151,12 @@ static void TestHeightfieldCitadelAndSeams() {
     ClampOutsideCitadelKeepOut(cx, cy);
     Check(!IsInsideCitadelKeepOut(cx, cy, kDirectorKeepOutRadius), "clamped point pushed outside keep-out");
 
-    // Sun lightmap stays inside [14..62] with contrast.
+    // Moonlit night lightmap (aligned with Sanctuary Citadel SE moon key) stays inside [14..32] with contrast.
     uint8_t minL = 255, maxL = 0;
     for (int y = 0; y < kCells; y += 8) {
         for (int x = 0; x < kCells; x += 8) {
-            const uint8_t l = ComputeCellLight(x, y, 0.52f, 0.68f, -0.51f);
-            Check(l >= 14u && l <= 62u, "cell light within [14..62]");
+            const uint8_t l = ComputeCellLight(x, y, 0.620f, -0.500f, -0.604f);
+            Check(l >= 14u && l <= 32u, "cell light within [14..32] moonlit band");
             if (l < minL) minL = l;
             if (l > maxL) maxL = l;
         }
@@ -369,7 +369,7 @@ static void TestDirectorMechanicsAndHud() {
     // 5. Stuck-unit reaper (>90 s with <2 m movement & no combat).
     const CeEntityHandle stuckH = CeEntityHandlePack(50u, 1u);
     dir.OnUnitSpawn(stuckH, kUnitBroadsword, kAllegianceForseti, 220.0f, 220.0f, 100.0f);
-    CeSandboxTrackedSample sm = {stuckH, 220.5f, 220.4f, -18.0f, 100.0f, false, true};
+    CeSandboxTrackedSample sm = {stuckH, 220.5f, 220.4f, -18.0f, 100.0f, false, true, false, kCeEntityHandleInvalid};
     bool reaped = false;
     for (int s = 0; s < 190 && !reaped; ++s) {
         dir.Tick(0.5f, press, pres, &sm, 1u, &out);
@@ -411,6 +411,343 @@ static void TestDirectorMechanicsAndHud() {
         Check(lay.bannerBox.y > lay.panel.y + lay.panel.h, "banner cleanly below top strip");
         Check(lay.cueBox.y > lay.bannerBox.y + lay.bannerBox.h, "citadel cue box clear of top HUD");
         Check(lay.cueBox.y + lay.cueBox.h <= h * 0.96f, "citadel cue box within bottom safe margin");
+    }
+}
+
+// Ground platoons, the Commander's registry, player-held stand-down, the strip's
+// plain words, pip tags, banner tones, and the support-mesh list.
+static void TestPlatoonsCommandAndStrip() {
+    using namespace CeSandboxWorld;
+
+    // 1. Platoon sizes: infantry in threes, vehicles and walkers in pairs, everything else single.
+    Check(CeSandboxPlatoonSizeFor(kUnitForsetiTrooper, CE_SB_ROLE_LINE) == 3 &&
+          CeSandboxPlatoonSizeFor(kUnitMuspellGrunt, CE_SB_ROLE_LINE) == 3 &&
+          CeSandboxPlatoonSizeFor(kUnitMuspellWarrior, CE_SB_ROLE_LINE) == 3, "infantry platoons are three strong");
+    Check(CeSandboxPlatoonSizeFor(kUnitBroadsword, CE_SB_ROLE_LINE) == 2 &&
+          CeSandboxPlatoonSizeFor(kUnitHeavyMech, CE_SB_ROLE_LINE) == 2 &&
+          CeSandboxPlatoonSizeFor(kUnitMortarTank, CE_SB_ROLE_LINE) == 2, "vehicle and walker platoons are pairs");
+    Check(CeSandboxPlatoonSizeFor(kUnitVenom, CE_SB_ROLE_AIR) == 1 &&
+          CeSandboxPlatoonSizeFor(kUnitMarshall, CE_SB_ROLE_NAVAL) == 1 &&
+          CeSandboxPlatoonSizeFor(kUnitForsetiHq, CE_SB_ROLE_HQ) == 1 &&
+          CeSandboxPlatoonSizeFor(kUnitFlakTurret, CE_SB_ROLE_TURRET) == 1 &&
+          CeSandboxPlatoonSizeFor(nullptr, CE_SB_ROLE_LINE) == 1, "aircraft, ships, HQ cores and turrets stay single");
+    Check(CeSandboxDirector::RoleForUnit(kUnitBroadsword) == CE_SB_ROLE_LINE &&
+          CeSandboxDirector::RoleForUnit(kUnitVenom) == CE_SB_ROLE_AIR &&
+          CeSandboxDirector::RoleForUnit(kUnitManticore) == CE_SB_ROLE_NAVAL &&
+          CeSandboxDirector::RoleForUnit(kUnitMuspellHq) == CE_SB_ROLE_HQ &&
+          CeSandboxDirector::RoleForUnit(kUnitSamSite) == CE_SB_ROLE_TURRET, "roles by unit definition");
+
+    // 2. Wave orders: ground units arrive as platoons, never past the headroom the cap leaves.
+    {
+        CeSandboxDirector dir;
+        const CeSandboxDirectorConfig cfg = CeSandboxDefaultConfig(true);
+        dir.BeginLevel(cfg);
+        CeSandboxNodePresence pres = {};
+        CeSandboxStepOutput out = {};
+        int groundPlatoons = 0, airSingles = 0;
+        for (int live = 0; live <= cfg.targetUnitCap; live += 7) {
+            for (int step = 0; step < 40; ++step) {
+                CeSandboxPressure press = {16.5f, live, 100, kCeSandboxEventPoolCapacity, 8u * 1024u * 1024u, true};
+                dir.Tick(0.5f, press, pres, nullptr, 0u, &out);
+                int units = 0;
+                for (int k = 0; k < out.spawnCount; ++k) {
+                    const CeSandboxSpawnOrder &sp = out.spawns[k];
+                    Check(sp.platoonSize >= 1 && sp.platoonSize <= CeSandboxPlatoonSizeFor(sp.unitName, sp.role),
+                          "order platoon size is within the unit's platoon");
+                    if (sp.isEscalation || sp.isHqRebuild) continue;
+                    units += sp.platoonSize;
+                    if (sp.role == CE_SB_ROLE_LINE && sp.platoonSize >= 2) ++groundPlatoons;
+                    if (sp.role == CE_SB_ROLE_AIR) { Check(sp.platoonSize == 1, "air arrives single"); ++airSingles; }
+                }
+                Check(live + units <= dir.EffectiveCap(), "a wave never spawns past the unit cap");
+            }
+        }
+        Check(groundPlatoons > 20 && airSingles > 5, "waves mix ground platoons with single aircraft");
+        // Every headroom from 0 to 12, against every roster slot: a three-strong
+        // infantry platoon must shrink to the room that is left.
+        int shrunk = 0;
+        for (int room = 12; room >= 0; --room) {
+            const int live = cfg.targetUnitCap - room;
+            for (int step = 0; step < 160; ++step) {
+                // A step below the 85% resume line re-opens the hysteresis gate between probes.
+                CeSandboxPressure low = {16.5f, cfg.targetUnitCap / 2, 100, kCeSandboxEventPoolCapacity, 8u * 1024u * 1024u, true};
+                if ((step & 15) == 0) { dir.Tick(0.5f, low, pres, nullptr, 0u, &out); continue; }
+                CeSandboxPressure press = {16.5f, live, 100, kCeSandboxEventPoolCapacity, 8u * 1024u * 1024u, true};
+                dir.Tick(0.5f, press, pres, nullptr, 0u, &out);
+                int units = 0;
+                for (int k = 0; k < out.spawnCount; ++k) {
+                    const CeSandboxSpawnOrder &sp = out.spawns[k];
+                    if (sp.isEscalation || sp.isHqRebuild) continue;
+                    units += sp.platoonSize;
+                    if (sp.platoonSize < CeSandboxPlatoonSizeFor(sp.unitName, sp.role)) ++shrunk;
+                }
+                Check(live + units <= dir.EffectiveCap(), "a platoon never spawns past the room the cap leaves");
+            }
+        }
+        Check(shrunk > 0, "the sweep met a platoon that had to shrink to fit");
+    }
+
+    // 3. Platoon registry: the Commander's view of which squads the player may order.
+    {
+        CeSandboxPlatoonRegistry reg;
+        const CeEntityHandle fSquad = CeEntityHandlePack(301u, 4u);
+        const CeEntityHandle mSquad = CeEntityHandlePack(302u, 9u);
+        const CeEntityHandle stale = CeEntityHandlePack(301u, 3u);
+        Check(reg.Count() == 0u && !reg.IsCommandable(fSquad), "empty registry commands nothing");
+        Check(!reg.Register(kCeEntityHandleInvalid, kAllegianceForseti), "invalid handle refused");
+        Check(reg.Register(fSquad, kAllegianceForseti) && reg.Register(mSquad, kAllegianceMuspell), "platoons registered");
+        Check(reg.Register(fSquad, kAllegianceForseti) && reg.Count() == 2u, "registering twice keeps one entry");
+        Check(reg.IsCommandable(fSquad), "a friendly Forseti platoon is commandable");
+        Check(!reg.IsCommandable(mSquad) && reg.Contains(mSquad), "a Muspell platoon is registered but never commandable");
+        Check(!reg.IsCommandable(stale) && !reg.Contains(stale), "an old generation of the same slot is not the platoon");
+        Check(!reg.IsCommandable(CeEntityHandlePack(999u, 1u)), "an unregistered squad is not commandable");
+
+        Check(!reg.HasPlayerOrder(fSquad, 10.0), "no order to begin with");
+        Check(reg.SetPlayerOrder(fSquad, true, 10.0) && reg.HasPlayerOrder(fSquad, 10.5), "player order recorded");
+        Check(!reg.SetPlayerOrder(mSquad, true, 10.0) && !reg.HasPlayerOrder(mSquad, 10.5), "enemy platoons take no player order");
+        Check(!reg.SetPlayerOrder(stale, true, 10.0), "stale squads take no player order");
+        Check(reg.HasPlayerOrder(fSquad, 10.0 + kCeSandboxPlayerOrderTimeoutSec - 1.0) &&
+              !reg.HasPlayerOrder(fSquad, 10.0 + kCeSandboxPlayerOrderTimeoutSec + 1.0),
+              "a forgotten order lapses so the platoon rejoins the front");
+        Check(reg.SetPlayerOrder(fSquad, true, 50.0) && reg.SetPlayerOrder(fSquad, false, 60.0) &&
+              !reg.HasPlayerOrder(fSquad, 60.5), "a released order ends at once");
+        Check(reg.Unregister(fSquad) && !reg.IsCommandable(fSquad) && reg.Count() == 1u, "a lost platoon leaves the registry");
+        Check(!reg.Unregister(fSquad), "unregistering twice is harmless");
+        for (unsigned i = 0; i < CeSandboxPlatoonRegistry::kMaxPlatoons + 8u; ++i)
+            reg.Register(CeEntityHandlePack(1000u + i, 1u), kAllegianceForseti);
+        Check(reg.Count() == CeSandboxPlatoonRegistry::kMaxPlatoons, "registry is bounded");
+        Check(reg.At(0u) != kCeEntityHandleInvalid && reg.At(CeSandboxPlatoonRegistry::kMaxPlatoons) == kCeEntityHandleInvalid,
+              "registry indexing is bounded");
+        reg.Clear();
+        Check(reg.Count() == 0u, "level end clears the registry");
+    }
+
+    // 4. A platoon the player holds is neither steered nor reaped; its mates share one waypoint.
+    {
+        CeSandboxDirector dir;
+        const CeSandboxDirectorConfig cfg = CeSandboxDefaultConfig(true);
+        dir.BeginLevel(cfg);
+        const CeEntityHandle squad = CeEntityHandlePack(77u, 2u);
+        const CeEntityHandle a = CeEntityHandlePack(60u, 1u), b = CeEntityHandlePack(61u, 1u);
+        const CeEntityHandle lone = CeEntityHandlePack(62u, 1u);
+        dir.OnUnitSpawn(a, kUnitBroadsword, kAllegianceForseti, 200.0f, 200.0f, 100.0f);
+        dir.OnUnitSpawn(b, kUnitBroadsword, kAllegianceForseti, 203.0f, 200.0f, 100.0f);
+        dir.OnUnitSpawn(lone, kUnitSabre, kAllegianceForseti, 190.0f, 215.0f, 100.0f);
+        CeSandboxNodePresence pres = {};
+        CeSandboxPressure press = {16.5f, 30, 100, kCeSandboxEventPoolCapacity, 8u * 1024u * 1024u, true};
+        CeSandboxStepOutput out = {};
+
+        // Held for 4 minutes without moving: no move orders, no reap.
+        CeSandboxTrackedSample held[3] = {
+            {a, 200.0f, 200.0f, -18.0f, 100.0f, false, true, true, squad},
+            {b, 203.0f, 200.0f, -18.0f, 100.0f, false, true, true, squad},
+            {lone, 190.0f, 215.0f, -18.0f, 100.0f, false, true, false, kCeEntityHandleInvalid},
+        };
+        bool heldMoved = false, heldReaped = false, loneMoved = false, loneReaped = false;
+        for (int s = 0; s < 480; ++s) {
+            dir.Tick(0.5f, press, pres, held, 3u, &out);
+            for (int m = 0; m < out.moveCount; ++m) {
+                if (out.moves[m].handle == a || out.moves[m].handle == b) heldMoved = true;
+                if (out.moves[m].handle == lone) loneMoved = true;
+            }
+            for (int r = 0; r < out.reapCount; ++r) {
+                if (out.reaps[r].handle == a || out.reaps[r].handle == b) heldReaped = true;
+                if (out.reaps[r].handle == lone) loneReaped = true;
+            }
+        }
+        Check(!heldMoved, "the director never steers a platoon the player holds");
+        Check(!heldReaped, "the director never reaps a platoon holding still on the player's order");
+        Check(loneMoved && loneReaped, "an unheld unit beside it is still steered, and reaped when stuck");
+        Check(dir.GetStats().playerHeldSamples >= 900u, "held samples were recognised every step");
+
+        // Released: the same platoon is steered again, both members to the same point.
+        CeSandboxTrackedSample freed[2] = {
+            {a, 200.0f, 200.0f, -18.0f, 100.0f, false, true, false, squad},
+            {b, 203.0f, 200.0f, -18.0f, 100.0f, false, true, false, squad},
+        };
+        float ax = 0.0f, ay = 0.0f, bx = 1.0f, by = 1.0f;
+        bool gotA = false, gotB = false;
+        for (int s = 0; s < 40 && !(gotA && gotB); ++s) {
+            dir.Tick(0.5f, press, pres, freed, 2u, &out);
+            for (int m = 0; m < out.moveCount; ++m) {
+                if (out.moves[m].handle == a) { ax = out.moves[m].x; ay = out.moves[m].y; gotA = true; }
+                if (out.moves[m].handle == b) { bx = out.moves[m].x; by = out.moves[m].y; gotB = true; }
+            }
+        }
+        Check(gotA && gotB, "a released platoon takes front orders again");
+        Check(ax == bx && ay == by, "platoon members share one waypoint");
+    }
+
+    // 5. The strip speaks in the world's words: where the front is, who is advancing.
+    {
+        CeSandboxDirector dir;
+        const CeSandboxDirectorConfig cfg = CeSandboxDefaultConfig(true);
+        dir.BeginLevel(cfg);
+        CeSandboxHudState hud = dir.BuildHudState();
+        Check(std::strcmp(hud.headerMid, "FRONT: CENTRAL CROSSROADS") == 0, "the opening front is the Crossroads");
+        Check(hud.activeFrontNode == 2 && hud.frontState == CE_SB_FRONT_CONTESTED, "front node and state at the start");
+        Check(hud.showBanner && hud.bannerTone == CE_SB_TONE_NEUTRAL && CeSandboxIsFontSmallSafeText(hud.bannerText) &&
+              std::strstr(hud.bannerText, "LIVING SANDBOX") == nullptr, "opening banner is in-world, neutral and glyph-safe");
+        for (unsigned i = 0; i < kCaptureNodeCount; ++i) Check(hud.nodeFlipSerial[i] == 0u, "no pip has flipped yet");
+
+        CeSandboxNodePresence pres = {};
+        CeSandboxPressure press = {16.5f, 30, 100, kCeSandboxEventPoolCapacity, 8u * 1024u * 1024u, true};
+        CeSandboxStepOutput out = {};
+        // Forseti pour into the centre and the ridge: the strip says so, then names the captured node in cyan.
+        pres.forsetiWeight[2] = 6; pres.forsetiWeight[1] = 6;
+        bool sawAdvancing = false, sawCyanCapture = false;
+        for (int s = 0; s < 40; ++s) {
+            dir.Tick(0.5f, press, pres, nullptr, 0u, &out);
+            hud = dir.BuildHudState();
+            if (std::strcmp(hud.headerMid, "FORSETI ADVANCING") == 0) sawAdvancing = true;
+            if (hud.showBanner && std::strstr(hud.bannerText, "FORSETI CAPTURED") && hud.bannerTone == CE_SB_TONE_FORSETI)
+                sawCyanCapture = true;
+            Check(CeSandboxIsFontSmallSafeText(hud.headerMid) && std::strlen(hud.headerMid) < sizeof(hud.headerMid) - 1u,
+                  "strip words stay glyph-safe and inside their buffer");
+            for (const char *p = hud.headerMid; *p; ++p)
+                Check(!(*p >= '0' && *p <= '9'), "the strip's middle never shows a unit counter");
+        }
+        Check(sawAdvancing, "a clear Forseti push reads FORSETI ADVANCING");
+        Check(sawCyanCapture, "a Forseti capture banner wears the Forseti tone");
+        Check(hud.nodeFlipSerial[2] >= 1u && hud.nodeFlipSerial[1] >= 1u && hud.nodeFlipSerial[4] == 0u,
+              "captured pips report a flip for their pulse; untouched pips do not");
+
+        // The push stops: the words settle on where the front now is, without flicker.
+        pres = {};
+        int changes = 0;
+        char last[40] = {};
+        std::snprintf(last, sizeof(last), "%s", hud.headerMid);
+        for (int s = 0; s < 60; ++s) {
+            dir.Tick(0.5f, press, pres, nullptr, 0u, &out);
+            hud = dir.BuildHudState();
+            if (std::strcmp(last, hud.headerMid) != 0) { ++changes; std::snprintf(last, sizeof(last), "%s", hud.headerMid); }
+        }
+        Check(changes <= 1 && std::strncmp(hud.headerMid, "FRONT: ", 7) == 0, "a quiet front settles once on FRONT: <node>");
+        Check(std::strcmp(hud.headerMid, "FRONT: COASTAL HARBOR") == 0, "the front has moved on to the nearest undecided node");
+
+        // Muspell answer: crimson capture, MUSPELL ADVANCING.
+        pres.muspellWeight[3] = 6; pres.muspellWeight[2] = 6; pres.muspellWeight[1] = 6;
+        bool sawMuspell = false, sawCrimson = false;
+        for (int s = 0; s < 80; ++s) {
+            dir.Tick(0.5f, press, pres, nullptr, 0u, &out);
+            hud = dir.BuildHudState();
+            if (std::strcmp(hud.headerMid, "MUSPELL ADVANCING") == 0) sawMuspell = true;
+            if (hud.showBanner && std::strstr(hud.bannerText, "MUSPELL CAPTURED") && hud.bannerTone == CE_SB_TONE_MUSPELL)
+                sawCrimson = true;
+        }
+        Check(sawMuspell && sawCrimson, "a Muspell push reads MUSPELL ADVANCING and its captures wear the Muspell tone");
+
+        // Every node decided and nothing moving: the line is held.
+        pres = {};
+        pres.forsetiWeight[0] = 6; pres.forsetiWeight[1] = 6;
+        for (int s = 0; s < 120; ++s) dir.Tick(0.5f, press, pres, nullptr, 0u, &out);
+        pres = {};
+        for (int s = 0; s < 60; ++s) dir.Tick(0.5f, press, pres, nullptr, 0u, &out);
+        hud = dir.BuildHudState();
+        Check(hud.contestedNodes == 0 && std::strcmp(hud.headerMid, "BATTLE LINE HELD") == 0,
+              "with every node decided and quiet, the strip reads BATTLE LINE HELD");
+
+        // Player in another unit: plain words, no internal state name, no counter.
+        dir.SetP0StasisActive(true);
+        hud = dir.BuildHudState();
+        Check(std::strcmp(hud.headerMid, "BATTLE ENGINE SHIELDED") == 0, "piloting another unit reads BATTLE ENGINE SHIELDED");
+        Check(std::strstr(hud.headerMid, "STASIS") == nullptr && std::strstr(hud.headerMid, "UNITS") == nullptr,
+              "no internal words on the strip");
+        dir.SetP0StasisActive(false);
+
+        // Naval escalation banner is amber; HQ banners wear their faction.
+        CeSandboxStepOutput esc = {};
+        dir.TriggerNavalEscalationNow(esc, true);
+        hud = dir.BuildHudState();
+        Check(esc.spawnCount > 0 && hud.bannerTone == CE_SB_TONE_NAVAL, "the strait banner is amber");
+        const CeEntityHandle mHq = CeEntityHandlePack(41u, 1u);
+        dir.OnUnitSpawn(mHq, kUnitMuspellHq, kAllegianceMuspell, kMuspellHqX, kMuspellHqY, 500.0f);
+        dir.OnUnitDestroyed(mHq);
+        hud = dir.BuildHudState();
+        Check(std::strstr(hud.bannerText, "MUSPELL HQ SUPPRESSED") && hud.bannerTone == CE_SB_TONE_MUSPELL,
+              "an HQ banner wears its faction's tone");
+    }
+
+    // 5b. The words hold steady: a push that ends keeps reading ADVANCING until the
+    //     front has nearly stopped moving, then settles once.
+    {
+        CeSandboxDirector dir;
+        dir.BeginLevel(CeSandboxDefaultConfig(true));
+        CeSandboxNodePresence pres = {};
+        CeSandboxPressure press = {16.5f, 30, 100, kCeSandboxEventPoolCapacity, 8u * 1024u * 1024u, true};
+        CeSandboxStepOutput out = {};
+        // A lone unit edging forward is not an advance: the trend is smoothed.
+        pres.forsetiWeight[2] = 1;
+        for (int s = 0; s < 3; ++s) {
+            dir.Tick(0.5f, press, pres, nullptr, 0u, &out);
+            Check(std::strcmp(dir.BuildHudState().headerMid, "FORSETI ADVANCING") != 0,
+                  "three steps of a one-unit edge are not yet an advance");
+        }
+        pres.forsetiWeight[2] = 6;
+        for (int s = 0; s < 8; ++s) dir.Tick(0.5f, press, pres, nullptr, 0u, &out);
+        Check(std::strcmp(dir.BuildHudState().headerMid, "FORSETI ADVANCING") == 0, "a full push reads ADVANCING");
+        pres = {};
+        int held = 0, changes = 0;
+        char last[40] = {};
+        std::snprintf(last, sizeof(last), "%s", dir.BuildHudState().headerMid);
+        for (int s = 0; s < 60; ++s) {
+            dir.Tick(0.5f, press, pres, nullptr, 0u, &out);
+            const CeSandboxHudState hud = dir.BuildHudState();
+            if (std::strcmp(hud.headerMid, "FORSETI ADVANCING") == 0 && changes == 0) ++held;
+            if (std::strcmp(last, hud.headerMid) != 0) { ++changes; std::snprintf(last, sizeof(last), "%s", hud.headerMid); }
+        }
+        Check(held >= 15 && held <= 24, "ADVANCING is held through the slowdown, then released");
+        Check(changes == 1, "the strip changes its words exactly once as the push dies away");
+    }
+
+    // 6. Short tags: one under each pip, inside the panel, FONT_SMALL-safe, five letters at most.
+    {
+        static const char *const kWant[kCaptureNodeCount] = {"FWD-F", "RIDGE", "CROSS", "HARBR", "FWD-M"};
+        for (unsigned i = 0; i < kCaptureNodeCount; ++i) {
+            Check(std::strcmp(CaptureNode(i).shortTag, kWant[i]) == 0, "capture node short tag");
+            Check(CeSandboxIsFontSmallSafeText(CaptureNode(i).shortTag) && std::strlen(CaptureNode(i).shortTag) <= 5u,
+                  "short tag glyph-safe and short");
+        }
+        const float sizes[4][2] = {{640.0f, 480.0f}, {1280.0f, 720.0f}, {1920.0f, 1080.0f}, {2560.0f, 1440.0f}};
+        for (int v = 0; v < 4; ++v) {
+            const float w = sizes[v][0], h = sizes[v][1];
+            const CeSandboxHudLayout lay = CeSandboxComputeHudLayout(w, h, h / 480.0f, true, true);
+            Check(lay.valid, "layout valid");
+            for (unsigned i = 0; i < kCaptureNodeCount; ++i) {
+                const CeSandboxHudRect &pip = lay.nodePips[i], &tag = lay.nodeTags[i];
+                Check(tag.y >= pip.y + pip.h + 1.0f, "tag sits cleanly under its pip");
+                Check(tag.x == pip.x && tag.w == pip.w, "tag is centred on its pip");
+                Check(tag.y + tag.h <= lay.panel.y + lay.panel.h - 1.0f, "tag stays inside the strip");
+                Check(pip.y >= lay.panel.y + 18.0f * (h / 480.0f), "pips leave the header line its room");
+                if (i > 0u) Check(tag.x >= lay.nodeTags[i - 1].x + lay.nodeTags[i - 1].w, "tags never overlap");
+            }
+            Check(lay.bannerBox.y > lay.panel.y + lay.panel.h, "banner still clears the taller strip");
+            Check(lay.panel.y + lay.panel.h < h * 0.20f, "the strip stays a strip");
+        }
+        Check(kCeSandboxPipPulseSec > 0.3f && kCeSandboxPipPulseSec < 0.5f, "pip pulse is 0.4 s");
+    }
+
+    // 7. Support meshes the level archive lacks: the rocket / escape pod mesh first, each name sane.
+    {
+        Check(kSupportMeshCount >= 3u, "support mesh list present");
+        Check(StrEqualsIgnoreCase(SupportMesh(0).mesh, "m_rocket.msh") && SupportMesh(0).texture != nullptr,
+              "rocket and escape pod mesh is preloaded with its texture");
+        bool sawWildcat = false, sawWreckage = false;
+        for (unsigned i = 0; i < kSupportMeshCount; ++i) {
+            const SupportMeshSpec &sp = SupportMesh(i);
+            const size_t n = std::strlen(sp.mesh);
+            Check(n > 4u && n < 60u && StrEqualsIgnoreCase(sp.mesh + n - 4u, ".msh"), "support mesh name is a .msh");
+            Check(!StrEqualsIgnoreCase(sp.mesh, "default.msh"), "the missing-mesh marker is never preloaded as a stand-in");
+            if (sp.texture) Check(std::strncmp(sp.texture, "meshtex\\", 8) == 0, "support texture lives under meshtex");
+            for (unsigned j = 0; j < i; ++j)
+                Check(!StrEqualsIgnoreCase(sp.mesh, SupportMesh(j).mesh), "support meshes are listed once");
+            for (unsigned j = 0; j < kOptionalMeshCount; ++j)
+                Check(!StrEqualsIgnoreCase(sp.mesh, OptionalMeshName(j)), "support list does not repeat the Venturer preload");
+            if (StrEqualsIgnoreCase(sp.mesh, "fa_wildcard_t_destroyed.msh")) sawWildcat = true;
+            if (StrEqualsIgnoreCase(sp.mesh, "m_innerwreckage.msh")) sawWreckage = true;
+        }
+        Check(sawWildcat && sawWreckage, "destroyed Wildcat and wreckage meshes are covered");
+        Check(&SupportMesh(kSupportMeshCount + 5u) == &SupportMesh(0u), "out-of-range index is safe");
     }
 }
 
@@ -497,6 +834,7 @@ static void TestFourHourHeadlessSoak() {
     }
 
     constexpr int kFourHoursSteps = 28800; // 14,400 s at 2 Hz
+    uint64_t soakPlatoonMembers = 0u;
     int peakWorld = 0;
     uint32_t peakHeap = 0u;
     int peakEvents = 0;
@@ -549,7 +887,8 @@ static void TestFourHourHeadlessSoak() {
                 }
             }
             if (sc < CeSandboxDirector::kMaxTrackedUnits) {
-                samples[sc++] = {u.handle, u.x, u.y, u.z, u.life, !u.stuck && (u.life < 95.0f), true};
+                samples[sc++] = {u.handle, u.x, u.y, u.z, u.life, !u.stuck && (u.life < 95.0f), true,
+                                 false, kCeEntityHandleInvalid};
             }
             ++i;
         }
@@ -599,7 +938,15 @@ static void TestFourHourHeadlessSoak() {
         // Apply spawns.
         for (int s = 0; s < out.spawnCount; ++s) {
             const CeSandboxSpawnOrder &sp = out.spawns[s];
-            spawnSim(sp.unitName, sp.allegiance, sp.role, sp.x, sp.y, sp.z, sp.targetX, sp.targetY);
+            Check(sp.platoonSize >= 1 && sp.platoonSize <= 3, "soak spawn order carries a 1-3 unit platoon size");
+            Check(sp.platoonSize == 1 || sp.role == CE_SB_ROLE_LINE, "only ground line units arrive as platoons");
+            for (int member = 0; member < sp.platoonSize; ++member) {
+                // Members form up a few metres apart around the squad's spawn point.
+                float mx = sp.x + float(member) * 3.0f, my = sp.y;
+                ClampOutsideCitadelKeepOut(mx, my, kDirectorSteerClearRadius);
+                spawnSim(sp.unitName, sp.allegiance, sp.role, mx, my, sp.z, sp.targetX, sp.targetY);
+            }
+            soakPlatoonMembers += static_cast<uint64_t>(sp.platoonSize);
         }
 
         if (static_cast<int>(world.size()) > peakWorld) peakWorld = static_cast<int>(world.size());
@@ -614,6 +961,8 @@ static void TestFourHourHeadlessSoak() {
     Check(st.totalNavalEscalations >= 40u, "timed 5m naval escalations fired across 4h soak");
     Check(st.totalStuckReaps > 0u, "stuck-unit reaper reclaimed stagnant units");
     Check(st.totalSpawns > 2000u && st.totalDeaths > 1500u, "sustained 4h combined-arms churn");
+    Check(st.totalSpawns == soakPlatoonMembers, "director spawn count equals the units its orders asked for");
+    Check(st.totalPlatoons > 500u, "ground reinforcements arrived as platoons across the soak");
     Check(peakEvents < kCeSandboxEventPoolCapacity / 2, "event count stayed safely below 50% capacity");
     Check(peakHeap < thingHeapCap - cfg.minThingHeapFreeBytes, "heap stayed flat with wide headroom");
     Check(dir.IsRunning(), "sandbox remained endlessly active after 4 simulated hours");
@@ -639,6 +988,7 @@ int main() {
     TestWorldSerializerAndPreflight();
     TestSandboxProfileGates();
     TestDirectorMechanicsAndHud();
+    TestPlatoonsCommandAndStrip();
     TestFourHourHeadlessSoak();
     if (gFailures != 0) {
         std::fprintf(stderr, "TOTAL FAILURES: %d\n", gFailures);
@@ -698,10 +1048,10 @@ class LivingSandboxTests(unittest.TestCase):
              "if (false && bermW > 0.001f) {\n\t\t\tconst float bermZ = Lerp(kCitadelFloorZ, kCitadelParapetZ, bermW);"),
             ("keepout_check_disabled", "ce_sandbox_world.h",
              "return (dx * dx + dy * dy) < (radius * radius);",
-             "return false;"),
+             "return (dx * dx + dy * dy) < (radius * radius) * 0.0f;"),
             ("keepout_clamp_disabled", "ce_sandbox_world.h",
              "x = kCitadelCenterX + nx * minRadius;\n\ty = kCitadelCenterY + ny * minRadius;",
-             "/* clamp disabled */"),
+             "x += 0.0f * nx;\n\ty += 0.0f * ny;"),
             ("world_validator_allows_keepout", "ce_sandbox_world.h",
              "if (IsInsideCitadelKeepOut(u.position[0], u.position[1], kDirectorKeepOutRadius))\n\t\t\treturn false;",
              "/* allow keepout */"),
@@ -738,6 +1088,48 @@ class LivingSandboxTests(unittest.TestCase):
             ("glyph_filter_disabled", "ce_sandbox_director.h",
              "case '[': case ']': case '|': case '_': case '~':",
              "case 0x01:"),
+            ("platoons_always_single", "ce_sandbox_director.h",
+             "if (role != CE_SB_ROLE_LINE || !unitName) return 1;",
+             "if (role != CE_SB_ROLE_LINE || unitName) return 1;"),
+            ("platoon_ignores_headroom", "ce_sandbox_director.h",
+             "int size = CeSandboxPlatoonSizeFor(def, role);\n\t\t\t\t\t\tif (size > headroom) size = headroom;\n\t\t\t\t\t\tfloat sx = 0.0f, sy = 0.0f, sz = 0.0f;\n\t\t\t\t\t\tChooseStagingPoint(kAllegianceForseti,",
+             "int size = CeSandboxPlatoonSizeFor(def, role);\n\t\t\t\t\t\tfloat sx = 0.0f, sy = 0.0f, sz = 0.0f;\n\t\t\t\t\t\tChooseStagingPoint(kAllegianceForseti,"),
+            ("enemy_platoons_commandable", "ce_sandbox_director.h",
+             "return at >= 0 && slots_[at].allegiance == CeSandboxWorld::kAllegianceForseti;",
+             "return at >= 0;"),
+            ("player_order_never_lapses", "ce_sandbox_director.h",
+             "return at >= 0 && slots_[at].playerOrderUntilSec > 0.0 && nowSec < slots_[at].playerOrderUntilSec;",
+             "return at >= 0 && slots_[at].playerOrderUntilSec > 0.0 && nowSec < slots_[at].playerOrderUntilSec + 1.0e9;"),
+            ("held_platoon_still_steered", "ce_sandbox_director.h",
+             "if (sm.playerHeld) {",
+             "if (false && sm.playerHeld) {"),
+            ("platoon_members_scatter", "ce_sandbox_director.h",
+             "? CeEntityHandleSlot(sm.squad) : s;",
+             "? (CeEntityHandleSlot(sm.squad) + s) : s;"),
+            ("strip_shows_unit_counter", "ce_sandbox_director.h",
+             'snprintf(midRaw, sizeof(midRaw), "BATTLE LINE HELD");',
+             'snprintf(midRaw, sizeof(midRaw), "LIVING SANDBOX - %d", h.liveUnits);'),
+            ("strip_stasis_jargon", "ce_sandbox_director.h",
+             'snprintf(midRaw, sizeof(midRaw), "BATTLE ENGINE SHIELDED");',
+             'snprintf(midRaw, sizeof(midRaw), "BE STASIS - %d UNITS", h.liveUnits);'),
+            ("front_words_no_hysteresis", "ce_sandbox_director.h",
+             "(frontState_ == CE_SB_FRONT_FORSETI_ADVANCING && frontTrend_ < kCeSandboxFrontTrendExit)",
+             "(frontState_ == CE_SB_FRONT_FORSETI_ADVANCING && frontTrend_ < kCeSandboxFrontTrendEnter)"),
+            ("front_trend_unsmoothed", "ce_sandbox_director.h",
+             "frontTrend_ = frontTrend_ * 0.82f + rate * 0.18f;",
+             "frontTrend_ = rate;"),
+            ("capture_banner_untoned", "ce_sandbox_director.h",
+             "next == CE_SB_OWNER_FORSETI ? CE_SB_TONE_FORSETI : CE_SB_TONE_MUSPELL);",
+             "CE_SB_TONE_NEUTRAL);"),
+            ("pip_flip_not_reported", "ce_sandbox_director.h",
+             "++nodeFlipSerial_[i];",
+             "(void)nodeFlipSerial_;"),
+            ("tags_overlap_pips", "ce_sandbox_director.h",
+             "out.nodeTags[i] = {out.nodePips[i].x, pipY + pipH + tagGap, pipW, tagH};",
+             "out.nodeTags[i] = {out.nodePips[i].x, pipY, pipW, tagH};"),
+            ("rocket_mesh_not_preloaded", "ce_sandbox_world.h",
+             '{"m_rocket.msh",                "meshtex\\\\m_rocket.TGA"},',
+             '{"m_bomber.msh",                "meshtex\\\\m_rocket.TGA"},'),
             # ce_sandbox_telemetry.h mutant
             ("startup_profile_ignores_optin", "ce_sandbox_telemetry.h",
              "inline bool CeSandboxStartupProfileAllowed(const CeSandboxProfileGate& gate) {\n    return gate.sandboxOptIn &&",
@@ -758,6 +1150,7 @@ class LivingSandboxTests(unittest.TestCase):
                             text = text.replace(old, new, 1)
                         (mdir / hdr).write_text(text, encoding="utf-8")
                     rc, out = compile_and_run(mdir, "mut", [mdir])
+                    self.assertNotIn("COMPILE_FAIL", out, f"mutant {label} does not compile (not a real catch):\n{out}")
                     self.assertNotEqual(rc, 0, f"mutant {label} survived:\n{out}")
 
     def test_patch_0378_ownership_and_guards(self):
@@ -858,6 +1251,62 @@ class LivingSandboxTests(unittest.TestCase):
         self.assertIn("D3DPT_TRIANGLELIST", dir_cpp)
         self.assertNotIn("D3DPT_TRIANGLEFAN", dir_cpp)
         self.assertNotIn("D3DPT_TRIANGLESTRIP", dir_cpp)
+
+        # Ground platoons, the Commander seam, player-held stand-down and handle hygiene.
+        dir_h = (GAME / "ce_sandbox_director.h").read_text(encoding="utf-8")
+        self.assertIn('extern "C" bool PortCeSandboxSquadCommandable(const void *squad) {', dir_cpp)
+        self.assertIn('extern "C" bool PortCeSandboxSquadPlayerOrder(const void *squad, int active) {', dir_cpp)
+        self.assertIn("bool PortCeSandboxSquadCommandable(const void *squad);", dir_h)
+        commandable = dir_cpp[dir_cpp.index('extern "C" bool PortCeSandboxSquadCommandable('):
+                              dir_cpp.index('extern "C" bool PortCeSandboxSquadPlayerOrder(')]
+        self.assertIn("CeEntityHandleLookup(", commandable)
+        self.assertIn("gPlatoons.IsCommandable(h)", commandable)
+        self.assertIn("CeEntityHandleResolveSquad(h)) == squad", commandable)
+        self.assertNotIn("->", commandable, "the squad pointer is compared, never read")
+        spawn_fn = dir_cpp[dir_cpp.index("bool SpawnSandboxUnit(const CeSandboxSpawnOrder &order) {"):
+                           dir_cpp.index("void FormOpeningPlatoons() {")]
+        self.assertIn("sinit.mAmount = members;", spawn_fn)
+        self.assertIn("squad->mUnknown84 = TRUE;", spawn_fn)
+        self.assertNotIn("mUnknown84 = FALSE", dir_cpp, "retail reads mUnknown84 for the squad's allegiance and AI state")
+        self.assertIn("RegisterPlatoon(squad, order.allegiance);", spawn_fn)
+        opening = dir_cpp[dir_cpp.index("void FormOpeningPlatoons() {"):dir_cpp.index("bool PlatoonHeldByPlayer(")]
+        self.assertLess(opening.index("squad->mUnknown80 = TRUE;"), opening.index("squad->Init(&sinit);"))
+        self.assertLess(opening.index("squad->Init(&sinit);"), opening.index("squad->Unknown67(group[i], 0, 0);"))
+        self.assertLess(opening.index("squad->Unknown67(group[i], 0, 0);"), opening.index("squad->mUnknown80 = FALSE;"))
+        self.assertIn("FormOpeningPlatoons();", dir_cpp)
+        tick = dir_cpp[dir_cpp.index('extern "C" void PortCeLivingSandboxTickPre(void) {'):
+                       dir_cpp.index('extern "C" void PortCeLivingSandboxDrawWorld(')]
+        self.assertLess(tick.index("CeEntityHandleUnregister(u);"), tick.index("u->Remove();"),
+                        "a reaped unit's handle is released before the unit is removed")
+        self.assertIn("PlatoonHeldByPlayer(u, squad, pilotedSquad), squadHandle", tick)
+        self.assertIn("!PlatoonHeldByPlayer(u, u->GetSquad(), pilotedSquad)", tick)
+        self.assertIn("PrunePlatoons();", tick)
+        for fn in ("PortCeLivingSandboxCancel", "PortCeLivingSandboxLevelBegin", "PortCeLivingSandboxLevelEnd"):
+            start = dir_cpp.index(f'extern "C" void {fn}(')
+            self.assertIn("gPlatoons.Clear();", dir_cpp[start:dir_cpp.index("\n}\n", start)], f"{fn} clears the platoon table")
+        self.assertIn("PortCePlayUnitIsDriven(unit) != 0", dir_cpp)
+        self.assertIn("PortCeCmdSquadHasPlayerOrder && PortCeCmdSquadHasPlayerOrder(squad) != 0", dir_cpp)
+
+        # Strip: tags, pulse and symmetric device state; support meshes are optional preloads.
+        hud_fn = dir_cpp[dir_cpp.index('extern "C" void PortCeLivingSandboxDrawHud('):
+                         dir_cpp.index('extern "C" void PortCeLivingSandboxFilterSave(')]
+        self.assertIn("CeSandboxWorld::CaptureNode(i).shortTag", hud_fn)
+        self.assertIn("kCeSandboxPipPulseSec", hud_fn)
+        self.assertIn("state.bannerTone", hud_fn)
+        self.assertTrue(hud_fn.rstrip().endswith("RestoreHudDeviceState();\n}"), "the HUD pass ends by restoring device state")
+        restore = dir_cpp[dir_cpp.index("void RestoreHudDeviceState() {"):dir_cpp.index("struct CeSbHudBatch {")]
+        for state in ("D3DRS_CULLMODE, D3DCULL_CCW", "D3DRS_ALPHATESTENABLE, TRUE", "D3DRS_ALPHABLENDENABLE, TRUE",
+                      "D3DRS_SRCBLEND, D3DBLEND_SRCALPHA", "D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA",
+                      "D3DRS_FOGENABLE, FALSE", "D3DRS_LIGHTING, FALSE", "D3DRS_ZENABLE, TRUE",
+                      "D3DRS_ZWRITEENABLE, TRUE", "LT.SetModulate(0);"):
+            self.assertIn(state, restore, f"HUD restore misses {state}")
+        preload = world_cpp[world_cpp.index('extern "C" bool PortCeLivingSandboxPreloadMeshes(void) {'):
+                            world_cpp.index('extern "C" int PortCeLivingSandboxReadWorld(')]
+        support = preload[preload.index("kSupportMeshCount"):]
+        self.assertIn("LoadRetailMeshFromStandaloneAya(spec.mesh,", support)
+        self.assertIn("PreloadRetailMeshTexture(spec.texture)", support)
+        self.assertNotIn("gWorld.failed = true", support, "a missing support mesh never refuses the level")
+        self.assertNotIn("return false", support)
 
 
 if __name__ == "__main__":

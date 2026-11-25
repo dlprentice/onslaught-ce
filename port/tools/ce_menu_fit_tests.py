@@ -24,7 +24,7 @@ PORT = ROOT / "port"
 SUPPORT = PORT / "tools/tests"
 CASES = ("fits", "exact", "adapter", "squeeze-limit", "just-inside-limit", "no-room", "layer-off", "extent-fails", "null", "repeat",
          "list-fits", "list-cut", "list-layer-off", "list-extent-fails", "window-limits", "window-fits", "window-sizes", "window-follows",
-         "window-forget", "window-edge", "window-page", "window-layer-off", "pitch")
+         "window-forget", "window-edge", "window-page", "window-layer-off", "pitch", "arc-right")
 PATCH = "0212-ce-menu-value-fit.patch"
 PITCH_PATCH = "0215-ce-video-options-row-pitch.patch"
 # The front end's page numbers the helper names (src/FrontEndPage.h: FEP_MAIN, FEP_OPTIONS, and FEP_LANGUAGE_TEST, the slot of
@@ -39,8 +39,8 @@ enum EFrontEndPage { FEP_MAIN = 0, FEP_OPTIONS = 17, FEP_LANGUAGE_TEST = 21 };
 # (PortCeListWindow answering 0) each computes what the original computed, with the original's calls. The value fit's own lines
 # are held by check_patched_draw.
 WINDOW_LINES = (
-    ("{ extern WCHAR *PortCeValueFit(WCHAR *, float, float *); extern WCHAR *PortCeListFit(WCHAR *, float);",
-     "{ extern WCHAR *PortCeValueFit(WCHAR *, float, float *); extern WCHAR *PortCeListFit(WCHAR *, float); "
+    ("{ extern WCHAR *PortCeValueFit(WCHAR *, float, float, float *); extern WCHAR *PortCeListFit(WCHAR *, float, float); extern float PortCeValueRightAt(int, float);",
+     "{ extern WCHAR *PortCeValueFit(WCHAR *, float, float, float *); extern WCHAR *PortCeListFit(WCHAR *, float, float); extern float PortCeValueRightAt(int, float); "
      "extern int PortCeListWindow(const void *, float, long, int, int, int, float *, int *, int *); extern void PortCeListHover(int); "
      "extern float PortCeLabelLeftAt(int, float); extern float PortCeValueGap();"),
     ("\tfloat\ttx = x - size.cx;\n\tfloat\tlx = tx + size.cx + 2.f;\n\tif (tx < 5.f)\n\t{\n\t\tscale = (x - 5.f) / size.cx;\n\t\ttx = 5.f;\n\t}",
@@ -215,19 +215,20 @@ def check_patched_draw(patched, original):
     k = column.group(1)
     if calls[0] != was[0] or was_extents[0] != extents[0] or was_extents[1] != "GetChoiceText(i), &s":
         raise AssertionError("the label's draw and measure must stay the game's own")
-    if calls[1] != was[1].replace("GetChoiceText(i)", f"PortCeListFit(GetChoiceText(i), lx + {k})", 1):
-        raise AssertionError("the dropdown must draw each entry from its fitted text, at the column it starts")
-    if extents[1] != f"PortCeListFit(GetChoiceText(i), lx + {k}), &s":
+    right_expr = "PortCeValueRightAt(FRONTEND.GetCurrentPage(), y)"
+    if calls[1] != was[1].replace("GetChoiceText(i)", f"PortCeListFit(GetChoiceText(i), lx + {k}, {right_expr})", 1):
+        raise AssertionError("the dropdown must draw each entry from its fitted text, at the column it starts and arc-aware right edge")
+    if extents[1] != f"PortCeListFit(GetChoiceText(i), lx + {k}, {right_expr}), &s":
         raise AssertionError("the dropdown must measure its widest entry from the same fitted text")
     if was[2] != "lx, y, col, GetChoiceText(mSelection), 0, 0, 1.f, 1.f":
         raise AssertionError("the value draw the patch fits is not the one the test knows")
     if calls[2] != "lx, y, col, ceText, 0, 0, ceFit, 1.f":
         raise AssertionError("the value must be drawn from the fitted text, squeezed in x only (the game's label squeeze)")
-    if body.count("PortCeValueFit(") != 2 or body.count("PortCeListFit(") != 3 or \
-            body.count("PortCeValueFit(GetChoiceText(mSelection), lx, &ceFit)") != 1:
-        raise AssertionError("each fit helper must be declared once and called at its sites, with the choice text and the column")
+    if body.count("PortCeValueFit(") != 2 or body.count("PortCeListFit(") != 3 or body.count("PortCeValueRightAt(") != 4 or \
+            body.count(f"PortCeValueFit(GetChoiceText(mSelection), lx, {right_expr}, &ceFit)") != 1:
+        raise AssertionError("each fit helper must be declared once and called at its sites, with the choice text, column and arc-aware right edge")
     opening = body.split("\n")[1]
-    if not opening.startswith("{ extern WCHAR *PortCeValueFit(WCHAR *, float, float *); extern WCHAR *PortCeListFit(WCHAR *, float);"):
+    if not opening.startswith("{ extern WCHAR *PortCeValueFit(WCHAR *, float, float, float *); extern WCHAR *PortCeListFit(WCHAR *, float, float); extern float PortCeValueRightAt(int, float);"):
         raise AssertionError("the declarations belong on the opening brace's own line")
     outside = patched.replace(body, "")
     if outside != original.replace(before, ""):
@@ -278,17 +279,17 @@ def main():
         text, head = helper.read_text(), header.read_text()
         helper_mutants = {
             "no-layer-gate": (text, "*scale = 1.f;\n    if (!text || !PortCeQualityOptionsAvailable()) return text;", "*scale = 1.f;\n    if (!text) return text;", "layer-off"),
-            "list-no-layer-gate": (text, "WCHAR *PortCeListFit(WCHAR *text, float x)\n{\n    if (!text || !PortCeQualityOptionsAvailable()) return text;",
-                                   "WCHAR *PortCeListFit(WCHAR *text, float x)\n{\n    if (!text) return text;", "list-layer-off"),
+            "list-no-layer-gate": (text, "WCHAR *PortCeListFit(WCHAR *text, float x, float right)\n{\n    if (!text || !PortCeQualityOptionsAvailable()) return text;",
+                                   "WCHAR *PortCeListFit(WCHAR *text, float x, float right)\n{\n    if (!text) return text;", "list-layer-off"),
             "never-fits": (text, "if ((float)size.cx * fit <= room + 0.01f)", "if (false)", "fits"),
             "list-never-fits": (text, "if ((float)size.cx <= room) return text;", "if (false) return text;", "list-fits"),
             "cut-never-marked": (text, "cut[length] = cut[length + 1] = cut[length + 2] = (WCHAR)'.';", "cut[length] = cut[length + 1] = cut[length + 2] = (WCHAR)'-';", "squeeze-limit"),
             "keeps-too-much": (text, "(float)size->cx * scale <= room + 0.01f) break;", "(float)size->cx * scale <= room + 40.f) break;", "squeeze-limit"),
             "list-keeps-too-much": (text, "return Cut(font, text, room, 1.f, &size);", "return Cut(font, text, room + 60.f, 1.f, &size);", "list-cut"),
-            "ignores-failed-measure": (text, "if (!font || !font->GetTextExtent(text, &size) || size.cx <= 0) return text;\n    const float room = kCeValueRight - x;\n    float fit",
-                                       "if (!font) return text;\n    if (!font->GetTextExtent(text, &size)) size.cx = 4000;\n    const float room = kCeValueRight - x;\n    float fit", "extent-fails"),
-            "list-ignores-failed-measure": (text, "if (!font || !font->GetTextExtent(text, &size) || size.cx <= 0) return text;\n    const float room = kCeValueRight - x;\n    if ((float)size.cx <= room) return text;",
-                                            "if (!font) return text;\n    if (!font->GetTextExtent(text, &size)) size.cx = 4000;\n    const float room = kCeValueRight - x;\n    if ((float)size.cx <= room) return text;", "list-extent-fails"),
+            "ignores-failed-measure": (text, "if (!font || !font->GetTextExtent(text, &size) || size.cx <= 0) return text;\n    const float room = right - x;\n    float fit",
+                                       "if (!font) return text;\n    if (!font->GetTextExtent(text, &size)) size.cx = 4000;\n    const float room = right - x;\n    float fit", "extent-fails"),
+            "list-ignores-failed-measure": (text, "if (!font || !font->GetTextExtent(text, &size) || size.cx <= 0) return text;\n    const float room = right - x;\n    if ((float)size.cx <= room) return text;",
+                                            "if (!font) return text;\n    if (!font->GetTextExtent(text, &size)) size.cx = 4000;\n    const float room = right - x;\n    if ((float)size.cx <= room) return text;", "list-extent-fails"),
             "window-no-layer-gate": (text, "if (!owner || !PortCeQualityOptionsAvailable()) return 0;", "if (!owner) return 0;", "window-layer-off"),
             "window-recentres-every-frame": (text, "open ? gWindow.first : -1", "-1", "window-follows"),
             "window-never-forgets": (text, "gWindow.owner == owner && Within(now, gWindow.seen, kCeListForget)", "gWindow.owner == owner", "window-forget"),
@@ -306,12 +307,17 @@ def main():
             "label-left-at-every-page": (text, "if (!PortCeQualityOptionsAvailable() || !OptionsPage(page)) return 5.f;", "if (!PortCeQualityOptionsAvailable()) return 5.f;", "pitch"),
             "label-left-at-flat": (text, "return 58.f + (kCeLabelLeft - 58.f) * t;", "return kCeLabelLeft + 0.f * t;", "pitch"),
             "label-left-at-unclamped": (text, "if (t > 1.f) t = 1.f;", "(void)t;", "pitch"),
+            "value-right-at-ungated": (text, "if (!PortCeQualityOptionsAvailable() || !OptionsPage(page)) return kCeValueRight;", "if (!OptionsPage(page)) return kCeValueRight;", "arc-right"),
+            "value-right-at-every-page": (text, "if (!PortCeQualityOptionsAvailable() || !OptionsPage(page)) return kCeValueRight;", "if (!PortCeQualityOptionsAvailable()) return kCeValueRight;", "arc-right"),
+            "value-right-at-flat": (text, "return 590.f - (590.f - kCeValueRightArc) * curve;", "return kCeValueRightArc + 0.f * curve;", "arc-right"),
+            "value-right-at-unclamped": (text, "if (curve > 1.f) curve = 1.f;", "(void)curve;", "arc-right"),
             "value-gap-ungated": (text, "return PortCeQualityOptionsAvailable() ? kCeValueGap : 2.f;", "return kCeValueGap;", "pitch"),
             "action-gap-every-row": (text, "return (pitch && count >= 2 && index == count - 2) ? kCeCompactActionGap : 0;", "return pitch ? kCeCompactActionGap : 0;", "pitch"),
         }
         header_mutants = {
             "no-smallest-scale": (head, "kCeValueMinScale = 0.75f;", "kCeValueMinScale = 0.01f;", "squeeze-limit"),
             "wrong-edge": (head, "kCeValueRight = 600.f;", "kCeValueRight = 700.f;", "adapter"),
+            "wrong-arc-edge": (head, "kCeValueRightArc = 544.f;", "kCeValueRightArc = 600.f;", "arc-right"),
             "squeezes-fitting-text": (head, "if (!(width > 0.f) || width <= room) return 1.f;", "if (!(width > 0.f)) return 1.f;", "fits"),
             "window-always": (head, "if ((float)top >= topLimit && (float)top + (float)(count * rowh) <= bottomLimit) return false;", "(void)top;", "window-fits"),
             "window-squeezed-capacity": (head, "const int shown = count < capacity ? count : capacity;", "const int shown = count + 0 * capacity;", "window-sizes"),
@@ -339,10 +345,17 @@ def main():
             "scale-in-y": ("0, 0, ceFit, 1.f", "0, 0, 1.f, ceFit"),
             "unfitted-text": ("DrawTextWithShadow(lx, y, col, ceText, 0, 0, ceFit, 1.f)", "DrawTextWithShadow(lx, y, col, GetChoiceText(mSelection), 0, 0, ceFit, 1.f)"),
             "scale-ignored": ("0, 0, ceFit, 1.f", "0, 0, 1.f, 1.f"),
-            "wrong-column": ("PortCeValueFit(GetChoiceText(mSelection), lx, &ceFit)", "PortCeValueFit(GetChoiceText(mSelection), y, &ceFit)"),
-            "list-measure-unfitted": ("GetTextExtent(PortCeListFit(GetChoiceText(i), lx + K), &s)", "GetTextExtent(GetChoiceText(i), &s)"),
-            "list-draw-unfitted": ("c, PortCeListFit(GetChoiceText(i), lx + K),", "c, GetChoiceText(i),"),
-            "list-wrong-column": ("PortCeListFit(GetChoiceText(i), lx + K), &s)", "PortCeListFit(GetChoiceText(i), lx), &s)"),
+            "wrong-column": ("PortCeValueFit(GetChoiceText(mSelection), lx, PortCeValueRightAt(FRONTEND.GetCurrentPage(), y), &ceFit)",
+                             "PortCeValueFit(GetChoiceText(mSelection), y, PortCeValueRightAt(FRONTEND.GetCurrentPage(), y), &ceFit)"),
+            "value-right-ignores-y": ("PortCeValueFit(GetChoiceText(mSelection), lx, PortCeValueRightAt(FRONTEND.GetCurrentPage(), y), &ceFit)",
+                                      "PortCeValueFit(GetChoiceText(mSelection), lx, PortCeValueRightAt(FRONTEND.GetCurrentPage(), 0.f), &ceFit)"),
+            "list-measure-unfitted": ("GetTextExtent(PortCeListFit(GetChoiceText(i), lx + K, PortCeValueRightAt(FRONTEND.GetCurrentPage(), y)), &s)",
+                                      "GetTextExtent(GetChoiceText(i), &s)"),
+            "list-draw-unfitted": ("c, PortCeListFit(GetChoiceText(i), lx + K, PortCeValueRightAt(FRONTEND.GetCurrentPage(), y)),", "c, GetChoiceText(i),"),
+            "list-wrong-column": ("PortCeListFit(GetChoiceText(i), lx + K, PortCeValueRightAt(FRONTEND.GetCurrentPage(), y)), &s)",
+                                  "PortCeListFit(GetChoiceText(i), lx, PortCeValueRightAt(FRONTEND.GetCurrentPage(), y)), &s)"),
+            "list-right-ignores-y": ("PortCeListFit(GetChoiceText(i), lx + K, PortCeValueRightAt(FRONTEND.GetCurrentPage(), y)), &s)",
+                                     "PortCeListFit(GetChoiceText(i), lx + K, PortCeValueRightAt(FRONTEND.GetCurrentPage(), 0.f)), &s)"),
         }
         column = re.search(r"DrawTextWithShadow\(\s*lx\s*\+\s*([0-9.]+f?)\s*,", before_window).group(1)
         for label, (old, new) in draw_mutants.items():

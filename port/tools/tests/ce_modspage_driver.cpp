@@ -33,6 +33,7 @@
 
 extern "C" int CE_SettingGetText(const char *key, char *out, int n);
 extern "C" int CE_MakeModsFolder(char *dir, size_t n);			// ce.cpp
+extern "C" unsigned long long SDL_GetTicks(void) { return 0; }	// ce.cpp's settings cache clock, bypassed here
 
 const char *PortUserDir()
 {
@@ -226,8 +227,9 @@ int main()
 			char next[100], first[100];
 			snprintf(next, sizeof next, kCeModsPageNext, 1, 3);
 			snprintf(first, sizeof first, kCeModsPageFirst, 3, 3);
-			for (const char *text : {(const char *)renamed, (const char *)many, kCeModsNoticeOne, kCeModsEmpty, kCeModsEmptyWhere, kCeModsNextStart, kCeModsOff, kCeModsMore, kCeModsFull, kCeModsNotSaved,
-									 kCeModsOpenHint, (const char *)next, (const char *)first, kCeModsFolderOpen, kCeModsFolderBlocked, kCeModsNoLevel, kCeModsNoFileManager,
+			for (const char *text : {(const char *)renamed, kCeModModsFolderCase, (const char *)many, kCeModsNoticeOne, kCeModsEmpty, kCeModsEmptyWhere, kCeModsNextStart, kCeModsOff, kCeModsMore, kCeModsFull, kCeModsNotSaved,
+									 kCeModsOpenHint, kCeModsPs2ImportRow, kCeModsPs2ImportHint, kCeModsPs2Picking, kCeModsPs2Imported, kCeModsPs2ImportedFull,
+									 (const char *)next, (const char *)first, kCeModsFolderOpen, kCeModsFolderBlocked, kCeModsNoLevel, kCeModsNoFileManager,
 									 "On", "Off", "Can't Load", "Turn On", "Turn Off", "Move Up", "Move Down", "Details", "Play", "Play Level 1", "Play Level 2", "Play Level 3", "More Mods", "Open Mods Folder"})
 			{
 				printf("SENTENCE ");

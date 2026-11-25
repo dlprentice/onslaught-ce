@@ -128,13 +128,27 @@ int main(int argc,char **argv)
     if(argc!=4 || strlen(argv[1])>=sizeof sUser || strlen(argv[2])>16)return 2;
     setvbuf(stdout,NULL,_IOLBF,0);
     snprintf(sUser,sizeof sUser,"%s",argv[1]);fixture_mode=argv[3];fail_rotation=!strcmp(argv[3],"force-rename");
-    log_open(!strcmp(fixture_mode,"continue"));
+    if(!strncmp(fixture_mode,"continue-token:",15))
+    {
+        setenv(LOG_CONTINUE,fixture_mode+15,1);
+        unset_env(LOG_CONTINUE);
+        log_open(1);
+    }
+    else log_open(!strcmp(fixture_mode,"continue"));
     if(strcmp(fixture_mode,"header-flush-failure"))log_release("Authored log fixture; no rendering device");state("OPEN");
     char command[128];unsigned operations=0;
     while(operations++<32 && fgets(command,sizeof command,stdin))
     {
         command[strcspn(command,"\r\n")]=0;
-        if(!strcmp(command,"CLOSE")) {if(!strcmp(fixture_mode,"close-failure")){fault_file=sLog;fail_close=1;}log_close();puts("{\"ack\":\"CLOSE\"}");return 0;}
+        if(!strcmp(command,"CLOSE"))
+        {
+            if(!strcmp(fixture_mode,"close-failure")){fault_file=sLog;fail_close=1;}
+            log_close();
+            set_env(LOG_CONTINUE,"1");
+            const char *tok=getenv(LOG_CONTINUE);
+            printf("{\"ack\":\"CLOSE\",\"continue_token\":\"%s\"}\n",tok?tok:"");
+            return 0;
+        }
         if(!strcmp(command,"CAP"))
         {
             char block[65536];memset(block,'X',sizeof block);

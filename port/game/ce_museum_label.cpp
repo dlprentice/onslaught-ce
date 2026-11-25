@@ -34,6 +34,7 @@ extern "C" bool PortCeMuseumCinemaCue(char *, unsigned, char *, unsigned);	// ce
 extern "C" bool PortCeMuseumInteractiveAim(void) __attribute__((weak));		// ce_museum_hall.cpp: true only when aiming at a projector, turntable stud, kiosk or directory
 extern "C" bool PortCeMuseumInteractiveCard(float, float, float, float, char *, unsigned, char *, unsigned, char *, unsigned) __attribute__((weak));
 extern "C" void PortCeMuseumDrawAimDot(float cx, float cy) __attribute__((weak));
+extern "C" void PortCeMuseumDrawExhibitMarker(float cx, float cy, float size) __attribute__((weak));	// ce_museum_hall.cpp: the brass diamond over the named exhibit
 
 namespace {
 const int kChars = 96;
@@ -42,8 +43,8 @@ const unsigned long long kTitleMs = 5200, kGrowMs = 350;
 // would otherwise restart it every few frames, and a capsule that keeps restarting is a bar that keeps growing with no words in it.
 const unsigned long long kTitleRepeatMs = kTitleMs + 3000;
 // HUD.RenderObjectiveBar leaves stage 0 at LT.SetModulate(0) (D3DTOP_MODULATE2X when USE_MODULATE_2X is on, else DXFont::StageColour doubles channels),
-// so channels >= 0x80 saturate to pure white. 0xff6c6c6c doubles to 0xd8 (216), giving a crisp readable light grey on translucent radio capsules.
-const DWORD kWhite = 0xffffffff, kGrey = 0xff6c6c6c;
+// so channels >= 0x80 saturate to pure white. 0xff565656 doubles to 0xac (172), keeping body lines clearly subordinate to pure-white titles.
+const DWORD kWhite = 0xffffffff, kGrey = 0xff565656;
 
 struct Label
 {
@@ -110,57 +111,213 @@ DWORD TextFadeColour(DWORD base, float open)
 	return (static_cast<DWORD>(ia) << 24) | (base & 0x00ffffffu);
 }
 
-// One capsule: its text lines centred in the bar, the bar as wide as the longer line needs, grown from the middle by open (0 to 1). cy is the bar's middle.
+// Extracts an exhibit's category/class prefix from an interactive cue's note string when the
+// visitor is viewing the exhibit without aiming at its control stud (stripping any " - aim at..."
+// or "- archival plate..." suffix and ignoring pure control prompts).
+void ExtractExhibitClass(WCHAR *out, const char *note)
+{
+	out[0] = 0;
+	if (!note || !note[0])
+		return;
+	if (std::strncmp(note, "Press Fire", 10) == 0 ||
+	    std::strncmp(note, "Aim at ", 7) == 0 ||
+	    std::strncmp(note, "Turntable ", 10) == 0 ||
+	    std::strncmp(note, "Battle ", 7) == 0 ||
+	    std::strstr(note, "3D display model unavailable") != NULL)
+		return;
+	const char *cut = std::strstr(note, " - aim at ");
+	if (!cut)
+		cut = std::strstr(note, " - archival plate");
+	int len = cut ? static_cast<int>(cut - note) : static_cast<int>(std::strlen(note));
+	while (len > 0 && note[len - 1] == ' ')
+		--len;
+	if (len <= 0)
+		return;
+	if (len >= kChars)
+		len = kChars - 1;
+	for (int i = 0; i < len; ++i)
+		out[i] = static_cast<WCHAR>(static_cast<unsigned char>(note[i]));
+	out[len] = 0;
+}
+
+// Draws a crisp chamfered dark translucent backing quad (0xb0000000) tucked inside the curved
+// cyan end-caps BEFORE HUD.RenderObjectiveBar so caption and plaque text never loses contrast
+// over bright concept art sheets, skylights, or plinth light strips.
+#ifdef D3DFVF_XYZRHW
+void MuseumDrawCapsuleBacking(IDirect3DDevice9 *dev, float cx, float cy, float barWidth, float height, float open)
+{
+	if (!dev || !(barWidth > 0.0f) || !(height > 0.0f) || open < 0.45f)
+		return;
+	const float t = open >= 1.0f ? 1.0f : (open - 0.45f) / 0.55f;
+	int ia = static_cast<int>((0.60f + 0.40f * t) * float(0xb0) + 0.5f);
+	if (ia < 0) ia = 0;
+	if (ia > 0xb0) ia = 0xb0;
+	const DWORD col = static_cast<DWORD>(ia) << 24;
+
+	const float halfW = barWidth * 0.5f;
+	const float shoulderX = halfW + height * 0.14f;
+	const float tipX = halfW + height * 0.36f;
+	const float halfH = height * 0.43f;
+	const float tipH = height * 0.20f;
+
+	float px[10] = {
+		cx,
+		cx - shoulderX, cx + shoulderX,
+		cx + tipX,      cx + tipX,
+		cx + shoulderX, cx - shoulderX,
+		cx - tipX,      cx - tipX,
+		cx - shoulderX,
+	};
+	float py[10] = {
+		cy,
+		cy - halfH, cy - halfH,
+		cy - tipH,  cy + tipH,
+		cy + halfH, cy + halfH,
+		cy + tipH,  cy - tipH,
+		cy - halfH,
+	};
+	for (int i = 0; i < 10; ++i)
+		CeHudScalePoint(&px[i], &py[i]);
+
+	struct BackingVertex { float x, y, z, rhw; DWORD colour; };
+	BackingVertex tris[8 * 3];
+	for (int k = 0; k < 8; ++k)
+	{
+		tris[k * 3 + 0] = {px[0],     py[0],     0.0095f, 1.0f, col};
+		tris[k * 3 + 1] = {px[k + 1], py[k + 1], 0.0095f, 1.0f, col};
+		tris[k * 3 + 2] = {px[k + 2], py[k + 2], 0.0095f, 1.0f, col};
+	}
+
+	RENDERINFO.SetShader(NULL);
+	RENDERINFO.SetFVF(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
+	RENDERINFO.Apply();
+	dev->SetPixelShader(NULL);
+	LT.D3D_SetTexture(0, NULL);
+	LT.D3D_SetTexture(1, NULL);
+	LT.SRS(D3DRS_ZENABLE, FALSE);
+	LT.SRS(D3DRS_ZWRITEENABLE, FALSE);
+	LT.SRS(D3DRS_CULLMODE, D3DCULL_NONE);
+	LT.SRS(D3DRS_ALPHATESTENABLE, FALSE);
+	LT.SRS(D3DRS_ALPHABLENDENABLE, TRUE);
+	LT.SRS(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+	LT.SRS(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+	LT.STS(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+	LT.STS(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+	LT.STS(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+	LT.STS(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
+	LT.STS(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+	LT.STS(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+	dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 8, tris, sizeof(BackingVertex));
+	LT.STS(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+	LT.STS(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+	LT.SetModulate(0);
+	LT.STS(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
+	LT.STS(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+	LT.STS(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
+	LT.SRS(D3DRS_CULLMODE, D3DCULL_CCW);
+	LT.SRS(D3DRS_ALPHATESTENABLE, TRUE);
+}
+#else
+inline void MuseumDrawCapsuleBacking(const void *, float, float, float, float, float) {}
+#endif
+
+// Breaks text in two at the space nearest its middle when it is wider than room: first gets the part before the space, second the rest.
+// Returns false (first = text, second empty) when it fits or cannot be broken.
+bool WrapLine(CDXBitmapFont *font, const WCHAR *text, float room, WCHAR *first, WCHAR *second)
+{
+	int n = 0;
+	for (; text[n] && n < kChars - 1; ++n)
+		first[n] = text[n];
+	first[n] = 0;
+	second[0] = 0;
+	SIZE whole = {0, 0};
+	if (!text[0])
+		return false;
+	font->GetTextExtent(first, &whole);
+	if (float(whole.cx) <= room)
+		return false;
+	const int at = CeMuseumCaptionSplit(first);
+	if (at < 0)
+		return false;
+	int m = 0;
+	for (int i = at + 1; first[i] && m < kChars - 1; ++i)
+		second[m++] = first[i];
+	second[m] = 0;
+	first[at] = 0;
+	return true;
+}
+
+float LineWidth(CDXBitmapFont *font, const WCHAR *text)
+{
+	SIZE size = {0, 0};
+	if (text[0])
+		font->GetTextExtent(const_cast<WCHAR *>(text), &size);
+	return float(size.cx);
+}
+
+// One capsule: its text lines centred in the bar, the bar as wide as its text needs under the Museum's one caption rule (CeMuseumCaptionLayout),
+// grown from the middle by open (0 to 1). cy is the bar's middle. A second line too wide for the bar wraps onto a third.
 void Capsule(const Label &label, float cx, float cy, float open)
 {
 	CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);
 	if (!font || open < 0.45f)
 		return;
-	WCHAR name[kChars], line[kChars];
+	WCHAR name[kChars], line[kChars], lineA[kChars], lineB[kChars];
 	Drawable(name, label.name, font);
 	Drawable(line, label.line, font);
 	if (!name[0] && !line[0])
 		return;
-	SIZE a = {0, 0}, b = {0, 0};
-	font->GetTextExtent(name, &a);
-	if (line[0])
-		font->GetTextExtent(line, &b);
-	const float widest = float(a.cx > b.cx ? a.cx : b.cx);
-	const float rows = line[0] ? 2.0f : 1.0f, pitch = float(font->GetHeight()) + 2.0f;
+	const float pitch = float(font->GetHeight()) + 2.0f;
+	const float hudScale = CeHudScaleFactor();
+	// First as two rows; if the second row overflows the room the rule allows, it is wrapped and the bar measured again with three.
+	lineB[0] = 0;
+	float rows = line[0] ? 2.0f : 1.0f;
+	float widest = LineWidth(font, name) > LineWidth(font, line) ? LineWidth(font, name) : LineWidth(font, line);
+	CeMuseumCaptionFit fit = CeMuseumCaptionLayout(widest, 18.0f + rows * pitch, HUD.mViewportWidth, hudScale, open, 0.0f);
+	if (line[0] && fit.overflow && WrapLine(font, line, fit.textRoom, lineA, lineB))
+	{
+		rows = 3.0f;
+		widest = LineWidth(font, name);
+		if (LineWidth(font, lineA) > widest) widest = LineWidth(font, lineA);
+		if (LineWidth(font, lineB) > widest) widest = LineWidth(font, lineB);
+		fit = CeMuseumCaptionLayout(widest, 18.0f + rows * pitch, HUD.mViewportWidth, hudScale, open, 0.0f);
+	}
+	else
+	{
+		int n = 0;
+		for (; line[n]; ++n) lineA[n] = line[n];
+		lineA[n] = 0;
+	}
 	const float height = 18.0f + rows * pitch;
-	float width = widest + 48.0f;
-	const float most = HUD.mViewportWidth - 2.0f * 64.0f;
-	if (width > most)
-		width = most;
-	const float t = open >= 1.0f ? 1.0f : (open - 0.45f) / 0.55f;
-	const float minBarW = widest + 24.0f;
-	float barW = minBarW + (width - minBarW) * t;
-	if (barW > width)
-		barW = width;
 	RENDERINFO.SetFogEnabled(false);
 	RENDERINFO.SetLightingEnabled(false);
 	RENDERINFO.Apply();
-	HUD.RenderObjectiveBar(cx, cy, barW, height, 1.0f);
+	MuseumDrawCapsuleBacking(LT.GetDevice(), cx, cy, fit.barWidth, height, open);
+	HUD.RenderObjectiveBar(cx, cy, fit.barWidth, height, 1.0f);
 	RENDERINFO.EnableLighting(false);
 	RENDERINFO.SetFogEnabled(false);
 	RENDERINFO.Apply();
 	const DWORD white = TextFadeColour(kWhite, open);
 	const DWORD grey = TextFadeColour(kGrey, open);
 	const float top = cy - rows * pitch * 0.5f;
-	font->DrawTextWithShadow(cx - float(a.cx) * 0.5f, top, white, name, 0, 0.0f, 1.0f, 1.0f);
-	if (line[0])
-		font->DrawTextWithShadow(cx - float(b.cx) * 0.5f, top + pitch, grey, line, 0, 0.0f, 1.0f, 1.0f);
+	const float sx = fit.scaleX;
+	font->DrawTextWithShadow(cx - LineWidth(font, name) * sx * 0.5f, top, white, name, 0, 0.0f, sx, 1.0f);
+	if (lineA[0])
+		font->DrawTextWithShadow(cx - LineWidth(font, lineA) * sx * 0.5f, top + pitch, grey, lineA, 0, 0.0f, sx, 1.0f);
+	if (lineB[0])
+		font->DrawTextWithShadow(cx - LineWidth(font, lineB) * sx * 0.5f, top + 2.0f * pitch, grey, lineB, 0, 0.0f, sx, 1.0f);
 }
 
-// An exhibit's label: the radio messages' own bar, in the radio messages' own place and shape (CMessageBox::RenderOverlay), its text left-aligned from where the
-// radio's text begins, the name white and the line under it grey. The bar keeps the radio's width, so it does not change with every name, and grows
-// only for a name too long for it. open is 0 to 1 (the bar grows from the middle).
-void ExhibitCapsule(const Label &label, const WCHAR *caption, float open, int number = 0)
+// An exhibit's plaque: the radio messages' own bar, in the radio messages' own place (CMessageBox::RenderOverlay), its text left-aligned from
+// inside the left bracket. Its rows are kept apart and each says one thing: the name in white, then in grey its class, one fact about it
+// (when the visitor is close enough to read one), and a note. The bar keeps the radio's width for short text and grows for longer text only
+// as far as the caption rule allows; a fact too long for it wraps onto a second line. open is 0 to 1 (the bar grows from the middle).
+void ExhibitCapsule(const Label &label, const WCHAR *classLine, const WCHAR *fact, float open, int number = 0)
 {
 	CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);
 	if (!font || open < 0.45f)
 		return;
-	WCHAR name[kChars], line[kChars], note[kChars];
+	WCHAR name[kChars], row[4][kChars], spare[kChars];
 	Drawable(name, label.name, font);
 	if (number >= 1 && number <= 9)
 	{
@@ -171,56 +328,73 @@ void ExhibitCapsule(const Label &label, const WCHAR *caption, float open, int nu
 		name[0] = char('0' + number);
 		name[1] = ':'; name[2] = ' ';
 	}
-	Drawable(line, caption, font);
-	Drawable(note, label.note, font);
-	if (!name[0] && !line[0] && !note[0])
+	// Up to four grey rows under the name: class, fact (one or two lines), note.
+	int rowCount = 0;
+	const WCHAR *const sources[3] = {classLine, fact, label.note};
+	for (int i = 0; i < 3; ++i)
+	{
+		if (!sources[i] || !sources[i][0])
+			continue;
+		bool same = false;								// a fact that only repeats the class line is not said twice
+		for (int k = 0; k < rowCount && !same; ++k)
+		{
+			int c = 0;
+			while (row[k][c] && sources[i][c] && row[k][c] == sources[i][c]) ++c;
+			same = !row[k][c] && !sources[i][c];
+		}
+		if (!same && rowCount < 4)
+			Drawable(row[rowCount++], sources[i], font);
+	}
+	if (!name[0] && !rowCount)
 		return;
-	SIZE a = {0, 0}, b = {0, 0}, c = {0, 0};
-	font->GetTextExtent(name, &a);
-	if (line[0])
-		font->GetTextExtent(line, &b);
-	if (note[0])
-		font->GetTextExtent(note, &c);
-	if (c.cx > b.cx)
-		b.cx = c.cx;
 	const float viewLeft = HUD.mViewportX;
 	const float viewW = HUD.mViewportWidth;
-	const float maxBarW = viewW > 80.0f ? (viewW - 36.0f) : viewW;
 	const float centre = viewLeft + viewW * 0.5f;
-	const float y = (HUD.mViewportBottom + 16.0f - HUD_OFFSET_Y - 128.0f + 48.0f) + gMessageBoxY;
-	float width = 230.0f - HUD.mViewportX * 2 - HUD_OFFSET_X * 2 + gMessageBoxWidth;
-	const float widest = float(a.cx > b.cx ? a.cx : b.cx), padX = 24.0f, room = widest + 2.0f * padX;
-	if (room > width)
-		width = room;
-	if (width > maxBarW)
-		width = maxBarW;
-	const float t = open >= 1.0f ? 1.0f : (open - 0.45f) / 0.55f;
-	float minBarW = widest + 16.0f;
-	if (minBarW > width)
-		minBarW = width;
-	float barW = minBarW + (width - minBarW) * t;
-	if (barW > width)
-		barW = width;
+	const float radioWidth = 230.0f - HUD.mViewportX * 2 - HUD_OFFSET_X * 2 + gMessageBoxWidth;
+	const float hudScale = CeHudScaleFactor();
+	auto widestRow = [&]() {
+		float w = LineWidth(font, name);
+		for (int k = 0; k < rowCount; ++k)
+			if (LineWidth(font, row[k]) > w) w = LineWidth(font, row[k]);
+		return w;
+	};
+	float height = 60.0f;
+	CeMuseumCaptionFit fit = CeMuseumCaptionLayout(widestRow(), height, viewW, hudScale, open, radioWidth);
+	// The longest grey row wraps once if it overflows and there is a row to spare.
+	if (fit.overflow && rowCount > 0 && rowCount < 4)
+	{
+		int longest = 0;
+		for (int k = 1; k < rowCount; ++k)
+			if (LineWidth(font, row[k]) > LineWidth(font, row[longest])) longest = k;
+		if (LineWidth(font, row[longest]) >= LineWidth(font, name) && WrapLine(font, row[longest], fit.textRoom, row[longest], spare))
+		{
+			for (int k = rowCount; k > longest + 1; --k)
+				for (int c = 0; c < kChars; ++c) row[k][c] = row[k - 1][c];
+			for (int c = 0; c < kChars; ++c) row[longest + 1][c] = spare[c];
+			++rowCount;
+		}
+	}
+	const float rows = 1.0f + float(rowCount);
+	if (rows > 3.0f)
+		height = 60.0f + (rows - 3.0f) * 15.0f;
+	fit = CeMuseumCaptionLayout(widestRow(), height, viewW, hudScale, open, radioWidth);
+	const float y = (HUD.mViewportBottom + 16.0f - HUD_OFFSET_Y - 128.0f + 48.0f) + gMessageBoxY - (height - 60.0f) * 0.5f - 12.0f;
 	RENDERINFO.SetFogEnabled(false);
 	RENDERINFO.SetLightingEnabled(false);
 	RENDERINFO.Apply();
-	HUD.RenderObjectiveBar(centre, y, barW, 60.0f, 1.0f);
+	MuseumDrawCapsuleBacking(LT.GetDevice(), centre, y, fit.barWidth, height, open);
+	HUD.RenderObjectiveBar(centre, y, fit.barWidth, height, 1.0f);
 	RENDERINFO.EnableLighting(false);
 	RENDERINFO.SetFogEnabled(false);
 	RENDERINFO.Apply();
 	const DWORD white = TextFadeColour(kWhite, open);
 	const DWORD grey = TextFadeColour(kGrey, open);
-	const float rows = 1.0f + (line[0] ? 1.0f : 0.0f) + (note[0] ? 1.0f : 0.0f);
-	const float availW = width > 2.0f * padX + 40.0f ? (width - 2.0f * padX) : width;
-	float scaleX = (widest > availW && widest > 1.0f) ? (availW / widest) : 1.0f;
-	if (scaleX < 0.72f)
-		scaleX = 0.72f;
-	const float left = centre - width * 0.5f + padX, top = y - gMessageTextY + (3.0f - rows) * 7.5f;
-	font->DrawTextWithShadow(left, top, white, name, 0, 0.0f, scaleX, 1.0f);
-	if (line[0])
-		font->DrawTextWithShadow(left, top + 15.0f, grey, line, 0, 0.0f, scaleX, 1.0f);
-	if (note[0])
-		font->DrawTextWithShadow(left, top + (line[0] ? 30.0f : 15.0f), grey, note, 0, 0.0f, scaleX, 1.0f);
+	const float left = centre - fit.fullWidth * 0.5f + CeMuseumCaptionCapInset(height);
+	// The radio's own first-line offset (gMessageTextY) for a three-row card, and half a row either way for fewer or more.
+	const float top = y - gMessageTextY + (3.0f - rows) * 7.5f;
+	font->DrawTextWithShadow(left, top, white, name, 0, 0.0f, fit.scaleX, 1.0f);
+	for (int k = 0; k < rowCount; ++k)
+		font->DrawTextWithShadow(left, top + 15.0f * float(k + 1), grey, row[k], 0, 0.0f, fit.scaleX, 1.0f);
 }
 
 void ExhibitMarker(unsigned index)
@@ -235,15 +409,13 @@ void ExhibitMarker(unsigned index)
 	const float v = (pixel.y - gViewport.y) / gViewport.height;
 	if (!(u > 0.02f && u < 0.98f && v > 0.06f && v < 0.94f))
 		return;
-	CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);
-	if (!font)
-		return;
-	WCHAR arrow[] = L"v";
-	SIZE extent;
-	font->GetTextExtent(arrow, &extent);
-	const float x = HUD.mViewportX + u * HUD.mViewportWidth - 0.5f * float(extent.cx);
-	const float y = HUD.mViewportY + v * HUD.mViewportHeight - float(extent.cy) - 2.0f;
-	font->DrawTextWithShadow(x, y, 0xffffd477, arrow, 0, 0.0f, 1.0f, 1.0f);
+	// A small brass diamond hangs just above the named exhibit: drawn as two vertex-coloured triangles at the projected point itself (device
+	// pixels, so it sits on the exhibit at every HUD size), where a font glyph used to stand in for a marker.
+	if (PortCeMuseumDrawExhibitMarker)
+	{
+		const float size = gViewport.height > 0.0f ? 6.0f * gViewport.height / 480.0f : 6.0f;
+		PortCeMuseumDrawExhibitMarker(pixel.x, pixel.y - size * 1.6f, size);
+	}
 }
 
 }
@@ -405,7 +577,7 @@ extern "C" void PortCeMuseumLabelsRender(void)
 		return;
     if (cinema) {
         Label card={}; Copy(card.name,cinemaTitle); Copy(card.line,cinemaLine);
-        ExhibitCapsule(card,card.line,1.0f); return;
+        ExhibitCapsule(card,card.line,NULL,1.0f); return;
     }
 	const FVector position = engine->GetPos();
 	const FVector heading = engine->GetOrientation().GetColumnY();
@@ -432,14 +604,15 @@ extern "C" void PortCeMuseumLabelsRender(void)
 		Label exitLabel = {};
 		Copy(exitLabel.name, "Exit gallery");
 		Copy(exitLabel.line, "Pause, then choose Leave Museum.");
-		ExhibitCapsule(exitLabel, exitLabel.line, CeMuseumCapsuleOpen(now, gExitSince, 0, kGrowMs, false));
+		ExhibitCapsule(exitLabel, exitLabel.line, NULL, CeMuseumCapsuleOpen(now, gExitSince, 0, kGrowMs, false));
 		return;
 	}
 	if (gShown >= 0)
 	{
 		const Label &label = gLabels[gShown];
 		gInspecting = atSign || CeMuseumInspectionNear(position.X - gAt[gShown][0], position.Y - gAt[gShown][1], label.radius, gInspecting);
-		ExhibitCapsule(label, gInspecting ? label.detail : label.line, CeMuseumCapsuleOpen(now, gShownSince, 0, kGrowMs, false), atSign ? number : 0);
+		// Name and class always; the one fact only once the visitor is close enough to be reading the plaque.
+		ExhibitCapsule(label, label.line, gInspecting ? label.detail : NULL, CeMuseumCapsuleOpen(now, gShownSince, 0, kGrowMs, false), atSign ? number : 0);
 		ExhibitMarker(static_cast<unsigned>(gShown));
 		return;
 	}
@@ -450,10 +623,15 @@ extern "C" void PortCeMuseumLabelsRender(void)
 		                                ititle, sizeof ititle, iline, sizeof iline, inote, sizeof inote))
 		{
 			Label card = {};
+			WCHAR iclass[kChars] = {};
 			Copy(card.name, ititle);
 			Copy(card.line, iline);
-			Copy(card.note, inote);
-			ExhibitCapsule(card, card.line, 1.0f);
+			// How to work a fixture is said only while the visitor is aiming at its control: walking past, the card names it and no more.
+			if (PortCeMuseumInteractiveAim && PortCeMuseumInteractiveAim())
+				Copy(card.note, inote);
+			else
+				ExtractExhibitClass(iclass, inote);
+			ExhibitCapsule(card, iclass[0] ? iclass : card.line, iclass[0] ? card.line : NULL, 1.0f);
 		}
 	}
 }

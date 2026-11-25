@@ -332,6 +332,24 @@ void TestClientFlow() {
     Check(client.BeginUpdateRoom("rm_0123456789abcdef", ureq, 3700), "BeginUpdateRoom");
     Check(client.Poll(3710) == CeOnlineOpStatus::Completed && client.CurrentRoom().rev == 3, "UpdateRoom ok");
 
+    CeOnlineUpdateRoomReq bad_state_req;
+    bad_state_req.has_state = true;
+    bad_state_req.state = "lobby";
+    Check(!client.BeginUpdateRoom("rm_0123456789abcdef", bad_state_req, 3720),
+          "BeginUpdateRoom rejects non-in_match state");
+
+    CeOnlineUpdateRoomReq in_match_req;
+    in_match_req.has_state = true;
+    in_match_req.state = "in_match";
+    mock->steps.push_back({CeOnlineHttpMethod::Post, "/ce-lobby/v1/rooms/rm_0123456789abcdef/update",
+                           true, "tok_abc123_XYZ", "\"state\":\"in_match\"", 200,
+                           MakeRoomJson(4, "in_match", "null"), false, false});
+    Check(client.BeginUpdateRoom("rm_0123456789abcdef", in_match_req, 3730),
+          "BeginUpdateRoom accepts state=in_match");
+    Check(client.Poll(3740) == CeOnlineOpStatus::Completed &&
+          client.CurrentRoom().state == "in_match" && client.CurrentRoom().rev == 4,
+          "UpdateRoom(in_match) ok");
+
     mock->steps.push_back({CeOnlineHttpMethod::Post, "/ce-lobby/v1/rooms/rm_0123456789abcdef/chat",
                            true, "tok_abc123_XYZ", "\"text\":\"Ready!\"", 200,
                            MakeRoomJson(4, "lobby", "null"), false, false});
@@ -371,7 +389,25 @@ void TestClientFlow() {
     Check(client.BeginSendSignal("rm_0123456789abcdef", "mt_0123456789abcdef", 0, 1, "offer",
                                  "a=ice-ufrag:abcd\r\na=candidate:1 1 UDP 1 127.0.0.1 9999 typ host\r\n", 4100),
           "BeginSendSignal");
-    Check(client.Poll(4110) == CeOnlineOpStatus::Completed, "SendSignal ok");
+    Check(client.Poll(4110) == CeOnlineOpStatus::Completed && client.LastSentSignalSeq() == 0,
+          "SendSignal backward-compatible when mock omits seq");
+
+    mock->steps.push_back({CeOnlineHttpMethod::Post, "/ce-lobby/v1/rooms/rm_0123456789abcdef/signal",
+                           true, "tok_abc123_XYZ", "\"kind\":\"offer\"", 200,
+                           "{\"ok\":true,\"seq\":42,\"server_time_ms\":1763900003000}", false, false});
+    Check(client.BeginSendSignal("rm_0123456789abcdef", "mt_0123456789abcdef", 0, 1, "offer",
+                                 "a=ice-ufrag:abcd2\r\n", 4120),
+          "BeginSendSignal with seq");
+    Check(client.Poll(4130) == CeOnlineOpStatus::Completed && client.LastSentSignalSeq() == 42,
+          "SendSignal parses acknowledged seq");
+
+    mock->steps.push_back({CeOnlineHttpMethod::Post, "/ce-lobby/v1/rooms/rm_0123456789abcdef/signal",
+                           true, "tok_abc123_XYZ", "\"kind\":\"offer\"", 200, "{\"ok\":false,\"seq\":43}", false, false});
+    Check(client.BeginSendSignal("rm_0123456789abcdef", "mt_0123456789abcdef", 0, 1, "offer",
+                                 "a=ice-ufrag:abcd3\r\n", 4140),
+          "BeginSendSignal ok:false");
+    Check(client.Poll(4150) == CeOnlineOpStatus::Failed && client.LastSentSignalSeq() == 0,
+          "SendSignal rejects ok:false and resets LastSentSignalSeq");
 
     mock->steps.push_back({CeOnlineHttpMethod::Get,
                            "/ce-lobby/v1/rooms/rm_0123456789abcdef/signal?match_id=mt_0123456789abcdef&since=0",
@@ -385,9 +421,16 @@ void TestClientFlow() {
 
     mock->steps.push_back({CeOnlineHttpMethod::Post, "/ce-lobby/v1/rooms/rm_0123456789abcdef/finish",
                            true, "tok_abc123_XYZ", "{}", 200, MakeRoomJson(6, "lobby", "null"), false, false});
-    Check(client.BeginFinishMatch("rm_0123456789abcdef", 4300), "BeginFinishMatch");
+    Check(client.BeginFinishMatch("rm_0123456789abcdef", 4300), "BeginFinishMatch empty body");
     Check(client.Poll(4310) == CeOnlineOpStatus::Completed &&
           !client.CurrentRoom().start_ticket.valid, "FinishMatch clears ticket");
+
+    mock->steps.push_back({CeOnlineHttpMethod::Post, "/ce-lobby/v1/rooms/rm_0123456789abcdef/finish",
+                           true, "tok_abc123_XYZ", "\"match_id\":\"mt_0123456789abcdef\"", 200,
+                           MakeRoomJson(7, "lobby", "null"), false, false});
+    Check(client.BeginFinishMatch("rm_0123456789abcdef", 4320, 10000, "mt_0123456789abcdef"),
+          "BeginFinishMatch with scoped match_id");
+    Check(client.Poll(4330) == CeOnlineOpStatus::Completed, "FinishMatch with match_id ok");
 
     mock->steps.push_back({CeOnlineHttpMethod::Post, "/ce-lobby/v1/rooms/rm_0123456789abcdef/leave",
                            true, "tok_abc123_XYZ", "{}", 200, "{\"ok\":true}", false, false});
@@ -742,6 +785,229 @@ class OnlineLobbyClientTests(unittest.TestCase):
                 check=True, capture_output=True, text=True, timeout=90,
             )
             self.assertTrue(exe.is_file())
+
+    def test_winhttp_tls12_tls13_fallback_and_legacy_header_guard(self):
+        cc = MINGW_BIN / "i686-w64-mingw32-clang"
+        cxx = MINGW_BIN / "i686-w64-mingw32-clang++"
+        if not (cc.is_file() and cxx.is_file()):
+            self.skipTest("pinned llvm-mingw toolchain unavailable")
+
+        shim_winhttp_h = """\
+#pragma once
+#include <windows.h>
+#pragma push_macro("DECLSPEC_IMPORT")
+#undef DECLSPEC_IMPORT
+#define DECLSPEC_IMPORT
+#include_next <winhttp.h>
+#pragma pop_macro("DECLSPEC_IMPORT")
+#ifdef CE_TEST_LEGACY_NO_TLS13
+#undef WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3
+#endif
+"""
+        winhttp_driver_cpp = r"""
+// SPDX-License-Identifier: GPL-3.0-only
+#include <windows.h>
+#include <winhttp.h>
+#include "signaling_https.h"
+
+#include <cstdio>
+#include <vector>
+
+namespace {
+struct FakeHandle {
+    int kind = 0; // 1=session, 2=conn, 3=req
+    WINHTTP_STATUS_CALLBACK cb = nullptr;
+    DWORD_PTR ctx = 0;
+};
+
+int gTlsMode = 0; // 0=accept all, 1=reject TLS1.3 with ERROR_INVALID_PARAMETER, 2=reject with ERROR_OUTOFMEMORY
+std::vector<DWORD> gObservedProtocols;
+int gChecks = 0;
+int gFails = 0;
+
+void Check(bool ok, const char* msg) {
+    ++gChecks;
+    if (!ok) {
+        ++gFails;
+        std::fprintf(stderr, "FAIL: %s\n", msg);
+    }
+}
+} // namespace
+
+extern "C" {
+HINTERNET WINAPI WinHttpOpen(LPCWSTR, DWORD, LPCWSTR, LPCWSTR, DWORD) {
+    auto* h = new FakeHandle{1, nullptr, 0};
+    return static_cast<HINTERNET>(h);
+}
+
+BOOL WINAPI WinHttpCloseHandle(HINTERNET hInternet) {
+    if (!hInternet) return TRUE;
+    auto* h = static_cast<FakeHandle*>(hInternet);
+    if (h->kind == 3 && h->cb) {
+        HINTERNET raw = hInternet;
+        h->cb(hInternet, h->ctx, WINHTTP_CALLBACK_STATUS_HANDLE_CLOSING, &raw, sizeof(raw));
+    }
+    delete h;
+    return TRUE;
+}
+
+BOOL WINAPI WinHttpSetTimeouts(HINTERNET, int, int, int, int) { return TRUE; }
+
+BOOL WINAPI WinHttpSetOption(HINTERNET hInternet, DWORD dwOption, LPVOID lpBuffer, DWORD dwBufferLength) {
+    auto* h = static_cast<FakeHandle*>(hInternet);
+    if (dwOption == WINHTTP_OPTION_SECURE_PROTOCOLS && lpBuffer && dwBufferLength == sizeof(DWORD)) {
+        const DWORD proto = *static_cast<const DWORD*>(lpBuffer);
+        gObservedProtocols.push_back(proto);
+        if (gTlsMode == 1 && (proto & 0x00002000u) != 0u) {
+            SetLastError(ERROR_INVALID_PARAMETER);
+            return FALSE;
+        }
+        if (gTlsMode == 2) {
+            SetLastError(ERROR_OUTOFMEMORY);
+            return FALSE;
+        }
+        return TRUE;
+    }
+    if (dwOption == WINHTTP_OPTION_CONTEXT_VALUE && h && lpBuffer && dwBufferLength == sizeof(DWORD_PTR)) {
+        h->ctx = *static_cast<const DWORD_PTR*>(lpBuffer);
+    }
+    return TRUE;
+}
+
+HINTERNET WINAPI WinHttpConnect(HINTERNET, LPCWSTR, INTERNET_PORT, DWORD) {
+    return static_cast<HINTERNET>(new FakeHandle{2, nullptr, 0});
+}
+
+HINTERNET WINAPI WinHttpOpenRequest(HINTERNET, LPCWSTR, LPCWSTR, LPCWSTR, LPCWSTR, LPCWSTR*, DWORD) {
+    return static_cast<HINTERNET>(new FakeHandle{3, nullptr, 0});
+}
+
+WINHTTP_STATUS_CALLBACK WINAPI WinHttpSetStatusCallback(HINTERNET hInternet, WINHTTP_STATUS_CALLBACK lpfn, DWORD, DWORD_PTR) {
+    auto* h = static_cast<FakeHandle*>(hInternet);
+    WINHTTP_STATUS_CALLBACK prev = h ? h->cb : nullptr;
+    if (h) h->cb = lpfn;
+    return prev;
+}
+
+BOOL WINAPI WinHttpSendRequest(HINTERNET, LPCWSTR, DWORD, LPVOID, DWORD, DWORD, DWORD_PTR) { return TRUE; }
+BOOL WINAPI WinHttpReceiveResponse(HINTERNET, LPVOID) { return TRUE; }
+BOOL WINAPI WinHttpQueryHeaders(HINTERNET, DWORD, LPCWSTR, LPVOID, LPDWORD, LPDWORD) {
+    SetLastError(ERROR_WINHTTP_HEADER_NOT_FOUND);
+    return FALSE;
+}
+BOOL WINAPI WinHttpReadData(HINTERNET, LPVOID, DWORD, LPDWORD) { return TRUE; }
+} // extern "C"
+
+int main() {
+    const DWORD kTls12 = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;
+#ifdef CE_TEST_LEGACY_NO_TLS13
+    const DWORD kPreferred = kTls12;
+#else
+    const DWORD kPreferred = kTls12 | 0x00002000u;
+#endif
+
+    // 1. Preferred TLS flags succeed on first try for both WinHttps and WinOnlineHttps.
+    gTlsMode = 0;
+    gObservedProtocols.clear();
+    auto sig = CeCreateSignalHttps("https://lobby.example.invalid");
+    Check(bool(sig) && sig->Begin("pair/current", "tok123", 6, "{}", 100, 5000), "WinHttps::Begin preferred TLS");
+    sig->Cancel();
+    auto onl = CeCreateOnlineHttps("https://lobby.example.invalid", false);
+    Check(bool(onl) && onl->Begin(CeOnlineHttpMethod::Get, "/ce-lobby/v1/health", nullptr, 0, "", 100, 5000),
+          "WinOnlineHttps::Begin preferred TLS");
+    onl->Cancel();
+    Check(gObservedProtocols.size() == 2 &&
+          gObservedProtocols[0] == kPreferred &&
+          gObservedProtocols[1] == kPreferred,
+          "both WinHTTP transports request preferred TLS flags first");
+
+#ifndef CE_TEST_LEGACY_NO_TLS13
+    // 2. ERROR_INVALID_PARAMETER on TLS1_2|TLS1_3 falls back once to TLS1_2 cleanly!
+    gTlsMode = 1;
+    gObservedProtocols.clear();
+    Check(sig->Begin("pair/current", "tok123", 6, "{}", 200, 5000), "WinHttps::Begin fallback to TLS 1.2");
+    sig->Cancel();
+    Check(onl->Begin(CeOnlineHttpMethod::Get, "/ce-lobby/v1/health", nullptr, 0, "", 200, 5000),
+          "WinOnlineHttps::Begin fallback to TLS 1.2");
+    onl->Cancel();
+    Check(gObservedProtocols.size() == 4 &&
+          gObservedProtocols[0] == kPreferred && gObservedProtocols[1] == kTls12 &&
+          gObservedProtocols[2] == kPreferred && gObservedProtocols[3] == kTls12,
+          "ERROR_INVALID_PARAMETER triggers single fallback to TLS 1.2");
+
+    // 3. Non-ERROR_INVALID_PARAMETER failure fails closed without retrying!
+    gTlsMode = 2;
+    gObservedProtocols.clear();
+    Check(!sig->Begin("pair/current", "tok123", 6, "{}", 300, 5000), "WinHttps fails closed on non-invalid-param");
+    Check(!onl->Begin(CeOnlineHttpMethod::Get, "/ce-lobby/v1/health", nullptr, 0, "", 300, 5000),
+          "WinOnlineHttps fails closed on non-invalid-param");
+    Check(gObservedProtocols.size() == 2 &&
+          gObservedProtocols[0] == kPreferred && gObservedProtocols[1] == kPreferred,
+          "non-ERROR_INVALID_PARAMETER does NOT retry TLS 1.2");
+#endif
+
+    // 4. Loopback plain HTTP skips WINHTTP_OPTION_SECURE_PROTOCOLS entirely.
+    gTlsMode = 2;
+    gObservedProtocols.clear();
+    auto loop_http = CeCreateOnlineHttps("http://127.0.0.1:8787", true);
+    Check(bool(loop_http) &&
+          loop_http->Begin(CeOnlineHttpMethod::Get, "/ce-lobby/v1/health", nullptr, 0, "", 400, 5000) &&
+          gObservedProtocols.empty(),
+          "loopback http skips TLS protocol option");
+    loop_http->Cancel();
+
+    std::printf("WINHTTP_TLS_TESTS checks=%d failures=%d\n", gChecks, gFails);
+    return gFails == 0 ? 0 : 1;
+}
+"""
+        with tempfile.TemporaryDirectory(prefix="ce-winhttp-tls-") as td:
+            tmp = Path(td)
+            shim_dir = tmp / "shim"
+            shim_dir.mkdir(mode=0o700)
+            (shim_dir / "winhttp.h").write_text(shim_winhttp_h)
+            driver = tmp / "winhttp_tls_driver.cpp"
+            driver.write_text(winhttp_driver_cpp)
+            mono_obj = tmp / "mono.o"
+            subprocess.run(
+                [str(cc), "-std=gnu11", "-O2", "-I", str(MONO_SRC),
+                 "-c", str(MONO_SRC / "monocypher.c"), "-o", str(mono_obj)],
+                check=True, capture_output=True, text=True, timeout=60,
+            )
+
+            exes: list[Path] = []
+            for suffix, extra_defs in (("modern", []), ("legacy", ["-DCE_TEST_LEGACY_NO_TLS13=1"])):
+                exe = tmp / f"winhttp_tls_{suffix}.exe"
+                subprocess.run(
+                    [
+                        str(cxx), "-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
+                        "-DCE_NETWORK_ICE=1", *extra_defs,
+                        "-I", str(shim_dir), "-I", str(PORT / "network"), "-I", str(MONO_SRC),
+                        str(PORT / "network/signaling_https.cpp"),
+                        str(driver), str(mono_obj),
+                        "-static-libstdc++", "-static-libgcc",
+                        "-o", str(exe),
+                    ],
+                    check=True, capture_output=True, text=True, timeout=90,
+                )
+                self.assertTrue(exe.is_file())
+                exes.append(exe)
+
+            wine = shutil.which("wine")
+            if not wine:
+                return
+            prefix = tmp / "wineprefix"
+            prefix.mkdir(mode=0o700)
+            env = {k: v for k, v in os.environ.items()
+                   if k not in ("DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS")}
+            env.update(
+                WINEPREFIX=str(prefix),
+                WINEDEBUG="-all",
+                WINEDLLOVERRIDES="mscoree,mshtml,winemenubuilder.exe,winepulse.drv,winealsa.drv,wineoss.drv=",
+            )
+            for exe in exes:
+                res = subprocess.run([wine, str(exe)], capture_output=True, text=True, env=env, timeout=90)
+                self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+                self.assertRegex(res.stdout, r"WINHTTP_TLS_TESTS checks=[1-9][0-9]* failures=0")
 
 
 if __name__ == "__main__":

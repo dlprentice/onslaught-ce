@@ -19,6 +19,7 @@ const DEFAULT_PER_IP_DAILY_TURN_LIMIT = 40;
 const DEFAULT_HEARTBEAT_TIMEOUT_MS = 30000;
 const DEFAULT_STARTING_TIMEOUT_MS = 5 * 60 * 1000;
 const DEFAULT_MATCH_TIMEOUT_MS = 2 * 60 * 60 * 1000;
+const ROOM_INIT_TIMEOUT_MS = 15000;
 const DEFAULT_MAX_ACTIVE_ROOMS = 128;
 const DEFAULT_AUTH_IP_LIMIT = 20;
 const DEFAULT_AUTH_PUBKEY_LIMIT = 10;
@@ -368,6 +369,24 @@ function envPositiveInt(value, fallback, minVal, maxVal) {
   const n = Number(value);
   if (!Number.isSafeInteger(n) || n < minVal || n > maxVal) return fallback;
   return n;
+}
+
+function roomHeartbeatTimeoutMs(env) {
+  return envPositiveInt(env.CE_HEARTBEAT_TIMEOUT_MS, DEFAULT_HEARTBEAT_TIMEOUT_MS, 500, 300000);
+}
+
+function roomStartingTimeoutMs(env) {
+  return envPositiveInt(env.CE_STARTING_TIMEOUT_MS, DEFAULT_STARTING_TIMEOUT_MS, 1000, 86400000);
+}
+
+function roomMatchTimeoutMs(env) {
+  return envPositiveInt(env.CE_MATCH_TIMEOUT_MS, DEFAULT_MATCH_TIMEOUT_MS, 1000, 86400000);
+}
+
+function roomStateTimeoutMs(env, state) {
+  if (state === "in_match") return roomMatchTimeoutMs(env);
+  if (state === "starting") return roomStartingTimeoutMs(env);
+  return roomHeartbeatTimeoutMs(env);
 }
 
 export function sanitizeCallsign(raw) {
@@ -983,40 +1002,58 @@ export default {
             throw new ApiError(alloc.httpStatus, alloc.errorCode, alloc.message);
           }
 
-          let passwordSalt = "";
-          let passwordHash = "";
-          if (password.length > 0) {
-            passwordSalt = randomHex(16);
-            passwordHash = await hashRoomPassword(passwordSalt, password);
-          }
+          let initResult = null;
+          try {
+            let passwordSalt = "";
+            let passwordHash = "";
+            if (password.length > 0) {
+              passwordSalt = randomHex(16);
+              passwordHash = await hashRoomPassword(passwordSalt, password);
+            }
 
-          const initResult = await roomStub(env, alloc.room_id).createRoom({
-            room_id: alloc.room_id,
-            code: alloc.code,
-            name,
-            mode,
-            map: body.map,
-            max_seats: maxSeats,
-            topology,
-            visibility,
-            has_password: password.length > 0,
-            password_salt: passwordSalt,
-            password_hash: passwordHash,
-            require_relay: requireRelay,
-            ai_fill: aiFill,
-            build_id: buildId,
-            content_id: contentId,
-            host: {
-              player_id: session.player_id,
-              tag: session.tag,
-              callsign: session.callsign,
-              be_cfg: beCfg,
-            },
-          });
+            initResult = await roomStub(env, alloc.room_id).createRoom({
+              room_id: alloc.room_id,
+              code: alloc.code,
+              name,
+              mode,
+              map: body.map,
+              max_seats: maxSeats,
+              topology,
+              visibility,
+              has_password: password.length > 0,
+              password_salt: passwordSalt,
+              password_hash: passwordHash,
+              require_relay: requireRelay,
+              ai_fill: aiFill,
+              build_id: buildId,
+              content_id: contentId,
+              host: {
+                player_id: session.player_id,
+                tag: session.tag,
+                callsign: session.callsign,
+                be_cfg: beCfg,
+              },
+            });
+          } catch (err) {
+            await directoryStub(env).releaseRoomSlot(alloc.room_id, alloc.code);
+            throw err;
+          }
           if (!initResult.ok) {
+            await directoryStub(env).releaseRoomSlot(alloc.room_id, alloc.code);
             throw new ApiError(initResult.httpStatus, initResult.errorCode, initResult.message);
           }
-          await directoryStub(env).upsertRoomSummary(initResult.summary);
+          const dirRes = await directoryStub(env).upsertRoomSummary(
+            initResult.summary,
+            initResult.summary.last_heartbeat_ms
+          );
+          if (!dirRes.ok) {
+            await roomStub(env, alloc.room_id).expireRoomNow();
+            throw new ApiError(
+              dirRes.httpStatus || 503,
+              dirRes.errorCode || "service_unavailable",
+              dirRes.message || "Room registration expired."
+            );
+          }
           return jsonResponse(initResult.state, 200);
         }
 
@@ -1122,8 +1159,14 @@ export default {
         if (action === "finish") {
           requireCond(request.method === "POST", 400, "method_not_allowed", "POST required.");
           const body = await readJsonBody(request, { allowEmpty: true });
-          assertAllowedFields(body, new Set([]));
-          const res = await stub.finishMatch(session);
+          assertAllowedFields(body, new Set(["match_id"]));
+          let matchId = null;
+          if (body.match_id !== undefined) {
+            requireCond(typeof body.match_id === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(body.match_id),
+              400, "invalid_match_id", "Invalid match identifier.");
+            matchId = body.match_id;
+          }
+          const res = await stub.finishMatch(session, matchId);
           if (!res.ok) throw new ApiError(res.httpStatus, res.errorCode, res.message);
           return jsonResponse(res.state, 200);
         }
@@ -1289,27 +1332,37 @@ export class LobbyDirectory extends DurableObject {
   }
 
   heartbeatTimeoutMs() {
-    return envPositiveInt(this.env.CE_HEARTBEAT_TIMEOUT_MS, DEFAULT_HEARTBEAT_TIMEOUT_MS, 500, 300000);
+    return roomHeartbeatTimeoutMs(this.env);
   }
 
   startingTimeoutMs() {
-    return envPositiveInt(this.env.CE_STARTING_TIMEOUT_MS, DEFAULT_STARTING_TIMEOUT_MS, 1000, 86400000);
+    return roomStartingTimeoutMs(this.env);
   }
 
   matchTimeoutMs() {
-    return envPositiveInt(this.env.CE_MATCH_TIMEOUT_MS, DEFAULT_MATCH_TIMEOUT_MS, 1000, 86400000);
+    return roomMatchTimeoutMs(this.env);
+  }
+
+  effectivePruneMs(nowMs, observedAtMs) {
+    if (Number.isSafeInteger(observedAtMs) && observedAtMs > 0 && observedAtMs <= nowMs) {
+      return Math.max(observedAtMs, nowMs - 5000);
+    }
+    return nowMs;
   }
 
   pruneStaleRooms(nowMs) {
+    const initCutoff = nowMs - ROOM_INIT_TIMEOUT_MS;
     const lobbyCutoff = nowMs - this.heartbeatTimeoutMs();
     const startingCutoff = nowMs - this.startingTimeoutMs();
     const matchCutoff = nowMs - this.matchTimeoutMs();
     this.ctx.storage.sql.exec(
       `DELETE FROM rooms
-       WHERE state = 'closed'
-          OR (state NOT IN ('starting', 'in_match') AND last_heartbeat_ms < ?)
+       WHERE state IN ('closed', 'expired')
+          OR (state = 'initializing' AND last_heartbeat_ms < ?)
+          OR (state NOT IN ('initializing', 'starting', 'in_match') AND last_heartbeat_ms < ?)
           OR (state = 'starting' AND last_heartbeat_ms < ?)
           OR (state = 'in_match' AND last_heartbeat_ms < ?)`,
+      initCutoff,
       lobbyCutoff,
       startingCutoff,
       matchCutoff
@@ -1340,7 +1393,9 @@ export class LobbyDirectory extends DurableObject {
     const nowMs = Date.now();
     return this.ctx.storage.transactionSync(() => {
       this.pruneStaleRooms(nowMs);
-      const rows = this.ctx.storage.sql.exec("SELECT COUNT(*) AS cnt FROM rooms WHERE state != 'closed'").toArray();
+      const rows = this.ctx.storage.sql.exec(
+        "SELECT COUNT(*) AS cnt FROM rooms WHERE state NOT IN ('closed', 'initializing', 'expired')"
+      ).toArray();
       return { active_rooms: rows.length ? Number(rows[0].cnt) : 0 };
     });
   }
@@ -1439,7 +1494,9 @@ export class LobbyDirectory extends DurableObject {
       if (ipHash && !this.checkAndBumpRate(`create_ip:${ipHash}`, now, 60, createLimit)) {
         return { ok: false, httpStatus: 429, errorCode: "rate_limited", message: "Room creation rate limit exceeded." };
       }
-      const cntRows = this.ctx.storage.sql.exec("SELECT COUNT(*) AS cnt FROM rooms WHERE state != 'closed'").toArray();
+      const cntRows = this.ctx.storage.sql.exec(
+        "SELECT COUNT(*) AS cnt FROM rooms WHERE state NOT IN ('closed', 'expired')"
+      ).toArray();
       if (cntRows.length && Number(cntRows[0].cnt) >= maxRooms) {
         return { ok: false, httpStatus: 503, errorCode: "directory_full", message: "Active lobby limit reached." };
       }
@@ -1450,6 +1507,16 @@ export class LobbyDirectory extends DurableObject {
           "SELECT 1 FROM rooms WHERE room_id = ? OR code = ?", roomId, code
         ).toArray();
         if (clash.length === 0) {
+          this.ctx.storage.sql.exec(
+            `INSERT INTO rooms(
+              room_id, code, name, host_player_id, host_callsign, host_tag, topology, mode, map,
+              used_seats, human_seats, max_seats, visibility, has_password, require_relay, state,
+              proto, build_id, content_id, created_at, updated_at, last_heartbeat_ms
+            ) VALUES(?, ?, '', ?, '', '', 'star_lockstep', 'coop_skirmish', 850,
+                     1, 1, 2, 'unlisted', 0, 0, 'initializing',
+                     ?, '', '', ?, ?, ?)`,
+            roomId, code, playerId, PROTO_VERSION, now, now, nowMs
+          );
           return { ok: true, room_id: roomId, code };
         }
       }
@@ -1457,58 +1524,107 @@ export class LobbyDirectory extends DurableObject {
     });
   }
 
-  upsertRoomSummary(summary) {
-    const nowMs = Date.now();
+  releaseRoomSlot(roomId, code) {
     this.ctx.storage.transactionSync(() => {
-      this.pruneStaleRooms(nowMs);
-      if (summary.state === "closed") {
-        this.ctx.storage.sql.exec("DELETE FROM rooms WHERE room_id = ?", summary.room_id);
-        return;
-      }
       this.ctx.storage.sql.exec(
-        `INSERT INTO rooms(
-          room_id, code, name, host_player_id, host_callsign, host_tag, topology, mode, map,
-          used_seats, human_seats, max_seats, visibility, has_password, require_relay, state,
-          proto, build_id, content_id, created_at, updated_at, last_heartbeat_ms
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(room_id) DO UPDATE SET
-          name = excluded.name,
-          host_callsign = excluded.host_callsign,
-          host_tag = excluded.host_tag,
-          topology = excluded.topology,
-          mode = excluded.mode,
-          map = excluded.map,
-          used_seats = excluded.used_seats,
-          human_seats = excluded.human_seats,
-          max_seats = excluded.max_seats,
-          visibility = excluded.visibility,
-          has_password = excluded.has_password,
-          require_relay = excluded.require_relay,
-          state = excluded.state,
-          build_id = excluded.build_id,
-          content_id = excluded.content_id,
-          updated_at = excluded.updated_at,
-          last_heartbeat_ms = excluded.last_heartbeat_ms`,
-        summary.room_id, summary.code, summary.name, summary.host_player_id,
-        summary.host_callsign, summary.host_tag, summary.topology, summary.mode, summary.map,
-        summary.used_seats, summary.human_seats, summary.max_seats, summary.visibility,
-        summary.has_password ? 1 : 0, summary.require_relay ? 1 : 0, summary.state,
-        PROTO_VERSION, summary.build_id, summary.content_id,
-        summary.created_at, summary.updated_at, nowMs
+        "DELETE FROM rooms WHERE room_id = ? AND code = ? AND state = 'initializing'",
+        roomId, code
       );
     });
     return { ok: true };
   }
 
-  touchHeartbeat(roomId) {
+  hasRoomOwnership(roomId, code, observedAtMs = null) {
     const nowMs = Date.now();
-    this.ctx.storage.transactionSync(() => {
-      this.ctx.storage.sql.exec(
-        "UPDATE rooms SET last_heartbeat_ms = ? WHERE room_id = ? AND state != 'closed'",
-        nowMs, roomId
-      );
+    return this.ctx.storage.transactionSync(() => {
+      this.pruneStaleRooms(this.effectivePruneMs(nowMs, observedAtMs));
+      const rows = this.ctx.storage.sql.exec(
+        "SELECT code, state FROM rooms WHERE room_id = ?",
+        roomId
+      ).toArray();
+      if (rows.length === 0 || rows[0].code !== code ||
+          rows[0].state === "closed" || rows[0].state === "expired" || rows[0].state === "initializing") {
+        return { ok: false, owned: false };
+      }
+      return { ok: true, owned: true };
     });
-    return { ok: true };
+  }
+
+  upsertRoomSummary(summary, observedAtMs = null) {
+    const nowMs = Date.now();
+    return this.ctx.storage.transactionSync(() => {
+      if (summary.state === "closed" || summary.state === "expired") {
+        this.pruneStaleRooms(nowMs);
+        this.ctx.storage.sql.exec(
+          "DELETE FROM rooms WHERE room_id = ? AND code = ?",
+          summary.room_id, summary.code
+        );
+        return { ok: true, owned: false };
+      }
+      this.pruneStaleRooms(this.effectivePruneMs(nowMs, observedAtMs));
+      const rows = this.ctx.storage.sql.exec(
+        "SELECT code, state, last_heartbeat_ms FROM rooms WHERE room_id = ?",
+        summary.room_id
+      ).toArray();
+      if (rows.length === 0 || rows[0].code !== summary.code ||
+          rows[0].state === "closed" || rows[0].state === "expired") {
+        return { ok: false, owned: false, httpStatus: 404, errorCode: "room_not_found", message: "Room does not exist." };
+      }
+      const nextHb = (Number.isSafeInteger(summary.last_heartbeat_ms) && summary.last_heartbeat_ms > 0)
+        ? Math.min(nowMs, summary.last_heartbeat_ms)
+        : nowMs;
+      this.ctx.storage.sql.exec(
+        `UPDATE rooms SET
+          name = ?,
+          host_player_id = ?,
+          host_callsign = ?,
+          host_tag = ?,
+          topology = ?,
+          mode = ?,
+          map = ?,
+          used_seats = ?,
+          human_seats = ?,
+          max_seats = ?,
+          visibility = ?,
+          has_password = ?,
+          require_relay = ?,
+          state = ?,
+          proto = ?,
+          build_id = ?,
+          content_id = ?,
+          created_at = ?,
+          updated_at = ?,
+          last_heartbeat_ms = ?
+         WHERE room_id = ? AND code = ?`,
+        summary.name, summary.host_player_id, summary.host_callsign, summary.host_tag,
+        summary.topology, summary.mode, summary.map, summary.used_seats, summary.human_seats,
+        summary.max_seats, summary.visibility, summary.has_password ? 1 : 0,
+        summary.require_relay ? 1 : 0, summary.state, PROTO_VERSION,
+        summary.build_id, summary.content_id, summary.created_at, summary.updated_at,
+        nextHb, summary.room_id, summary.code
+      );
+      return { ok: true, owned: true };
+    });
+  }
+
+  touchHeartbeat(roomId, code = "", observedAtMs = null) {
+    const nowMs = Date.now();
+    return this.ctx.storage.transactionSync(() => {
+      this.pruneStaleRooms(this.effectivePruneMs(nowMs, observedAtMs));
+      const rows = this.ctx.storage.sql.exec(
+        "SELECT code, state FROM rooms WHERE room_id = ?",
+        roomId
+      ).toArray();
+      if (rows.length === 0 || (code && rows[0].code !== code) ||
+          rows[0].state === "closed" || rows[0].state === "expired" || rows[0].state === "initializing") {
+        return { ok: false, owned: false, httpStatus: 404, errorCode: "room_not_found", message: "Room does not exist." };
+      }
+      this.ctx.storage.sql.exec(
+        "UPDATE rooms SET last_heartbeat_ms = MAX(last_heartbeat_ms, ?) WHERE room_id = ? AND code = ?",
+        nowMs, roomId, rows[0].code
+      );
+      return { ok: true, owned: true };
+    });
   }
 
   listLobbies(query) {
@@ -1520,7 +1636,7 @@ export class LobbyDirectory extends DurableObject {
                 used_seats, human_seats, max_seats, has_password, require_relay, state,
                 proto, build_id, content_id, updated_at
          FROM rooms
-         WHERE visibility = 'public' AND state != 'closed'
+         WHERE visibility = 'public' AND state NOT IN ('closed', 'initializing', 'expired')
          ORDER BY CASE WHEN state = 'lobby' THEN 0 ELSE 1 END, created_at DESC, room_id ASC`
       ).toArray();
 
@@ -1562,7 +1678,7 @@ export class LobbyDirectory extends DurableObject {
     return this.ctx.storage.transactionSync(() => {
       this.pruneStaleRooms(nowMs);
       const rows = this.ctx.storage.sql.exec(
-        "SELECT room_id, has_password, state FROM rooms WHERE code = ? AND state != 'closed'",
+        "SELECT room_id, has_password, state FROM rooms WHERE code = ? AND state NOT IN ('closed', 'initializing', 'expired')",
         code
       ).toArray();
       if (rows.length === 0) {
@@ -1672,7 +1788,53 @@ export class GameRoom extends DurableObject {
       content_id: room.content_id,
       created_at: room.created_at,
       updated_at: room.updated_at,
+      last_heartbeat_ms: room.last_heartbeat_ms,
     };
+  }
+
+  expireRoomIfStale(room, nowMs) {
+    if (!room) return true;
+    if (room.state === "expired") return true;
+    if (room.state === "closed") return false;
+    const ttlMs = roomStateTimeoutMs(this.env, room.state);
+    if (nowMs - room.last_heartbeat_ms > ttlMs) {
+      room.state = "expired";
+      room.start_ticket = null;
+      room.signals = [];
+      room.permits = {};
+      room.turn_counts = {};
+      room.updated_at = nowSeconds();
+      this.writeRoom(room);
+      return true;
+    }
+    return false;
+  }
+
+  expireRoomNow() {
+    let target = null;
+    this.ctx.storage.transactionSync(() => {
+      const room = this.readRoom();
+      if (room && room.state !== "expired") {
+        room.state = "expired";
+        room.start_ticket = null;
+        room.signals = [];
+        room.permits = {};
+        room.turn_counts = {};
+        room.updated_at = nowSeconds();
+        this.writeRoom(room);
+        target = { room_id: room.room_id, code: room.code };
+      }
+    });
+    return { ok: true, target };
+  }
+
+  async evictDirectoryForExpired(roomId, code) {
+    if (!roomId || !code) return;
+    await directoryStub(this.env).upsertRoomSummary({
+      room_id: roomId,
+      code,
+      state: "expired",
+    });
   }
 
   formatRoomState(room, isMember) {
@@ -1729,8 +1891,8 @@ export class GameRoom extends DurableObject {
     };
   }
 
-  async syncDirectory(room) {
-    await directoryStub(this.env).upsertRoomSummary(this.buildSummary(room));
+  async syncDirectory(room, observedAtMs = null) {
+    return directoryStub(this.env).upsertRoomSummary(this.buildSummary(room), observedAtMs);
   }
 
   resetGuestReady(room) {
@@ -1808,13 +1970,22 @@ export class GameRoom extends DurableObject {
 
   async pollRoom(session, since, rttMs) {
     const nowMs = Date.now();
-    const hbSyncInterval = Math.min(5000, Math.floor(
-      envPositiveInt(this.env.CE_HEARTBEAT_TIMEOUT_MS, DEFAULT_HEARTBEAT_TIMEOUT_MS, 500, 300000) / 4
-    ));
     const outcome = this.ctx.storage.transactionSync(() => {
       const room = this.readRoom();
       if (!room) {
         return { ok: false, httpStatus: 404, errorCode: "room_not_found", message: "Room does not exist." };
+      }
+      const wasExpired = room.state === "expired";
+      if (this.expireRoomIfStale(room, nowMs)) {
+        return {
+          ok: false,
+          justExpired: !wasExpired,
+          roomId: room.room_id,
+          code: room.code,
+          httpStatus: 404,
+          errorCode: "room_not_found",
+          message: "Room has expired.",
+        };
       }
       if (room.kicked_players.includes(session.player_id)) {
         return { ok: false, httpStatus: 403, errorCode: "kicked", message: "You were kicked from this room." };
@@ -1831,11 +2002,9 @@ export class GameRoom extends DurableObject {
         }
         if (member.seat === room.host_seat && room.state !== "closed") {
           room.last_heartbeat_ms = nowMs;
-          if (nowMs - room.last_dir_heartbeat_ms >= hbSyncInterval) {
-            room.last_dir_heartbeat_ms = nowMs;
-            touchDir = true;
-            dirty = true;
-          }
+          room.last_dir_heartbeat_ms = nowMs;
+          touchDir = true;
+          dirty = true;
         }
         if (dirty) this.writeRoom(room);
       }
@@ -1843,27 +2012,60 @@ export class GameRoom extends DurableObject {
         return {
           ok: true,
           touchDir,
+          checkDir: room.state !== "closed",
           roomId: room.room_id,
+          code: room.code,
           payload: { unchanged: true, rev: room.rev, server_time_ms: Date.now() },
         };
       }
       return {
         ok: true,
         touchDir,
+        checkDir: room.state !== "closed",
         roomId: room.room_id,
+        code: room.code,
         payload: this.formatRoomState(room, Boolean(member)),
       };
     });
-    if (outcome.ok && outcome.touchDir) {
-      await directoryStub(this.env).touchHeartbeat(outcome.roomId);
+    if (!outcome.ok) {
+      if (outcome.justExpired) {
+        await this.evictDirectoryForExpired(outcome.roomId, outcome.code);
+      }
+      return outcome;
+    }
+    if (outcome.touchDir) {
+      const hb = await directoryStub(this.env).touchHeartbeat(outcome.roomId, outcome.code, nowMs);
+      if (!hb.ok) {
+        this.expireRoomNow();
+        return { ok: false, httpStatus: 404, errorCode: "room_not_found", message: "Room has expired." };
+      }
+    } else if (outcome.checkDir) {
+      const own = await directoryStub(this.env).hasRoomOwnership(outcome.roomId, outcome.code, nowMs);
+      if (!own.ok) {
+        this.expireRoomNow();
+        return { ok: false, httpStatus: 404, errorCode: "room_not_found", message: "Room has expired." };
+      }
     }
     return outcome;
   }
 
   async joinRoom(session, payload) {
+    const preMs = Date.now();
     const pre = this.ctx.storage.transactionSync(() => {
       const room = this.readRoom();
       if (!room) return { ok: false, httpStatus: 404, errorCode: "room_not_found", message: "Room does not exist." };
+      const wasExpired = room.state === "expired";
+      if (this.expireRoomIfStale(room, preMs)) {
+        return {
+          ok: false,
+          justExpired: !wasExpired,
+          roomId: room.room_id,
+          code: room.code,
+          httpStatus: 404,
+          errorCode: "room_not_found",
+          message: "Room has expired.",
+        };
+      }
       if (room.state === "closed") {
         return { ok: false, httpStatus: 409, errorCode: "room_closed", message: "Room has been closed." };
       }
@@ -1875,7 +2077,13 @@ export class GameRoom extends DurableObject {
       }
       const existing = this.findMemberSeat(room, session.player_id);
       if (existing) {
-        return { ok: true, alreadyMember: true, state: this.formatRoomState(room, true) };
+        return {
+          ok: true,
+          alreadyMember: true,
+          roomId: room.room_id,
+          code: room.code,
+          state: this.formatRoomState(room, true),
+        };
       }
       if (payload.build_id !== room.build_id || payload.content_id !== room.content_id) {
         return {
@@ -1893,7 +2101,18 @@ export class GameRoom extends DurableObject {
         password_hash: room.password_hash,
       };
     });
-    if (!pre.ok || pre.alreadyMember) return pre;
+    if (!pre.ok) {
+      if (pre.justExpired) await this.evictDirectoryForExpired(pre.roomId, pre.code);
+      return pre;
+    }
+    if (pre.alreadyMember) {
+      const own = await directoryStub(this.env).hasRoomOwnership(pre.roomId, pre.code, preMs);
+      if (!own.ok) {
+        this.expireRoomNow();
+        return { ok: false, httpStatus: 404, errorCode: "room_not_found", message: "Room has expired." };
+      }
+      return pre;
+    }
 
     if (pre.has_password) {
       const matched = await verifyRoomPassword(pre.password_salt, pre.password_hash, payload.password);
@@ -1902,16 +2121,32 @@ export class GameRoom extends DurableObject {
       }
     }
 
+    const commitMs = Date.now();
     const joined = this.ctx.storage.transactionSync(() => {
       const room = this.readRoom();
-      if (!room || room.state !== "lobby") {
+      if (!room) {
+        return { ok: false, httpStatus: 404, errorCode: "room_not_found", message: "Room does not exist." };
+      }
+      const wasExpired = room.state === "expired";
+      if (this.expireRoomIfStale(room, commitMs)) {
+        return {
+          ok: false,
+          justExpired: !wasExpired,
+          roomId: room.room_id,
+          code: room.code,
+          httpStatus: 404,
+          errorCode: "room_not_found",
+          message: "Room has expired.",
+        };
+      }
+      if (room.state !== "lobby") {
         return { ok: false, httpStatus: 409, errorCode: "match_in_progress", message: "Room is no longer joinable." };
       }
       if (room.kicked_players.includes(session.player_id)) {
         return { ok: false, httpStatus: 403, errorCode: "kicked", message: "You were kicked from this room." };
       }
       const already = this.findMemberSeat(room, session.player_id);
-      if (already) return { ok: true, state: this.formatRoomState(room, true), syncRoom: null };
+      if (already) return { ok: true, state: this.formatRoomState(room, true), syncRoom: null, roomId: room.room_id, code: room.code };
 
       let target = room.seats.find(s => s.kind === "open");
       if (!target && room.ai_fill) {
@@ -1952,18 +2187,45 @@ export class GameRoom extends DurableObject {
       room.rev++;
       room.updated_at = nowSeconds();
       this.writeRoom(room);
-      return { ok: true, state: this.formatRoomState(room, true), syncRoom: room };
+      return { ok: true, state: this.formatRoomState(room, true), syncRoom: room, roomId: room.room_id, code: room.code };
     });
-    if (joined.ok && joined.syncRoom) {
-      await this.syncDirectory(joined.syncRoom);
+    if (!joined.ok) {
+      if (joined.justExpired) await this.evictDirectoryForExpired(joined.roomId, joined.code);
+      return joined;
+    }
+    if (joined.syncRoom) {
+      const dirRes = await this.syncDirectory(joined.syncRoom, commitMs);
+      if (!dirRes.ok) {
+        this.expireRoomNow();
+        return { ok: false, httpStatus: 404, errorCode: "room_not_found", message: "Room has expired." };
+      }
+    } else {
+      const own = await directoryStub(this.env).hasRoomOwnership(joined.roomId, joined.code, commitMs);
+      if (!own.ok) {
+        this.expireRoomNow();
+        return { ok: false, httpStatus: 404, errorCode: "room_not_found", message: "Room has expired." };
+      }
     }
     return joined;
   }
 
   async leaveRoom(session) {
+    const nowMs = Date.now();
     const res = this.ctx.storage.transactionSync(() => {
       const room = this.readRoom();
       if (!room) return { ok: false, httpStatus: 404, errorCode: "room_not_found", message: "Room does not exist." };
+      const wasExpired = room.state === "expired";
+      if (this.expireRoomIfStale(room, nowMs)) {
+        return {
+          ok: false,
+          justExpired: !wasExpired,
+          roomId: room.room_id,
+          code: room.code,
+          httpStatus: 404,
+          errorCode: "room_not_found",
+          message: "Room has expired.",
+        };
+      }
       const member = this.findMemberSeat(room, session.player_id);
       if (!member) {
         return { ok: false, httpStatus: 403, errorCode: "not_a_member", message: "You are not seated in this room." };
@@ -1986,7 +2248,15 @@ export class GameRoom extends DurableObject {
       this.writeRoom(room);
       return { ok: true, state: this.formatRoomState(room, false), syncRoom: room };
     });
-    if (res.ok) await this.syncDirectory(res.syncRoom);
+    if (!res.ok) {
+      if (res.justExpired) await this.evictDirectoryForExpired(res.roomId, res.code);
+      return res;
+    }
+    const dirRes = await this.syncDirectory(res.syncRoom, nowMs);
+    if (!dirRes.ok && res.syncRoom.state !== "closed") {
+      this.expireRoomNow();
+      return { ok: false, httpStatus: 404, errorCode: "room_not_found", message: "Room has expired." };
+    }
     return res;
   }
 
@@ -1999,6 +2269,18 @@ export class GameRoom extends DurableObject {
     const res = this.ctx.storage.transactionSync(() => {
       const room = this.readRoom();
       if (!room) return { ok: false, httpStatus: 404, errorCode: "room_not_found", message: "Room does not exist." };
+      const wasExpired = room.state === "expired";
+      if (this.expireRoomIfStale(room, nowMs)) {
+        return {
+          ok: false,
+          justExpired: !wasExpired,
+          roomId: room.room_id,
+          code: room.code,
+          httpStatus: 404,
+          errorCode: "room_not_found",
+          message: "Room has expired.",
+        };
+      }
       if (room.state === "closed") {
         return { ok: false, httpStatus: 409, errorCode: "room_closed", message: "Room is closed." };
       }
@@ -2308,26 +2590,43 @@ export class GameRoom extends DurableObject {
       return {
         ok: true,
         roomId: room.room_id,
+        code: room.code,
         state: this.formatRoomState(room, true),
         syncRoom: syncDir ? room : null,
       };
     });
-    if (res.ok) {
-      if (res.syncRoom) {
-        await this.syncDirectory(res.syncRoom);
-      } else {
-        await directoryStub(this.env).touchHeartbeat(res.roomId);
-      }
+    if (!res.ok) {
+      if (res.justExpired) await this.evictDirectoryForExpired(res.roomId, res.code);
+      return res;
+    }
+    const dirRes = res.syncRoom
+      ? await this.syncDirectory(res.syncRoom, nowMs)
+      : await directoryStub(this.env).touchHeartbeat(res.roomId, res.code, nowMs);
+    if (!dirRes.ok) {
+      this.expireRoomNow();
+      return { ok: false, httpStatus: 404, errorCode: "room_not_found", message: "Room has expired." };
     }
     return res;
   }
 
-  postChat(session, cleanText) {
+  async postChat(session, cleanText) {
     const nowMs = Date.now();
     const now = nowSeconds();
-    return this.ctx.storage.transactionSync(() => {
+    const res = this.ctx.storage.transactionSync(() => {
       const room = this.readRoom();
       if (!room) return { ok: false, httpStatus: 404, errorCode: "room_not_found", message: "Room does not exist." };
+      const wasExpired = room.state === "expired";
+      if (this.expireRoomIfStale(room, nowMs)) {
+        return {
+          ok: false,
+          justExpired: !wasExpired,
+          roomId: room.room_id,
+          code: room.code,
+          httpStatus: 404,
+          errorCode: "room_not_found",
+          message: "Room has expired.",
+        };
+      }
       if (room.state === "closed") {
         return { ok: false, httpStatus: 409, errorCode: "room_closed", message: "Room is closed." };
       }
@@ -2355,18 +2654,54 @@ export class GameRoom extends DurableObject {
       if (room.chat.length > CHAT_RING_LIMIT) {
         room.chat.splice(0, room.chat.length - CHAT_RING_LIMIT);
       }
+      const isHost = member.seat === room.host_seat;
+      if (isHost) {
+        room.last_heartbeat_ms = nowMs;
+        room.last_dir_heartbeat_ms = nowMs;
+      }
       room.rev++;
       room.updated_at = now;
       this.writeRoom(room);
-      return { ok: true, state: this.formatRoomState(room, true) };
+      return {
+        ok: true,
+        touchDir: isHost,
+        roomId: room.room_id,
+        code: room.code,
+        state: this.formatRoomState(room, true),
+      };
     });
+    if (!res.ok) {
+      if (res.justExpired) await this.evictDirectoryForExpired(res.roomId, res.code);
+      return res;
+    }
+    const dirRes = res.touchDir
+      ? await directoryStub(this.env).touchHeartbeat(res.roomId, res.code, nowMs)
+      : await directoryStub(this.env).hasRoomOwnership(res.roomId, res.code, nowMs);
+    if (!dirRes.ok) {
+      this.expireRoomNow();
+      return { ok: false, httpStatus: 404, errorCode: "room_not_found", message: "Room has expired." };
+    }
+    return res;
   }
 
   async startMatch(session) {
     const now = nowSeconds();
+    const preMs = Date.now();
     const pre = this.ctx.storage.transactionSync(() => {
       const room = this.readRoom();
       if (!room) return { ok: false, httpStatus: 404, errorCode: "room_not_found", message: "Room does not exist." };
+      const wasExpired = room.state === "expired";
+      if (this.expireRoomIfStale(room, preMs)) {
+        return {
+          ok: false,
+          justExpired: !wasExpired,
+          roomId: room.room_id,
+          code: room.code,
+          httpStatus: 404,
+          errorCode: "room_not_found",
+          message: "Room has expired.",
+        };
+      }
       if (room.state !== "lobby") {
         return { ok: false, httpStatus: 409, errorCode: "match_in_progress", message: "Match has already started or room is closed." };
       }
@@ -2425,7 +2760,10 @@ export class GameRoom extends DurableObject {
         slots,
       };
     });
-    if (!pre.ok) return pre;
+    if (!pre.ok) {
+      if (pre.justExpired) await this.evictDirectoryForExpired(pre.roomId, pre.code);
+      return pre;
+    }
 
     const rosterHash = await sha256Hex(encoder.encode(canonical({
       level: pre.level,
@@ -2453,7 +2791,22 @@ export class GameRoom extends DurableObject {
     const nowMs = Date.now();
     const started = this.ctx.storage.transactionSync(() => {
       const room = this.readRoom();
-      if (!room || room.state !== "lobby" || room.rev !== pre.rev) {
+      if (!room) {
+        return { ok: false, httpStatus: 404, errorCode: "room_not_found", message: "Room does not exist." };
+      }
+      const wasExpired = room.state === "expired";
+      if (this.expireRoomIfStale(room, nowMs)) {
+        return {
+          ok: false,
+          justExpired: !wasExpired,
+          roomId: room.room_id,
+          code: room.code,
+          httpStatus: 404,
+          errorCode: "room_not_found",
+          message: "Room has expired.",
+        };
+      }
+      if (room.state !== "lobby" || room.rev !== pre.rev) {
         return { ok: false, httpStatus: 409, errorCode: "state_changed", message: "Room state changed; retry start." };
       }
       room.seats[room.host_seat].ready = true;
@@ -2470,22 +2823,59 @@ export class GameRoom extends DurableObject {
       this.writeRoom(room);
       return { ok: true, state: this.formatRoomState(room, true), syncRoom: room };
     });
-    if (started.ok) await this.syncDirectory(started.syncRoom);
+    if (!started.ok) {
+      if (started.justExpired) await this.evictDirectoryForExpired(started.roomId, started.code);
+      return started;
+    }
+    const dirRes = await this.syncDirectory(started.syncRoom, nowMs);
+    if (!dirRes.ok) {
+      this.expireRoomNow();
+      return { ok: false, httpStatus: 404, errorCode: "room_not_found", message: "Room has expired." };
+    }
     return started;
   }
 
-  async finishMatch(session) {
+  async finishMatch(session, matchId = null) {
     const now = nowSeconds();
     const nowMs = Date.now();
     const res = this.ctx.storage.transactionSync(() => {
       const room = this.readRoom();
       if (!room) return { ok: false, httpStatus: 404, errorCode: "room_not_found", message: "Room does not exist." };
+      const wasExpired = room.state === "expired";
+      if (this.expireRoomIfStale(room, nowMs)) {
+        return {
+          ok: false,
+          justExpired: !wasExpired,
+          roomId: room.room_id,
+          code: room.code,
+          httpStatus: 404,
+          errorCode: "room_not_found",
+          message: "Room has expired.",
+        };
+      }
       if (room.state === "closed") {
         return { ok: false, httpStatus: 409, errorCode: "room_closed", message: "Room is closed." };
       }
       const member = this.findMemberSeat(room, session.player_id);
       if (!member || member.seat !== room.host_seat) {
         return { ok: false, httpStatus: 403, errorCode: "host_only", message: "Only the host may finish the match." };
+      }
+      if (matchId !== null) {
+        if (room.state === "lobby") {
+          room.last_heartbeat_ms = nowMs;
+          room.last_dir_heartbeat_ms = nowMs;
+          this.writeRoom(room);
+          return {
+            ok: true,
+            touchOnly: true,
+            roomId: room.room_id,
+            code: room.code,
+            state: this.formatRoomState(room, true),
+          };
+        }
+        if (!room.start_ticket || room.start_ticket.match_id !== matchId) {
+          return { ok: false, httpStatus: 409, errorCode: "match_mismatch", message: "Match identifier does not match active match." };
+        }
       }
       room.state = "lobby";
       room.start_ticket = null;
@@ -2499,9 +2889,19 @@ export class GameRoom extends DurableObject {
       room.last_heartbeat_ms = nowMs;
       room.last_dir_heartbeat_ms = nowMs;
       this.writeRoom(room);
-      return { ok: true, state: this.formatRoomState(room, true), syncRoom: room };
+      return { ok: true, touchOnly: false, state: this.formatRoomState(room, true), syncRoom: room };
     });
-    if (res.ok) await this.syncDirectory(res.syncRoom);
+    if (!res.ok) {
+      if (res.justExpired) await this.evictDirectoryForExpired(res.roomId, res.code);
+      return res;
+    }
+    const dirRes = res.touchOnly
+      ? await directoryStub(this.env).touchHeartbeat(res.roomId, res.code, nowMs)
+      : await this.syncDirectory(res.syncRoom, nowMs);
+    if (!dirRes.ok) {
+      this.expireRoomNow();
+      return { ok: false, httpStatus: 404, errorCode: "room_not_found", message: "Room has expired." };
+    }
     return res;
   }
 
@@ -2511,6 +2911,18 @@ export class GameRoom extends DurableObject {
     const res = this.ctx.storage.transactionSync(() => {
       const room = this.readRoom();
       if (!room) return { ok: false, httpStatus: 404, errorCode: "room_not_found", message: "Room does not exist." };
+      const wasExpired = room.state === "expired";
+      if (this.expireRoomIfStale(room, nowMs)) {
+        return {
+          ok: false,
+          justExpired: !wasExpired,
+          roomId: room.room_id,
+          code: room.code,
+          httpStatus: 404,
+          errorCode: "room_not_found",
+          message: "Room has expired.",
+        };
+      }
       if ((room.state !== "starting" && room.state !== "in_match") || !room.start_ticket) {
         return { ok: false, httpStatus: 409, errorCode: "not_starting", message: "Signaling is only available during match setup." };
       }
@@ -2546,9 +2958,17 @@ export class GameRoom extends DurableObject {
       room.last_heartbeat_ms = nowMs;
       room.last_dir_heartbeat_ms = nowMs;
       this.writeRoom(room);
-      return { ok: true, seq: room.signal_seq, roomId: room.room_id };
+      return { ok: true, seq: room.signal_seq, roomId: room.room_id, code: room.code };
     });
-    if (res.ok) await directoryStub(this.env).touchHeartbeat(res.roomId);
+    if (!res.ok) {
+      if (res.justExpired) await this.evictDirectoryForExpired(res.roomId, res.code);
+      return res;
+    }
+    const hb = await directoryStub(this.env).touchHeartbeat(res.roomId, res.code, nowMs);
+    if (!hb.ok) {
+      this.expireRoomNow();
+      return { ok: false, httpStatus: 404, errorCode: "room_not_found", message: "Room has expired." };
+    }
     return res;
   }
 
@@ -2557,6 +2977,18 @@ export class GameRoom extends DurableObject {
     const res = this.ctx.storage.transactionSync(() => {
       const room = this.readRoom();
       if (!room) return { ok: false, httpStatus: 404, errorCode: "room_not_found", message: "Room does not exist." };
+      const wasExpired = room.state === "expired";
+      if (this.expireRoomIfStale(room, nowMs)) {
+        return {
+          ok: false,
+          justExpired: !wasExpired,
+          roomId: room.room_id,
+          code: room.code,
+          httpStatus: 404,
+          errorCode: "room_not_found",
+          message: "Room has expired.",
+        };
+      }
       if ((room.state !== "starting" && room.state !== "in_match") || !room.start_ticket) {
         return { ok: false, httpStatus: 409, errorCode: "not_starting", message: "Signaling is only available during match setup." };
       }
@@ -2580,9 +3012,17 @@ export class GameRoom extends DurableObject {
       room.last_heartbeat_ms = nowMs;
       room.last_dir_heartbeat_ms = nowMs;
       this.writeRoom(room);
-      return { ok: true, seq, messages, roomId: room.room_id };
+      return { ok: true, seq, messages, roomId: room.room_id, code: room.code };
     });
-    if (res.ok) await directoryStub(this.env).touchHeartbeat(res.roomId);
+    if (!res.ok) {
+      if (res.justExpired) await this.evictDirectoryForExpired(res.roomId, res.code);
+      return res;
+    }
+    const hb = await directoryStub(this.env).touchHeartbeat(res.roomId, res.code, nowMs);
+    if (!hb.ok) {
+      this.expireRoomNow();
+      return { ok: false, httpStatus: 404, errorCode: "room_not_found", message: "Room has expired." };
+    }
     return res;
   }
 
@@ -2594,9 +3034,15 @@ export class GameRoom extends DurableObject {
       return { ok: false };
     }
     const now = nowSeconds();
-    return this.ctx.storage.transactionSync(() => {
+    const nowMs = Date.now();
+    const res = this.ctx.storage.transactionSync(() => {
       const room = this.readRoom();
-      if (!room || (room.state !== "starting" && room.state !== "in_match") || !room.start_ticket) {
+      if (!room) return { ok: false };
+      const wasExpired = room.state === "expired";
+      if (this.expireRoomIfStale(room, nowMs)) {
+        return { ok: false, justExpired: !wasExpired, roomId: room.room_id, code: room.code };
+      }
+      if ((room.state !== "starting" && room.state !== "in_match") || !room.start_ticket) {
         return { ok: false };
       }
       if (room.start_ticket.match_id !== permit.match_id) return { ok: false };
@@ -2610,6 +3056,11 @@ export class GameRoom extends DurableObject {
       this.writeRoom(room);
       return { ok: true, ipHash: entry.ip_hash || "" };
     });
+    if (!res.ok) {
+      if (res.justExpired) await this.evictDirectoryForExpired(res.roomId, res.code);
+      return { ok: false };
+    }
+    return res;
   }
 
   async requestTurn(session, matchId, guestSeat, ipHash = "") {
@@ -2623,6 +3074,18 @@ export class GameRoom extends DurableObject {
     const reservation = this.ctx.storage.transactionSync(() => {
       const room = this.readRoom();
       if (!room) return { ok: false, httpStatus: 404, errorCode: "room_not_found", message: "Room does not exist." };
+      const wasExpired = room.state === "expired";
+      if (this.expireRoomIfStale(room, nowMs)) {
+        return {
+          ok: false,
+          justExpired: !wasExpired,
+          roomId: room.room_id,
+          code: room.code,
+          httpStatus: 404,
+          errorCode: "room_not_found",
+          message: "Room has expired.",
+        };
+      }
       if ((room.state !== "starting" && room.state !== "in_match") || !room.start_ticket) {
         return { ok: false, httpStatus: 409, errorCode: "not_starting", message: "TURN credentials require an active match." };
       }
@@ -2667,10 +3130,17 @@ export class GameRoom extends DurableObject {
       room.last_heartbeat_ms = nowMs;
       room.last_dir_heartbeat_ms = nowMs;
       this.writeRoom(room);
-      return { ok: true, permit, roomId: room.room_id };
+      return { ok: true, permit, roomId: room.room_id, code: room.code };
     });
-    if (!reservation.ok) return reservation;
-    await directoryStub(this.env).touchHeartbeat(reservation.roomId);
+    if (!reservation.ok) {
+      if (reservation.justExpired) await this.evictDirectoryForExpired(reservation.roomId, reservation.code);
+      return reservation;
+    }
+    const hb = await directoryStub(this.env).touchHeartbeat(reservation.roomId, reservation.code, nowMs);
+    if (!hb.ok) {
+      this.expireRoomNow();
+      return { ok: false, httpStatus: 404, errorCode: "room_not_found", message: "Room has expired." };
+    }
 
     const { permit } = reservation;
     try {
@@ -2692,6 +3162,7 @@ export class GameRoom extends DurableObject {
 
       const finalized = this.ctx.storage.transactionSync(() => {
         const room = this.readRoom();
+        if (!room || this.expireRoomIfStale(room, Date.now())) return false;
         const entry = room?.permits?.[permit.attempt];
         if (!entry || !entry.spent || entry.state !== "reserved") return false;
         entry.state = "issued";

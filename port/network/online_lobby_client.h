@@ -312,6 +312,8 @@ struct CeOnlineUpdateRoomReq {
     std::string route; // "unknown" | "direct" | "relay"
 
     // Host-only room fields
+    bool has_state = false;
+    std::string state; // "in_match"
     bool has_name = false;
     std::string name;
     bool has_map = false;
@@ -392,7 +394,8 @@ public:
     bool BeginStartMatch(const std::string& room_id, uint64_t now_ms,
                          uint64_t timeout_ms = kDefaultTimeoutMs);
     bool BeginFinishMatch(const std::string& room_id, uint64_t now_ms,
-                          uint64_t timeout_ms = kDefaultTimeoutMs);
+                          uint64_t timeout_ms = kDefaultTimeoutMs,
+                          const std::string& match_id = "");
     bool BeginFetchTurn(const std::string& room_id, const std::string& match_id,
                         uint16_t guest_seat, uint64_t now_ms,
                         uint64_t timeout_ms = kDefaultTimeoutMs);
@@ -427,6 +430,7 @@ public:
     const CeOnlineRoomState& CurrentRoom() const noexcept { return current_room_; }
     const CeOnlineTurnBundle& LastTurnBundle() const noexcept { return last_turn_; }
     const CeOnlineSignalPollResult& LastSignalPoll() const noexcept { return last_signal_poll_; }
+    uint64_t LastSentSignalSeq() const noexcept { return last_sent_signal_seq_; }
 
     static bool IsValidMapId(uint32_t map) noexcept;
     static bool IsValidMode(const std::string& mode) noexcept;
@@ -463,6 +467,7 @@ private:
     CeOnlineRoomState current_room_;
     CeOnlineTurnBundle last_turn_;
     CeOnlineSignalPollResult last_signal_poll_;
+    uint64_t last_sent_signal_seq_ = 0;
 };
 
 #endif // CE_ONLINE_LOBBY_CLIENT_H

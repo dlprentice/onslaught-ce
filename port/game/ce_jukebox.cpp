@@ -29,12 +29,21 @@ extern "C" unsigned	CE_MusicSeed(void);			// ce_music_scan.cpp
 
 namespace
 {
-enum { kName = 80 };
+enum { kName = 80, kMaxCachedRows = 280 };
 const char *const kOrders[CE_ORDER_COUNT] = {"In Order", "Shuffle", "One Track"};
 
 SCeJukebox	sBox;				// which row plays and what follows
 float		sStarted;			// when the piece began, on the front end's clock
 int			sTotal;				// its length in whole seconds, 0 when it could not be read
+int			sRowSeconds[kMaxCachedRows];	// cached track length in seconds per row (-1: unread)
+int			sCachedCount = -1;
+
+void	ResetLengths()
+{
+	for (int i = 0; i < kMaxCachedRows; i++)
+		sRowSeconds[i] = -1;
+	sCachedCount = -1;
+}
 
 int		RetailCount()
 {
@@ -73,10 +82,13 @@ void	CustomName(int custom, WCHAR *out, int n)
 	for (const char *p = path; *p; p++)
 		if ((*p == '/') || (*p == '\\'))
 			name = p + 1;
-	char stem[kName * 2];
+	char stem[256];
 	snprintf(stem, sizeof(stem), "%s", name);
 	const int length = int(strlen(stem));
-	if ((length > 4) && !strcmp(stem + length - 4, ".ogg"))
+	if ((length > 4) && (stem[length - 4] == '.') &&
+		((stem[length - 3] | 0x20) == 'o') &&
+		((stem[length - 2] | 0x20) == 'g') &&
+		((stem[length - 1] | 0x20) == 'g'))
 		stem[length - 4] = 0;
 	// the path is bytes of UTF-8 on Linux and of the ANSI page on Windows
 	PortCeExtrasWidenName(out, n, stem);
@@ -160,6 +172,21 @@ int		LengthOf(int row)
 	return path ? TrackSeconds(path) : 0;
 }
 
+int		CachedLength(int row)
+{
+	const int count = Count();
+	if (count != sCachedCount)
+	{
+		ResetLengths();
+		sCachedCount = count;
+	}
+	if ((row < 1) || (row >= kMaxCachedRows))
+		return 0;
+	if (sRowSeconds[row] < 0)
+		sRowSeconds[row] = LengthOf(row);
+	return sRowSeconds[row];
+}
+
 // The device the state machine plays through (ce_jukebox_state.h): the game's own music calls.
 bool	DevicePlay(int row)
 {
@@ -196,16 +223,18 @@ bool	DevicePlay(int row)
 		const char *name = CeMusic::Track(row - 1 - retail);
 		snprintf(path, sizeof(path), "%s", name);
 		MUSIC.mCurrentSong = NULL;
+		// CMusic::Play clears protected mQueuedSong (patch 0383).
 		MUSIC.Play(path);
 	}
 	sStarted = PLATFORM.GetSysTimeFloat();
-	sTotal = LengthOf(row);
+	sTotal = CachedLength(row);
 	fprintf(stderr, PORT_LOG_PREFIX "music player: playing row %d (%d s)\n", row, sTotal);
 	return true;
 }
 
 void	DeviceStop()
 {
+	// CMusic::Stop clears protected mQueuedSong (patch 0383).
 	MUSIC.Stop();
 	sTotal = 0;
 	fprintf(stderr, PORT_LOG_PREFIX "music player: stopped\n");
@@ -281,6 +310,16 @@ void	PageRow(int index, SCeListRow *out)
 		Widen(out->mRight, int(sizeof(out->mRight) / sizeof(WCHAR)), "Cannot Play");
 		out->mTone = CE_TONE_BAD;
 	}
+	else
+	{
+		const int seconds = CachedLength(index);
+		if (seconds > 0)
+		{
+			char text[16];
+			snprintf(text, sizeof(text), "%d:%02d", seconds / 60, seconds % 60);
+			Widen(out->mRight, int(sizeof(out->mRight) / sizeof(WCHAR)), text);
+		}
+	}
 }
 
 void	PageHint(int index, WCHAR *help, WCHAR *extra, int n)
@@ -297,7 +336,7 @@ void	PageHint(int index, WCHAR *help, WCHAR *extra, int n)
 		Widen(help, n, (index == sBox.mNow) ? "Playing. Select to stop." : "Select to play.");
 	if ((sBox.mNow > 0) && (index != sBox.mNow))
 	{
-		// the playing row is out of sight: say which one it is
+		// the playing row is out of sight: say which one it is, kept to one line so the progress bar stays above the help line
 		static SCeListRow playing;
 		memset(&playing, 0, sizeof(playing));
 		PageRow(sBox.mNow, &playing);
@@ -309,6 +348,23 @@ void	PageHint(int index, WCHAR *help, WCHAR *extra, int n)
 			extra[at++] = playing.mLeft[i];
 		extra[at++] = '.';
 		extra[at] = 0;
+		CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);
+		if (font)
+		{
+			SIZE sz;
+			font->GetTextExtent(extra, &sz);
+			while ((float(sz.cx) > 416.f) && (at > 12))
+			{
+				at--;
+				while ((at > 12) && ((extra[at - 1] == WCHAR(' ')) || (extra[at - 1] == WCHAR('.'))))
+					at--;
+				extra[at - 3] = WCHAR('.');
+				extra[at - 2] = WCHAR('.');
+				extra[at - 1] = WCHAR('.');
+				extra[at] = 0;
+				font->GetTextExtent(extra, &sz);
+			}
+		}
 	}
 	else
 		Widen(extra, n, "Music volume is in Sound Options.");
@@ -329,12 +385,14 @@ void	PageOpen()
 {
 	CeJukeboxOpen(&sBox);
 	sTotal = 0;
+	ResetLengths();
 	CeMusic::Prepare();
 }
 
 void	PageClose()
 {
 	CeJukeboxClose(&sBox, &kDevice);
+	ResetLengths();
 }
 
 void	PageProcess()
@@ -351,6 +409,9 @@ void	PageDraw(float y)
 	const int elapsed = int(PLATFORM.GetSysTimeFloat() - sStarted);
 	char text[48];
 	CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);
+	const float barH = float(font->GetHeight()) > 14.f ? float(font->GetHeight()) : 14.f;
+	if (y + barH > 452.f)
+		y = 452.f - barH;
 	SIZE size;
 	WCHAR line[48];
 	if (sTotal <= 0)
@@ -382,7 +443,7 @@ void	PageDraw(float y)
 const SCeListPage	*PortCeJukeboxPage()
 {
 	static const SCeListPage page = {L"Music Player", PageCount, PageRow, PageHint, PageSelect, PageEmpty, PageOpen, PageClose,
-									 PageProcess, PageDraw, 0.f, 1};
+									 PageProcess, PageDraw, 1.f, 1, true};
 	return &page;
 }
 

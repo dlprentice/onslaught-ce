@@ -37,6 +37,7 @@ float	PortCeCatalogueNow();
 bool	PortCeCatalogueModelLoad(int goodie);			// ce_catalogue_preview.cpp: patch 0251's model pane
 void	PortCeCatalogueModelFree();
 bool	PortCeCatalogueModelDraw(float left, float top, float right, float bottom, float yaw);
+int		PortCeCatalogueSmallWidth(const char *text);
 
 namespace
 {
@@ -44,7 +45,8 @@ WCHAR	sTitle[48];
 
 const unsigned	kRowChars = 42;		// letters of the smaller face that fit a widened row (the list box still cuts anything wider)
 const unsigned	kPaneRowChars = 21;	// the same beside the picture pane (measured: 22 with the dots is the most the box keeps)
-const unsigned	kModelRowChars = 21;	// fits the ~212px text width beside the model pane cleanly with no double ellipsis
+const unsigned	kModelRowChars = 26;	// fallback character budget beside the model pane when font metrics are absent (host tests)
+const int		kModelRowMaxPx = 212;	// exact text width (372 - 20 - 8 - 132) beside the model pane in virtual 640x480 units
 const int		kNear = 10;			// rows either side that are compared: a view's worth
 const float		kSettle = 0.25f;	// seconds the cursor rests on a row before its preview is read
 
@@ -279,6 +281,98 @@ void	EndCut(const char *text, char *out, unsigned size, unsigned chars)
 	snprintf(out, size, "%.*s...", int(cut), text);
 }
 
+void	EndCutPx(const char *text, char *out, unsigned size, int maxPx)
+{
+	if (PortCeCatalogueSmallWidth(text) <= maxPx)
+	{
+		snprintf(out, size, "%s", text);
+		return;
+	}
+	const size_t length = strlen(text);
+	char trial[160];
+	for (size_t c = length; c > 1; c--)
+	{
+		if (text[c - 1] != ' ')
+			continue;
+		size_t cut = c - 1;
+		while (cut > 1 && strchr(" .,;:", text[cut - 1]))
+			cut--;
+		snprintf(trial, sizeof trial, "%.*s...", int(cut), text);
+		if (PortCeCatalogueSmallWidth(trial) <= maxPx)
+		{
+			snprintf(out, size, "%s", trial);
+			return;
+		}
+	}
+	for (size_t cut = length; cut > 1; cut--)
+	{
+		snprintf(trial, sizeof trial, "%.*s...", int(cut - 1), text);
+		if (PortCeCatalogueSmallWidth(trial) <= maxPx)
+		{
+			snprintf(out, size, "%s", trial);
+			return;
+		}
+	}
+	snprintf(out, size, "%s", "...");
+}
+
+void	MiddleCutPx(const char *text, char *out, unsigned size, int maxPx)
+{
+	if (PortCeCatalogueSmallWidth(text) <= maxPx)
+	{
+		snprintf(out, size, "%s", text);
+		return;
+	}
+	const size_t length = strlen(text);
+	char trial[160], best[160] = "";
+	size_t bestKept = 0;
+	for (size_t h = 3; h < length; h++)
+	{
+		if (text[h] != ' ')
+			continue;
+		size_t head = h;
+		while (head > 1 && strchr(" .,;:", text[head - 1]))
+			head--;
+		for (size_t from = head + 1; from < length; from++)
+		{
+			if (text[from - 1] != ' ' || length - from < 3)
+				continue;
+			snprintf(trial, sizeof trial, "%.*s...%s", int(head), text, text + from);
+			if (PortCeCatalogueSmallWidth(trial) <= maxPx)
+			{
+				const size_t kept = head + (length - from);
+				if (kept > bestKept)
+				{
+					bestKept = kept;
+					snprintf(best, sizeof best, "%s", trial);
+				}
+				break;
+			}
+		}
+	}
+	if (best[0])
+	{
+		snprintf(out, size, "%s", best);
+		return;
+	}
+	for (size_t room = length; room >= 6; room--)
+	{
+		size_t head = room * 2 / 5;
+		if (head < 2)
+			head = 2;
+		const size_t tail = room - head;
+		if (head + tail >= length)
+			continue;
+		snprintf(trial, sizeof trial, "%.*s...%s", int(head), text, text + (length - tail));
+		if (PortCeCatalogueSmallWidth(trial) <= maxPx)
+		{
+			snprintf(out, size, "%s", trial);
+			return;
+		}
+	}
+	EndCutPx(text, out, size, maxPx);
+}
+
 unsigned	RowChars();
 extern void	(*sPane)(int, float, float, float, float);	// the page's pane, if any (set with the page's title)
 
@@ -314,7 +408,8 @@ void	Row(int index, SCeListRow *row)
 	}
 	if (at < 0)
 	{
-		PortCeExtrasWiden(row->mLeft, left, sGroups[-1 - at]);
+		const char *heading = sGroups[-1 - at];
+		PortCeExtrasWiden(row->mLeft, left, heading[0] ? heading : "General");
 		return;
 	}
 	const unsigned chars = RowChars();
@@ -322,21 +417,32 @@ void	Row(int index, SCeListRow *row)
 	ItemName(index, text, sizeof text);
 	if (PortCeCatalogueCategory() == 0)
 	{
-		// Models: clean word-boundary EndCut by default; fall back to a compact MiddleCut only when a nearby row collides after cutting.
+		// Models: clean word-boundary EndCut within the exact 212px row budget (preventing a second mid-word cut in DrawListBox);
+		// fall back to a word-preferring MiddleCut only when a nearby row collides after cutting.
+		const bool measured = PortCeCatalogueSmallWidth("M") > 0;
 		char cut[160], other[160], otherCut[160];
-		EndCut(text, cut, sizeof cut, chars);
+		if (measured)
+			EndCutPx(text, cut, sizeof cut, kModelRowMaxPx);
+		else
+			EndCut(text, cut, sizeof cut, chars);
 		bool alike = false;
 		for (int d = -kNear; d <= kNear && !alike; d++)
 			if (d && IsItem(index + d))
 			{
 				ItemName(index + d, other, sizeof other);
-				EndCut(other, otherCut, sizeof otherCut, chars);
+				if (measured)
+					EndCutPx(other, otherCut, sizeof otherCut, kModelRowMaxPx);
+				else
+					EndCut(other, otherCut, sizeof otherCut, chars);
 				alike = strcmp(text, other) != 0 && !strcmp(cut, otherCut);
 			}
 		if (alike)
 		{
 			char shown[160];
-			MiddleCut(text, shown, sizeof shown, chars > 2 ? chars - 2 : chars);
+			if (measured)
+				MiddleCutPx(text, shown, sizeof shown, kModelRowMaxPx);
+			else
+				MiddleCut(text, shown, sizeof shown, chars > 2 ? chars - 2 : chars);
 			PortCeExtrasWiden(row->mLeft, left, shown);
 		}
 		else
@@ -432,7 +538,7 @@ void	Hint(int index, WCHAR *help, WCHAR *extra, int n)
 	const unsigned slot = Slot(unsigned(at));
 	snprintf(where, sizeof where, Searching() ? "Item %d of %u found. %s" : "Item %d of %u. %s", Place(index), Matches(),
 			 Playing(index) ? "Playing: choose another, or go back to stop it." : PortCeCatalogueIsSound(slot) ? "Select to hear it." :
-			 "Up and Down to look through them.");
+			 "Up and Down to browse.");
 	PortCeExtrasWiden(extra, n, where);
 }
 
@@ -520,6 +626,7 @@ void	ModelFree()
 	if (sModelGoodie >= 0)
 		PortCeCatalogueModelFree();
 	sModelRow = sModelGoodie = -1;
+	sWaitRow = -1;
 }
 
 void	ModelPane(int row, float left, float top, float right, float bottom)
@@ -560,7 +667,7 @@ void	ModelPane(int row, float left, float top, float right, float bottom)
 		return;
 	}
 	if (row == sModelRow && sModelGoodie >= 0)
-		PortCeCatalogueModelDraw(left, top, right, text - 4.f, PortCeCatalogueNow() * 0.5f);	// one turn in about 12 seconds
+		PortCeCatalogueModelDraw(left, top, right, text - 4.f, PortCeCatalogueNow() * 0.22f);	// one turn in about 28 seconds
 	else
 		PortCeCataloguePreviewDrawIn(left, top, right, text - 4.f, false, false);
 	PortCeCataloguePaneText(cut, group, left, right, text);
