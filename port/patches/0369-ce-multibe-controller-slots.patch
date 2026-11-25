@@ -1,19 +1,18 @@
 --- a/Controller.h
 +++ b/Controller.h
-@@ -157,7 +157,12 @@
- 
+@@ -158,6 +158,11 @@
  	bool			mConfigurable;		// +0x00: offered for remapping
  	int				mId;				// +0x04: the button id, -1 ends the table
-+#ifdef CE_VERSION
-+	SControlInput	mInput[4];			// +0x08: CE Phase 1 4-slot safety (MAX_PLAYERS); Career.cpp still serialises the retail 2-slot prefix
-+#define CE_CONTROL_BINDING_SAVE_SIZE (sizeof(SControlBinding) - 2 * sizeof(SControlInput))
-+#else
  	SControlInput	mInput[2];			// +0x08
-+#endif
++	// CE (declared in every build: the network's walker code reads it): the input a player reads, by player number.
++	// Players 3 and 4 have none here (the controls page, the presets and the career keep two), so theirs reads unset.
++	// The struct keeps retail's 32 bytes: retail's FindNearestVisited (004bec65) reads past its cost grid as far as
++	// CONTROL_BINDINGS, so the table's bytes steer the AI's paths.
++	const SControlInput	*PlayerInput(int player) const;
  };
  
  extern SControlBinding CONTROL_BINDINGS[];				// 008892d8
-@@ -289,7 +294,11 @@
+@@ -292,7 +297,11 @@
  HRESULT	ShutdownMouse();							// 0042d3b0
  HRESULT	PollMouseMotion();							// 0042d420
  HRESULT	PollMouseState();							// 0042d4d0
@@ -27,7 +26,7 @@
  
 --- a/Controller.cpp
 +++ b/Controller.cpp
-@@ -30,7 +30,11 @@
+@@ -46,7 +46,11 @@
  float			gMouseSensitivity = 7.0f;		// 006254f4: the options' mouse sensitivity
  int CController::mNumMappings= -1;			// 006254f8: retail defines it after the two options (the zero dword after it pads the next 8-aligned type descriptor)
  static DIMOUSESTATE2	sMouseState;			// 0066e8f0
@@ -39,54 +38,33 @@
  static bool		sSendingMouseRest;				// 0066e8c8: a centred mouse axis is being sent (not activity)
  static bool		sMouseAxisRead = false;			// 0066e94d: an axis was read since the cursor was last drawn back
  bool			E3_BUILD = false;				// 0066e94e: set by -e3; quits on inactivity outside the playable demo too
-@@ -49,6 +53,15 @@
- 	mInput[1].mType = 0;
- 	mInput[1].mKey = 0;
- 	mInput[1].mVKey = 0;
-+#ifdef CE_VERSION
-+	for (int ceSlot = 2; ceSlot < MAX_PLAYERS; ceSlot++)
-+	{
-+		mInput[ceSlot].mPad = -1;
-+		mInput[ceSlot].mType = 0;
-+		mInput[ceSlot].mKey = 0;
-+		mInput[ceSlot].mVKey = 0;
-+	}
-+#endif
- }
- 
- SControlBinding::SControlBinding(bool configurable, int button, int type, short key, int type2, short key2,	// FUNCTION: 0x0042d2b0
-@@ -64,12 +77,30 @@
- 	mInput[1].mType = type2;
- 	mInput[1].mKey = key2;
- 	mInput[1].mVKey = vkey2;
-+#ifdef CE_VERSION
-+	for (int ceSlot = 2; ceSlot < MAX_PLAYERS; ceSlot++)
-+	{
-+		mInput[ceSlot].mPad = -1;
-+		mInput[ceSlot].mType = 0;
-+		mInput[ceSlot].mKey = 0;
-+		mInput[ceSlot].mVKey = 0;
-+	}
-+#endif
- }
- 
- SControlBinding::SControlBinding()	// FUNCTION: 0x0042d300 ??0SControlBinding@@QAE@XZ
+@@ -86,6 +90,13 @@
  {
  	mConfigurable = false;
  	mId = -1;
-+#ifdef CE_VERSION
-+	for (int ceSlot = 0; ceSlot < MAX_PLAYERS; ceSlot++)
-+	{
-+		mInput[ceSlot].mPad = -1;
-+		mInput[ceSlot].mType = 0;
-+		mInput[ceSlot].mKey = 0;
-+		mInput[ceSlot].mVKey = 0;
-+	}
-+#endif
++}
++
++// CE: see Controller.h. Players 3 and 4 read an unset input.
++const SControlInput *SControlBinding::PlayerInput(int player) const
++{
++	static const SControlInput sUnset = {-1, 0, 0, 0};
++	return ((player >= 0) && (player < 2)) ? &mInput[player] : &sUnset;
  }
  
  //******************************************************************************************
-@@ -614,7 +645,11 @@
+@@ -510,7 +521,11 @@
+ 		int input_num = pad;
+ 		while (TRUE)
+ 		{
++#ifdef CE_VERSION
++			const SControlInput* input = mapping->PlayerInput(input_num);
++#else
+ 			SControlInput* input = &mapping->mInput[input_num];
++#endif
+ 			int input_pad = input->mPad;
+ 
+ 			if ((input_pad != -1) && (!CLIPARAMS.mAutoConfigTest) && (!mPlaying) && (IsButtonSet(mapping->mId) == FALSE))
+@@ -638,7 +653,11 @@
  
  					case MOUSE_AXIS_PLUS:
  					case MOUSE_AXIS_MINUS:
@@ -98,7 +76,8 @@
  							break;
  					case MOUSE_AXIS_PLUS_ANY:
  					case MOUSE_AXIS_MINUS_ANY:
-@@ -731,6 +766,9 @@
+@@ -839,6 +858,9 @@
+ 
  //******************************************************************************************
  
 +#ifdef CE_VERSION
@@ -107,8 +86,7 @@
  IController *CController::GetToControl()	// FUNCTION: 0x0042e4b0
  {
  	return  mToControlStack.First()->ToRead();
- }
-@@ -767,6 +805,27 @@
+@@ -883,6 +905,27 @@
  	}
  	else
  	{
@@ -136,7 +114,7 @@
  		if ((RECONNECT_INTERFACE[0].GetState() != CReconnectInterface::OK) ||
  			(RECONNECT_INTERFACE[1].GetState() != CReconnectInterface::OK))
  		{
-@@ -774,6 +833,7 @@
+@@ -890,6 +933,7 @@
  				(to_send != &RECONNECT_INTERFACE[1]))
  				return;
  		}
@@ -144,48 +122,6 @@
  
  		if ((mPausedBeforeMap == FALSE) || (to_send->CanBeControlledWhenInPause() == TRUE ))
  		{
---- a/Career.cpp
-+++ b/Career.cpp
-@@ -1408,8 +1408,13 @@
- 		{
- 			if (binding->mConfigurable)
- 			{
-+#ifdef CE_CONTROL_BINDING_SAVE_SIZE
-+				memcpy(binding, source, CE_CONTROL_BINDING_SAVE_SIZE);
-+				source += CE_CONTROL_BINDING_SAVE_SIZE;
-+#else
- 				memcpy(binding, source, sizeof(SControlBinding));
- 				source += sizeof(SControlBinding);
-+#endif
- 			}
- 		}
- 		ReadOptions(source);
-@@ -1443,8 +1448,13 @@
- 	{
- 		if (binding->mConfigurable)
- 		{
-+#ifdef CE_CONTROL_BINDING_SAVE_SIZE
-+			memcpy(dest, binding, CE_CONTROL_BINDING_SAVE_SIZE);
-+			dest += CE_CONTROL_BINDING_SAVE_SIZE;
-+#else
- 			memcpy(dest, binding, sizeof(SControlBinding));
- 			dest += sizeof(SControlBinding);
-+#endif
- 		}
- 	}
- 	WriteOptions(dest);
-@@ -1471,7 +1481,11 @@
- 	for (SControlBinding *binding = CONTROL_BINDINGS; binding->mId != -1; binding++)
- 	{
- 		if (binding->mConfigurable)
-+#ifdef CE_CONTROL_BINDING_SAVE_SIZE
-+			retval += CE_CONTROL_BINDING_SAVE_SIZE;
-+#else
- 			retval += sizeof(SControlBinding);
-+#endif
- 	}
- 
- 	return retval + OPTIONS_SIZE;
 --- a/reconnectinterface.h
 +++ b/reconnectinterface.h
 @@ -29,6 +29,10 @@
@@ -213,3 +149,49 @@
  
  //******************************************************************************************
  void	CReconnectInterface::Reset(int state)	// FUNCTION: 0x00527960
+--- a/BattleEngine.cpp
++++ b/BattleEngine.cpp
+@@ -1102,7 +1102,11 @@
+ 		(be->GetState() != BATTLE_ENGINE_STATE_WALKER))
+ 		return FALSE;
+ 
++#ifdef CE_VERSION
++	SINT	type = CONTROL_BINDINGS[1].PlayerInput(player)->mType;
++#else
+ 	SINT	type = CONTROL_BINDINGS[1].mInput[player].mType;
++#endif
+ 	if ((type != MOUSE_AXIS_MINUS) && (type != MOUSE_AXIS_PLUS))
+ 		return FALSE;
+ 
+--- a/BattleEngineWalkerPart.cpp
++++ b/BattleEngineWalkerPart.cpp
+@@ -365,9 +365,13 @@
+ 	float	mult;
+ 	const SINT &playerIndex = mMainPart->mPlayer->GetNumber() - 1;	// STAND-IN (ids), see above
+ #ifdef CE_NETWORK_OFF
++#ifdef CE_VERSION
++	SINT	type = CONTROL_BINDINGS[1].PlayerInput(playerIndex)->mType;
++#else
+ 	SINT	type = CONTROL_BINDINGS[1].mInput[playerIndex].mType;
++#endif
+ #else
+-	SINT	type = CE_WorldWalkerBindingType(playerIndex,CONTROL_BINDINGS[1].mInput[playerIndex].mType);
++	SINT	type = CE_WorldWalkerBindingType(playerIndex,CONTROL_BINDINGS[1].PlayerInput(playerIndex)->mType);
+ #endif
+ 	if ((type == MOUSE_AXIS_MINUS_ANY) || (type == MOUSE_AXIS_PLUS_ANY))
+ 		mult = 1.7f;
+@@ -386,9 +390,13 @@
+ 	float	mult;
+ 	const SINT &playerIndex = mMainPart->mPlayer->GetNumber() - 1;	// STAND-IN (ids), see Rotate
+ #ifdef CE_NETWORK_OFF
++#ifdef CE_VERSION
++	SINT	type = CONTROL_BINDINGS[1].PlayerInput(playerIndex)->mType;
++#else
+ 	SINT	type = CONTROL_BINDINGS[1].mInput[playerIndex].mType;
++#endif
+ #else
+-	SINT	type = CE_WorldWalkerBindingType(playerIndex,CONTROL_BINDINGS[1].mInput[playerIndex].mType);
++	SINT	type = CE_WorldWalkerBindingType(playerIndex,CONTROL_BINDINGS[1].PlayerInput(playerIndex)->mType);
+ #endif
+ 	if ((type == MOUSE_AXIS_MINUS_ANY) || (type == MOUSE_AXIS_PLUS_ANY))
+ 		mult = 1.7f;
