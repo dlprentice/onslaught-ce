@@ -180,22 +180,46 @@ void CanonicalizePath(const char *src, char *dst, size_t dstSize) {
 	dst[i] = '\0';
 }
 
+void InferMeshTextureFormat(const char *texName, ETextureFormat *outFmt, const char **outSuffix) {
+	ETextureFormat fmt = TEXFMT_A1R5G5B5;
+	const char *suffix = "A1R5G5B5";
+	if (texName) {
+		const char *base = texName;
+		for (const char *p = texName; *p; ++p) {
+			if (*p == '\\' || *p == '/') base = p + 1;
+		}
+		if (strnicmp(base, "A8", 2) == 0) {
+			fmt = TEXFMT_A8R8G8B8;
+			suffix = "A8R8G8B8";
+		} else if (strnicmp(base, "A4", 2) == 0) {
+			fmt = TEXFMT_A4R4G4B4;
+			suffix = "A4R4G4B4";
+		}
+	}
+	if (outFmt) *outFmt = fmt;
+	if (outSuffix) *outSuffix = suffix;
+}
+
 bool BuildTextureDiskPath(const char *texName, char *outPath, size_t outSize) {
 	if (!texName || !texName[0] || !outPath || outSize < 64u) return false;
+	const char *suffix = "A1R5G5B5";
+	InferMeshTextureFormat(texName, NULL, &suffix);
 	char mangled[160] = {};
 	size_t i = 0u;
 	for (; texName[i] && i + 1u < sizeof(mangled); ++i) {
 		mangled[i] = (texName[i] == '\\') ? '%' : texName[i];
 	}
 	mangled[i] = '\0';
-	std::snprintf(outPath, outSize, "data\\resources\\dxtntextures\\%s(0)A1R5G5B5.aya", mangled);
+	std::snprintf(outPath, outSize, "data\\resources\\dxtntextures\\%s(0)%s.aya", mangled, suffix);
 	return true;
 }
 
 bool PreloadRetailMeshTexture(const char *texName) {
 	if (!texName || !texName[0] || !LT.GetDevice()) return false;
+	ETextureFormat fmt = TEXFMT_A1R5G5B5;
+	InferMeshTextureFormat(texName, &fmt, NULL);
 	for (CDXTexture *o = CDXTexture::mFirst; o; o = o->CTexture::mNext) {
-		if (stricmp(o->GetName(), texName) == 0 && o->mFormat == TEXFMT_A1R5G5B5 &&
+		if (stricmp(o->GetName(), texName) == 0 && o->mFormat == fmt &&
 		    o->mLevels == -1 && o->mTextures[0] != NULL) {
 			return true;
 		}
@@ -210,8 +234,8 @@ bool PreloadRetailMeshTexture(const char *texName) {
 	t->mScaleV = 1.0f;
 	t->mUnknown94 = -1;
 	t->mRefCount = 0;
-	t->mFormat = TEXFMT_A1R5G5B5;
-	t->mTexFormat = TEXFMT_A1R5G5B5;
+	t->mFormat = fmt;
+	t->mTexFormat = fmt;
 	t->mWidth = 0;
 	t->mHeight = 0;
 	t->mLossShift = 0;
@@ -242,6 +266,12 @@ bool PreloadRetailMeshTexture(const char *texName) {
 bool LoadRetailMeshFromStandaloneAya(const char *meshName, int32_t runtimeId) {
 	if (!meshName || !meshName[0]) return false;
 	if (CMesh::FindLoadedUnique(meshName) != NULL) return true;
+
+	char meshPath[160] = {};
+	bool exists = false;
+	std::snprintf(meshPath, sizeof(meshPath), "data\\resources\\meshes\\m_%s.aya", meshName);
+	if (!VerifyPackedAyaFile(meshPath, &exists) || !exists)
+		return false;
 
 	int32_t safeId = runtimeId;
 	while (CMesh::GetMeshByResourceID(safeId) != NULL && safeId < runtimeId + 4096) {

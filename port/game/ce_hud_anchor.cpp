@@ -8,22 +8,45 @@
 #include "game.h"
 #include "DXEngine.h"
 #include "hud_scale.h"
+extern bool PortCeLayer();
 #ifndef CE_NETWORK_OFF
 extern "C" int CE_LockstepRequested(void);
 #endif
 
+// Whether this multiplayer session is actually rendering a split-screen layout (more than one viewpoint).
+// Single-viewport multiplayer modes (Solo vs AI Skirmish, Commander Match, Online MP, cg_fullscreenmultiplayer)
+// render one full-screen viewport, so HUD layout, HUD anchoring and target indicators follow the 1P layout.
+// When the CE layer is off (replays, recordings, faithful mode), this returns GAME.IsMultiplayer() unchanged.
+int PortCeIsSplitScreen()
+{
+	if (!PortCeLayer())
+		return GAME.IsMultiplayer() ? 1 : 0;
+	return (GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() != 1) ? 1 : 0;
+}
+
+// Whether the camera should use retail's half-height 2P horizontal-split aspect (0.5f instead of 0.75f).
+// Single-viewport multiplayer (vp == 1) and 3P/4P quad-split (vp == 3 or 4, quarter-screen with full aspect)
+// keep the normal 0.75f aspect ratio. Faithful/replay runs keep GAME.IsMultiplayer() unchanged.
+int PortCeCameraSplitAspect()
+{
+	if (!PortCeLayer())
+		return GAME.IsMultiplayer() ? 1 : 0;
+	const int vp = ENGINE.GetNumViewpoints();
+	return (GAME.IsMultiplayer() && vp != 1 && vp != 3 && vp != 4) ? 1 : 0;
+}
+
 // Whether the HUD about to be drawn is pinned to the corners: the HUD scale's gate with ce.ini's hud_anchor, for a single
 #ifdef CE_NETWORK_OFF
-// viewpoint and not in multiplayer, the same test as the HUD scale's scopes (patch 0089) apply to each group.
+// viewpoint and not split-screen multiplayer, matching the HUD scale's scopes (patches 0089, 0235, 0387).
 #else
-// viewpoint and not in multiplayer (a network co-op game draws one player's view whatever the engine's count of viewpoints), the
-// same test as the HUD scale's scopes (patches 0089 and 0157) apply to each group.
+// viewpoint and not split-screen multiplayer (a network co-op game draws one player's view whatever the engine's count of viewpoints),
+// matching the HUD scale's scopes (patches 0089, 0157, 0235, 0387).
 #endif
 int PortHudAnchored()
 {
 #ifdef CE_NETWORK_OFF
-	return CeHudAnchorEnabled() && !GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1;
+	return CeHudAnchorEnabled() && !PortCeIsSplitScreen() && ENGINE.GetNumViewpoints() == 1;
 #else
-	return CeHudAnchorEnabled() && (CE_LockstepRequested() || (!GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1));
+	return CeHudAnchorEnabled() && (CE_LockstepRequested() || (!PortCeIsSplitScreen() && ENGINE.GetNumViewpoints() == 1));
 #endif
 }

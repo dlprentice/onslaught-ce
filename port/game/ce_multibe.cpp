@@ -428,6 +428,8 @@ int						gAiWeaponPicks = 0;
 int						gAiEvades = 0;
 int						gAiRetreats = 0;
 int						gAiDashes = 0;
+int						gAiLandings = 0;
+float					gMaxAiLandAlt = 0.0f;
 
 struct CeMultiBeSlotBrain
 {
@@ -446,6 +448,8 @@ struct CeMultiBeSlotBrain
 	bool						storeOverheat[kBattleEngineStores];
 	bool						storeTrackerInit;
 	int							chargeTicks;
+	EBattleEngineState			prevState;
+	int							ticksSinceJetEnter;
 
 	void Reset(int slotIdx = 0)
 	{
@@ -467,6 +471,8 @@ struct CeMultiBeSlotBrain
 		}
 		storeTrackerInit = false;
 		chargeTicks = 0;
+		prevState = BATTLE_ENGINE_STATE_WALKER;
+		ticksSinceJetEnter = 0;
 	}
 };
 
@@ -569,8 +575,12 @@ void RefreshMatchStateCounts()
 void EmitTelemetry(const char *phase)
 {
 	RefreshMatchStateCounts();
+	CCamera *cam0 = GAME.GetCamera(0);
+	const float camAspect = cam0 ? cam0->GetAspectRatio() : 0.0f;
+	const int hudAnchored = PortHudAnchored();
+	const float hudInset = PortHudInset(float(PLATFORM.GetWindowWidth()));
 	fprintf(stderr,
-	        "ce-multibe: phase=%s level=%d target=%d active=%d spawned=%d ticks=%d nan=%d shots=%d aux_shots=%d ai_targeted=%d hud_focus=%d moved=%d morphs=%d respawns=%d forseti_kills=%d muspell_kills=%d side=%s solo=%d onescreen=%d viewpoints=%d p2_shots=%d p2_moved=%d spawns=%d destroyed=%d weapon_picks=%d evades=%d retreats=%d dashes=%d\n",
+	        "ce-multibe: phase=%s level=%d target=%d active=%d spawned=%d ticks=%d nan=%d shots=%d aux_shots=%d ai_targeted=%d hud_focus=%d moved=%d morphs=%d respawns=%d forseti_kills=%d muspell_kills=%d side=%s solo=%d onescreen=%d viewpoints=%d p2_shots=%d p2_moved=%d spawns=%d destroyed=%d weapon_picks=%d evades=%d retreats=%d dashes=%d cam_aspect=%.2f hud_anchored=%d hud_inset=%.1f max_ai_land_alt=%.1f ai_landings=%d\n",
 	        phase, gLevel, gConfig.target_count, CountLiveEngines(), gAuxSpawned,
 	        gSimTicks, gNanCount, gTotalShots, gAuxShots, gAiTargetedCount,
 	        gHudFocusCalls, CountMovedEngines(), gMatchState.totalMorphs, gMatchState.totalRespawns,
@@ -578,7 +588,8 @@ void EmitTelemetry(const char *phase)
 	        CeMultiBePlaySideIniValue(gPlayerSide), gSoloSkirmish ? 1 : 0,
 	        PortCeOneScreenMatch() ? 1 : 0, ENGINE.GetNumViewpoints(),
 	        gP2Shots, gP2Moved ? 1 : 0, gUnitSpawnEvents, gUnitDestroyedEvents,
-	        gAiWeaponPicks, gAiEvades, gAiRetreats, gAiDashes);
+	        gAiWeaponPicks, gAiEvades, gAiRetreats, gAiDashes,
+	        camAspect, hudAnchored, hudInset, gMaxAiLandAlt, gAiLandings);
 	fflush(stderr);
 }
 
@@ -603,7 +614,7 @@ void ResetState()
 		gMoved[i] = false;
 		gStartYaw[i] = 0.0f;
 		gTicksSinceMorph[i] = 0;
-		gTicksSinceWeaponSwitch[i] = 0;
+		gTicksSinceWeaponSwitch[i] = 50;
 		gAiBrain[i].Reset(i);
 	}
 	gMatchState.Reset();
@@ -629,6 +640,8 @@ void ResetState()
 	gAiEvades = 0;
 	gAiRetreats = 0;
 	gAiDashes = 0;
+	gAiLandings = 0;
+	gMaxAiLandAlt = 0.0f;
 	gAnchorFwdX = 0.0f;
 	gAnchorFwdY = 1.0f;
 	gHasOpposingAnchor = false;
@@ -1122,7 +1135,7 @@ bool SpawnAuxEngineInSlot(int idx, const FVector &spawnPos, float yaw, EAllegian
 	gStartPos[idx] = be->GetPos();
 	gStartYaw[idx] = yaw;
 	gTicksSinceMorph[idx] = 75;
-	gTicksSinceWeaponSwitch[idx] = 40;
+	gTicksSinceWeaponSwitch[idx] = 50;
 	gAiBrain[idx].Reset(idx);
 #ifndef CE_NETWORK_OFF
 	if (OnlineMatchActive())
@@ -1912,11 +1925,32 @@ void DriveAiEngine(int idx)
 	gTicksSinceMorph[idx]++;
 	gTicksSinceWeaponSwitch[idx]++;
 
+	CeMultiBeSlotBrain &brain = gAiBrain[idx];
 	const EBattleEngineState state = be->GetState();
+	if (state != brain.prevState)
+	{
+		if (state == BATTLE_ENGINE_STATE_JET)
+			brain.ticksSinceJetEnter = 0;
+		// Catch external/retail transitions (e.g. stall auto-morph Jet -> MorphingIntoWalker -> Walker)
+		// so cooldown & flight phase reset cleanly on landing.
+		if ((brain.prevState == BATTLE_ENGINE_STATE_JET ||
+		     brain.prevState == BATTLE_ENGINE_STATE_MORPHING_INTO_JET ||
+		     brain.prevState == BATTLE_ENGINE_STATE_MORPHING_INTO_WALKER) &&
+		    state == BATTLE_ENGINE_STATE_WALKER)
+		{
+			gTicksSinceMorph[idx] = 0;
+			brain.jetPhase = CE_AI_JET_CRUISE;
+			brain.jetPhaseTicks = 0;
+			brain.dash.Reset();
+			brain.chargeTicks = 0;
+		}
+		brain.prevState = state;
+	}
 	if (state == BATTLE_ENGINE_STATE_MORPHING_INTO_JET || state == BATTLE_ENGINE_STATE_MORPHING_INTO_WALKER)
 		return;
+	if (state == BATTLE_ENGINE_STATE_JET)
+		brain.ticksSinceJetEnter++;
 
-	CeMultiBeSlotBrain &brain = gAiBrain[idx];
 	const float now = EVENT_MANAGER.GetTime();
 	const float prevLife = brain.damage.lastLife;
 	const float curLife = be->GetLife();
@@ -1933,6 +1967,17 @@ void DriveAiEngine(int idx)
 	const bool nearWater = !CeMultiBeIsAboveWater(groundZ, waterZ, waterMargin) ||
 	                       !CeMultiBeIsAboveWater(myPos.Z, waterZ, waterMargin);
 	const bool isJet = (state == BATTLE_ENGINE_STATE_JET);
+	const bool isOnGround = (be->IsOnGround() != FALSE) || (be->IsOnObject() != FALSE);
+	const float altitudeAboveGround = CeAiIsFinite(groundZ) ? (groundZ - myPos.Z) : 0.0f;
+
+	const FMatrix bodyOri = be->GetOrientation();
+	FVector bodyFwd = bodyOri * FVector(0.0f, 1.0f, 0.0f);
+	bodyFwd.Z = 0.0f;
+	if (bodyFwd.MagnitudeSq() > 1e-4f)
+		bodyFwd.Normalise();
+	else
+		bodyFwd = FVector(0.0f, 1.0f, 0.0f);
+	const bool aheadGroundIsDry = IsDryAndInBounds(myPos + bodyFwd * 10.0f, waterZ, 1.0f);
 
 	const float maxEnergy = be->GetMaxEnergy();
 	const float energyRatio = (maxEnergy > 0.01f) ? CeMultiBeClamp(be->GetEnergy() / maxEnergy, 0.0f, 1.0f) : 1.0f;
@@ -2028,7 +2073,7 @@ void DriveAiEngine(int idx)
 		targetInWater = (tgtGroundZ >= waterZ - 0.1f) && (tgtPos.Z >= waterZ - 1.5f);
 	}
 
-	// Smart combined-arms Walker <-> Jet morphing with strict never-land-in-water invariant.
+	// Smart combined-arms Walker <-> Jet morphing with strict never-land-in-water & low-altitude landing invariants.
 	CeMultiBeSmartMorphInput morphIn = {};
 	morphIn.isJet = isJet;
 	morphIn.flightAllowed = true;
@@ -2045,6 +2090,9 @@ void DriveAiEngine(int idx)
 	morphIn.ticksSinceMorph = gTicksSinceMorph[idx];
 	morphIn.slotIndex = idx;
 	morphIn.simTicks = gSimTicks;
+	morphIn.altitudeAboveGround = altitudeAboveGround;
+	morphIn.isOnGround = isOnGround;
+	morphIn.aheadGroundIsDry = aheadGroundIsDry;
 
 	if (CeMultiBeShouldMorphSmart(morphIn))
 	{
@@ -2052,11 +2100,18 @@ void DriveAiEngine(int idx)
 		be->Morph();
 		if (be->GetState() != before)
 		{
+			if (before == BATTLE_ENGINE_STATE_JET)
+			{
+				gAiLandings++;
+				if (altitudeAboveGround > gMaxAiLandAlt)
+					gMaxAiLandAlt = altitudeAboveGround;
+			}
 			gTicksSinceMorph[idx] = 0;
 			brain.dash.Reset();
 			brain.chargeTicks = 0;
 			brain.jetPhase = CE_AI_JET_CRUISE;
 			brain.jetPhaseTicks = 0;
+			brain.prevState = be->GetState();
 			gMatchState.totalMorphs++;
 			return;
 		}
@@ -2064,8 +2119,10 @@ void DriveAiEngine(int idx)
 		gTicksSinceMorph[idx] = 0;
 	}
 
+	const bool walkerAirborne = (!isJet && !isOnGround && altitudeAboveGround > 4.0f);
+
 	// Matchup-aware smart weapon selection (replaces blind periodic weapon cycling).
-	if (target && !outOfBounds)
+	if (target && !outOfBounds && !walkerAirborne)
 		SelectBestAiWeapon(idx, be, isJet, target, targetDist3D, targetAltAboveGround, targetInWater);
 
 	CWeapon *curWep = be->GetCurrentWeapon();
@@ -2083,9 +2140,9 @@ void DriveAiEngine(int idx)
 		aimPoint = FVector(lead.x, lead.y, lead.z);
 	}
 
-	// Keep lock-on weapons acquiring targets cleanly for auxiliary BEs too.
+	// Keep lock-on weapons acquiring targets cleanly for auxiliary BEs too (never lock while airborne in Walker mode).
 	const bool isLockWeapon = (curWep != NULL && curWep->GetMaxLocks() > 0);
-	if (isLockWeapon && target && !outOfBounds)
+	if (isLockWeapon && target && !outOfBounds && !walkerAirborne)
 		UpdateAiLocks(idx, be);
 
 	// Prepare shared weapon readiness / range / heat inputs for aim-gated firing.
@@ -2095,7 +2152,8 @@ void DriveAiEngine(int idx)
 		wepMaxRange = (curWep && target) ? curWep->GetMaxRange(tgtPos) : 220.0f;
 
 	CeMultiBeFireGateInput fireIn = {};
-	fireIn.hasHostile = (target != NULL && !outOfBounds && !(goalIsRepairPad && surv.retreating && goalHorizDist < 12.0f));
+	fireIn.hasHostile = (target != NULL && !outOfBounds && !walkerAirborne &&
+	                     !(goalIsRepairPad && surv.retreating && goalHorizDist < 12.0f));
 	fireIn.isJet = isJet;
 	fireIn.weaponActive = (curWep != NULL && curWep->IsActive() != FALSE);
 	fireIn.readyToFire = (curWep != NULL && curWep->ReadyToFire() != FALSE);
@@ -2121,17 +2179,15 @@ void DriveAiEngine(int idx)
 		if (!jet)
 			return;
 		const CEulerAngles euler = be->GetCurrentEulerOrientation();
-		const FMatrix ori = be->GetOrientation();
-		FVector fwd = ori * FVector(0.0f, 1.0f, 0.0f);
-		fwd.Z = 0.0f;
-		if (fwd.MagnitudeSq() > 1e-4f)
-			fwd.Normalise();
-		else
-			fwd = FVector(0.0f, 1.0f, 0.0f);
-		const FVector aheadPos = myPos + fwd * 28.0f;
+		const FVector aheadPos = myPos + bodyFwd * 28.0f;
 		const float aheadGroundZ = MAP.Collide(aheadPos);
 
-		const FVector jetGoal = (target && !surv.retreating && !surv.seekDryShore && !outOfBounds) ? aimPoint : goalPos;
+		const bool wantLanding = CeMultiBeWantsJetLanding(
+			true, true, groundIsDry, aheadGroundIsDry,
+			energyRatio, surv.retreating, goalIsRepairPad && (goalHorizDist < 55.0f),
+			target != NULL, target ? targetHorizDist : -1.0f, targetAltAboveGround,
+			gTicksSinceMorph[idx]);
+		const FVector jetGoal = (!wantLanding && target && !surv.retreating && !surv.seekDryShore && !outOfBounds) ? aimPoint : goalPos;
 		const FVector toJetGoal = jetGoal - myPos;
 
 		CeMultiBeJetFlightInput jIn = {};
@@ -2152,6 +2208,10 @@ void DriveAiEngine(int idx)
 		jIn.prevPhase = brain.jetPhase;
 		jIn.phaseTicks = brain.jetPhaseTicks;
 		jIn.breakTurnDir = brain.breakTurnDir;
+		jIn.wantLanding = wantLanding;
+		jIn.groundIsDry = groundIsDry;
+		jIn.aheadGroundIsDry = aheadGroundIsDry;
+		jIn.postTakeoffClimb = (brain.ticksSinceJetEnter <= 16);
 
 		const CeMultiBeJetFlightCmd jCmd = CeMultiBeComputeJetFlight(jIn);
 		brain.jetPhase = jCmd.nextPhase;
@@ -2167,7 +2227,7 @@ void DriveAiEngine(int idx)
 		jet->Pitch(jCmd.pitchInput);
 		jet->Thrust(jCmd.thrustVy);
 
-		fireIn.emergencyPullUp = jCmd.emergencyPullUp || (jCmd.nextPhase == CE_AI_JET_BREAKOFF);
+		fireIn.emergencyPullUp = jCmd.emergencyPullUp || jCmd.inLanding || (jCmd.nextPhase == CE_AI_JET_BREAKOFF);
 		fireIn.yawErrAbs = jCmd.yawErrAbs;
 		fireIn.pitchErrAbs = jCmd.pitchErrAbs;
 		fireIn.maxYawCone = 0.30f;
@@ -2181,8 +2241,12 @@ void DriveAiEngine(int idx)
 	if (!walker)
 		return;
 
+	// If airborne in Walker mode (short drop from landing flare or retail stall), cushion touchdown with landing jets.
+	if (!isOnGround && altitudeAboveGround <= 6.5f && be->GetVelocity().Z > 0.28f)
+		walker->ActivateLandingJets();
+
 	const CEulerAngles curEuler = be->GetCurrentEulerOrientation();
-	const bool moveOnlyGoal = (outOfBounds || nearWater || (surv.retreating && goalIsRepairPad));
+	const bool moveOnlyGoal = (outOfBounds || nearWater || walkerAirborne || (surv.retreating && goalIsRepairPad));
 
 	// Aiming vector: aim at led target when engaging (or suppressing during retreat), else face nav goal.
 	FVector lookDelta = (target && !moveOnlyGoal) ? (aimPoint - myPos) : toGoal;
@@ -2606,7 +2670,7 @@ extern "C" void PortCeMultiBeDrawHud(CPlayer *, int viewpoint)
 	}
 	const float height = float(font->GetHeight()) + 14.0f;
 
-	CeHudScope topScope((!GAME.IsMultiplayer() || PortCeOneScreenMatch()) && ENGINE.GetNumViewpoints() == 1,
+	CeHudScope topScope((!PortCeIsSplitScreen() || PortCeOneScreenMatch()) && ENGINE.GetNumViewpoints() == 1,
 	                    HUD.mViewportWidth, HUD.mViewportHeight, cx, HUD.mViewportY + HUD_OFFSET_Y);
 	RENDERINFO.SetFogEnabled(false);
 	RENDERINFO.SetLightingEnabled(false);

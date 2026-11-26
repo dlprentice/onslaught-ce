@@ -770,22 +770,24 @@ struct CeOnlineLayout {
     static CeOnlineRect BrowserPwdSubmit()   { return { 150.f, 282.f, 310.f, 304.f }; }
     static CeOnlineRect BrowserPwdCancel()   { return { 330.f, 282.f, 490.f, 304.f }; }
 
-    // Create Lobby page: 8 config rows + privacy notice + Create/Back
+    // Create Lobby page: 8 config rows + privacy notice + Create / Direct LAN / Back
     static const int kCreateFieldCount = 8;
     static CeOnlineRect CreateFieldRow(int idx) {
         const float y0 = 132.f + float(idx) * 26.f;
         return { 84.f, y0, 556.f, y0 + 22.f };
     }
     static CeOnlineRect CreatePrivacyBox()   { return { 84.f, 344.f, 556.f, 380.f }; }
-    static CeOnlineRect CreateSubmitBtn()    { return { 120.f, 388.f, 312.f, 414.f }; }
-    static CeOnlineRect CreateBackBtn()      { return { 328.f, 388.f, 520.f, 414.f }; }
+    static CeOnlineRect CreateSubmitBtn()    { return { 84.f,  388.f, 240.f, 414.f }; }
+    static CeOnlineRect CreateLanBtn()       { return { 250.f, 388.f, 406.f, 414.f }; }
+    static CeOnlineRect CreateBackBtn()      { return { 416.f, 388.f, 556.f, 414.f }; }
 
     // Join by Code page
     static CeOnlineRect JoinCodeField()      { return { 120.f, 178.f, 520.f, 206.f }; }
     static CeOnlineRect JoinPwdField()       { return { 120.f, 218.f, 520.f, 246.f }; }
     static CeOnlineRect JoinPasteBtn()       { return { 120.f, 266.f, 310.f, 294.f }; }
     static CeOnlineRect JoinSubmitBtn()      { return { 330.f, 266.f, 520.f, 294.f }; }
-    static CeOnlineRect JoinBackBtn()        { return { 220.f, 312.f, 420.f, 340.f }; }
+    static CeOnlineRect JoinLanBtn()         { return { 120.f, 312.f, 310.f, 340.f }; }
+    static CeOnlineRect JoinBackBtn()        { return { 330.f, 312.f, 520.f, 340.f }; }
 
     // Room page: 2-line room+map header + 4-row paginated roster + player/host controls + 6-line chat + compose
     static CeOnlineRect RoomInfoBar()        { return { 84.f,  128.f, 464.f, 146.f }; }
@@ -855,8 +857,9 @@ public:
         CREATE_RELAY_ONLY = 6,
         CREATE_AI_FILL = 7,
         CREATE_SUBMIT = 8,
-        CREATE_BACK = 9,
-        CREATE_FOCUS_COUNT = 10
+        CREATE_DIRECT_LAN = 9,
+        CREATE_BACK = 10,
+        CREATE_FOCUS_COUNT = 11
     };
 
     enum JoinCodeField {
@@ -864,8 +867,9 @@ public:
         JOIN_PASSWORD_INPUT = 1,
         JOIN_PASTE_BTN = 2,
         JOIN_SUBMIT_BTN = 3,
-        JOIN_BACK_BTN = 4,
-        JOIN_FOCUS_COUNT = 5
+        JOIN_LAN_BTN = 4,
+        JOIN_BACK_BTN = 5,
+        JOIN_FOCUS_COUNT = 6
     };
 
     enum ProfileField {
@@ -1279,10 +1283,20 @@ public:
         mStatusNotice.clear();
         mStatusIsError = false;
         BrowserRefresh();
-        mBrowserZone = FilteredRooms().empty() ? BROWSER_ZONE_TOOLBAR : BROWSER_ZONE_LIST;
+        const bool serverUnavailable =
+            (mProfile.connStatus == CE_ONLINE_CONN_OFFLINE || mProfile.connStatus == CE_ONLINE_CONN_ERROR);
+        if (!FilteredRooms().empty()) {
+            mBrowserZone = BROWSER_ZONE_LIST;
+            mBrowserFooterFocus = BROWSER_FT_BACK;
+        } else if (serverUnavailable) {
+            mBrowserZone = BROWSER_ZONE_FOOTER;
+            mBrowserFooterFocus = BROWSER_FT_LAN;
+        } else {
+            mBrowserZone = BROWSER_ZONE_TOOLBAR;
+            mBrowserFooterFocus = BROWSER_FT_BACK;
+        }
         mBrowserToolbarFocus = BROWSER_TB_CREATE;
         mBrowserPagerFocus = BROWSER_PG_JOIN;
-        mBrowserFooterFocus = BROWSER_FT_BACK;
     }
 
     void BrowserRefresh() {
@@ -1603,8 +1617,12 @@ public:
             if (base.size() > 18) base.resize(18);
             mCreateRoomName = base.empty() ? "Forseti Skirmish" : (base + " Lobby");
         }
-        mStatusNotice.clear();
-        mStatusIsError = false;
+        if (mProfile.connStatus == CE_ONLINE_CONN_OFFLINE || mProfile.connStatus == CE_ONLINE_CONN_ERROR) {
+            SetStatusNotice(!mProfile.statusDetail.empty() ? mProfile.statusDetail : "Not connected to lobby server.", true);
+        } else {
+            mStatusNotice.clear();
+            mStatusIsError = false;
+        }
     }
 
     int CreateFocus() const { return mCreateFocus; }
@@ -1767,8 +1785,12 @@ public:
         mPage = CE_ONLINE_PAGE_JOIN_CODE;
         mJoinCodeFocus = JOIN_CODE_INPUT;
         mJoinPendingResolve = false;
-        mStatusNotice.clear();
-        mStatusIsError = false;
+        if (mProfile.connStatus == CE_ONLINE_CONN_OFFLINE || mProfile.connStatus == CE_ONLINE_CONN_ERROR) {
+            SetStatusNotice(!mProfile.statusDetail.empty() ? mProfile.statusDetail : "Not connected to lobby server.", true);
+        } else {
+            mStatusNotice.clear();
+            mStatusIsError = false;
+        }
     }
 
     int JoinCodeFocus() const { return mJoinCodeFocus; }

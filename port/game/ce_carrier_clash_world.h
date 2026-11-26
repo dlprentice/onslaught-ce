@@ -120,11 +120,12 @@ struct SupportMeshSpec {
 	const char *texture;
 };
 
-constexpr unsigned kSupportMeshCount = 2u;
+constexpr unsigned kSupportMeshCount = 3u;
 inline const SupportMeshSpec &SupportMesh(unsigned index) {
 	static const SupportMeshSpec kMeshes[kSupportMeshCount] = {
 		{"m_rocket.msh",                "meshtex\\m_rocket.TGA"},
 		{"fa_wildcard_t_destroyed.msh", nullptr},
+		{"cockpit2b.msh",               nullptr},
 	};
 	return kMeshes[index < kSupportMeshCount ? index : 0u];
 }

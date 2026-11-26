@@ -1,0 +1,44 @@
+--- a/DXFrontend.cpp
++++ b/DXFrontend.cpp
+@@ -151,7 +151,12 @@
+ 		PortWideViewport(0);
+ 		PLATFORM.ClearScreen(0x00171730);
+ 		PortWideViewport(1);
++#ifdef CE_VERSION
++		extern bool PortCeLayer();
++		PLATFORM.ClearScreen(PortCeLayer() ? 0x00171730 : 0x001f1f3f);
++#else
+ 		PLATFORM.ClearScreen(0x001f1f3f);
++#endif
+ 	}
+ 	else
+ 	PLATFORM.ClearScreen(0x001f1f3f);
+--- a/FEPMain.cpp
++++ b/FEPMain.cpp
+@@ -819,8 +819,26 @@
+ 	float	d = (float)fabs(transition - 0.75f);
+ 	if ((d < 0.15f) && (dest != FEP_INTRO))
+ 	{
++#ifdef CE_VERSION
++		if (PortWideActive() && PortCeLayer())
++		{
++			// Port (widescreen): cover the whole window with retail's transition flash rather than clipping to the 4:3 box.
++			PortWideViewport(0);
++			CSPRITERENDERER::DrawColouredSprite(-10.f - PortUiLeft() / PortUiScale(), -10.f - PortUiTop() / PortUiScale(), 0.001f,
++				FED.GetTexture(FET2_WHITE), BlendAlpha2(0xffffffff, SINT((1.f - d * (1.f / 0.15f)) * 128.f)),
++				((float)PLATFORM.GetWindowWidth() / PortUiScale() + 40.f) / 32.f,
++				((float)PLATFORM.GetWindowHeight() / PortUiScale() + 40.f) / 32.f);
++			PortWideViewport(1);
++		}
++		else
++		{
++			scale = PLATFORM.GetWindowWidth() * (1.f / 32.f);
++			CSPRITERENDERER::DrawColouredSprite(0.f, 0.f, 0.001f, FED.GetTexture(FET2_WHITE), BlendAlpha2(0xffffffff, SINT((1.f - d * (1.f / 0.15f)) * 128.f)), scale, scale);
++		}
++#else
+ 		scale = PLATFORM.GetWindowWidth() * (1.f / 32.f);
+ 		CSPRITERENDERER::DrawColouredSprite(0.f, 0.f, 0.001f, FED.GetTexture(FET2_WHITE), BlendAlpha2(0xffffffff, SINT((1.f - d * (1.f / 0.15f)) * 128.f)), scale, scale);
++#endif
+ 	}
+ }
+ 

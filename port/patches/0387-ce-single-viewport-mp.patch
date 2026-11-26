@@ -1,0 +1,160 @@
+--- a/Camera.cpp
++++ b/Camera.cpp
+@@ -879,7 +879,7 @@
+ #ifndef CE_NETWORK_OFF
+ 	if (CE_WorldActive()) return CE_WorldViewAspect(0.75f);
+ #endif
+-	if (GAME.IsMultiplayer())
++	if (PortCeCameraSplitAspect())
+ 		return 0.5f;
+ 	else
+ 		return 0.75f;
+--- a/Hud.cpp
++++ b/Hud.cpp
+@@ -61,7 +61,7 @@
+ #include	<math.h>
+ #ifdef CE_VERSION
+ bool PortCeOneScreenMatch();	// patch 0235: port/game/ce_cmdmatch.cpp, a Commander match shown on one screen
+-#define CE_SPLIT_HUD() (GAME.IsMultiplayer() && !PortCeOneScreenMatch())	// the HUD of a split screen: not a match's one screen
++#define CE_SPLIT_HUD() (PortCeIsSplitScreen() && !PortCeOneScreenMatch())	// the HUD of a split screen: not single-viewport MP or a match's one screen
+ #else
+ #define CE_SPLIT_HUD() GAME.IsMultiplayer()
+ #endif
+@@ -512,6 +512,11 @@
+ 			unit = NULL;
+ 	}
+ 	BOOL	second = (mBattleEngine->GetPlayer()->GetNumber() != 1);
++#ifdef CE_VERSION
++	BOOL	splitSecond = second && PortCeIsSplitScreen();
++#else
++	BOOL	splitSecond = second;
++#endif
+ 	sUnknown67a634;
+ 	CUnit	*target;
+ 	if (unit)
+@@ -542,7 +547,7 @@
+ 		return;
+ 
+ 	DWORD	col = 0x27ffffff;
+-	float	y = TargetPanelY(second);
++	float	y = TargetPanelY(splitSecond);
+ 	SINT	side;
+ 	if ((!target->GetUnitData()) || ((side = target->GetUnitData()->mIcon) == -1))
+ 	{
+@@ -601,7 +606,7 @@
+ 		CViewport	vp;
+ 		vp.Width = mWhiteTexture->mWidth;
+ 		vp.Height = mWhiteTexture->GetHeight();
+-		if (!second)
++		if (!splitSecond)
+ 		{
+ 			vp.X = (SINT)(HUD_OFFSET_X + 42.f);
+ 			vp.Y = (SINT)(HUD_OFFSET_Y + 42.f);
+@@ -675,14 +680,14 @@
+ 			else
+ 				sx *= frame->mWidth / frame->mHeight;
+ 			col = 0x3fffffff;
+-			if (!second)
++			if (!splitSecond)
+ 				CSPRITERENDERER::DrawSprite(HUD_OFFSET_X + 42.f, HUD_OFFSET_Y + 42.f, 0.011f, tex, SA_CENTRE, SPT_NONE, 1.f, 0.f, col, sx, sy, u0, u1, v0, v1);
+ 			else
+ 				CSPRITERENDERER::DrawSprite(HUD_OFFSET_X + 42.f, PLATFORM.GetWindowHeight() * 0.5f + HUD_OFFSET_Y + 40.f, 0.011f, tex, SA_CENTRE, SPT_NONE, 1.f, 0.f, col, sx, sy, u0, u1, v0, v1);
+ 		}
+ 	}
+ 
+-	if (!second)
++	if (!splitSecond)
+ 		CSPRITERENDERER::DrawSprite(HUD_OFFSET_X + 42.f, (HUD_OFFSET_Y + 42.f) + 28.f, 0.011f, GetWhiteTexture(), SA_CENTRE, SPT_NONE, 1.f, 0.f, 0xff000000, 0.9f, 0.07f, 0.f, 1.f, 0.f, 1.f);
+ 	else
+ 		CSPRITERENDERER::DrawSprite(HUD_OFFSET_X + 42.f, (PLATFORM.GetWindowHeight() * 0.5f + HUD_OFFSET_Y + 40.f) + 28.f, 0.011f, mWhiteTexture, SA_CENTRE, SPT_NONE, 1.f, 0.f, 0xff000000, 0.9f, 0.07f, 0.f, 1.f, 0.f, 1.f);
+@@ -700,13 +705,13 @@
+ 	case 2:	col = 0xff777777;	break;
+ 	case 3:	col = 0xff55cf55;	break;
+ 	}
+-	if (!second)
++	if (!splitSecond)
+ 		CSPRITERENDERER::DrawSprite(HUD_OFFSET_X + 42.f, (HUD_OFFSET_Y + 42.f) + 28.f, 0.011f, GetWhiteTexture(), SA_CENTRE, SPT_FILL_RIGHT, health, 0.f, col, 0.9f, 0.07f, 0.f, 1.f, 0.f, 1.f);
+ 	else
+ 		CSPRITERENDERER::DrawSprite(HUD_OFFSET_X + 42.f, (PLATFORM.GetWindowHeight() * 0.5f + HUD_OFFSET_Y + 40.f) + 28.f, 0.011f, mWhiteTexture, SA_CENTRE, SPT_FILL_RIGHT, health, 0.f, col, 0.9f, 0.07f, 0.f, 1.f, 0.f, 1.f);
+ 	if (!component)
+ 		return;
+-	if (!second)
++	if (!splitSecond)
+ 		CSPRITERENDERER::DrawSprite(HUD_OFFSET_X + 42.f, (HUD_OFFSET_Y + 42.f) + 21.f, 0.011f, GetWhiteTexture(), SA_CENTRE, SPT_NONE, 1.f, 0.f, 0xff000000, 0.9f, 0.07f, 0.f, 1.f, 0.f, 1.f);
+ 	else
+ 		CSPRITERENDERER::DrawSprite(HUD_OFFSET_X + 42.f, (PLATFORM.GetWindowHeight() * 0.5f + HUD_OFFSET_Y + 40.f) + 21.f, 0.011f, mWhiteTexture, SA_CENTRE, SPT_NONE, 1.f, 0.f, 0xff000000, 0.9f, 0.07f, 0.f, 1.f, 0.f, 1.f);
+@@ -717,7 +722,7 @@
+ 		health = 0;
+ 	else if (health > 1.f)
+ 		health = 1.f;
+-	if (!second)
++	if (!splitSecond)
+ 		CSPRITERENDERER::DrawSprite(HUD_OFFSET_X + 42.f, (HUD_OFFSET_Y + 42.f) + 21.f, 0.011f, GetWhiteTexture(), SA_CENTRE, SPT_FILL_RIGHT, health, 0.f, col, 0.9f, 0.07f, 0.f, 1.f, 0.f, 1.f);
+ 	else
+ 		CSPRITERENDERER::DrawSprite(HUD_OFFSET_X + 42.f, (PLATFORM.GetWindowHeight() * 0.5f + HUD_OFFSET_Y + 40.f) + 21.f, 0.011f, mWhiteTexture, SA_CENTRE, SPT_FILL_RIGHT, health, 0.f, col, 0.9f, 0.07f, 0.f, 1.f, 0.f, 1.f);
+--- a/Compass.cpp
++++ b/Compass.cpp
+@@ -21,7 +21,7 @@
+ #endif
+ #ifdef CE_VERSION
+ bool PortCeOneScreenMatch();	// patch 0235: port/game/ce_cmdmatch.cpp, a Commander match shown on one screen
+-#define CE_SPLIT_HUD() (GAME.IsMultiplayer() && !PortCeOneScreenMatch())	// the HUD of a split screen: not a match's one screen
++#define CE_SPLIT_HUD() (PortCeIsSplitScreen() && !PortCeOneScreenMatch())	// the HUD of a split screen: not single-viewport MP or a match's one screen
+ #else
+ #define CE_SPLIT_HUD() GAME.IsMultiplayer()
+ #endif
+--- a/DXCompass.cpp
++++ b/DXCompass.cpp
+@@ -29,7 +29,7 @@
+ #include	"mathsconst.h"	// FUNCTION: 0x0053bc40 init:ZERO_FVECTOR
+ #ifdef CE_VERSION
+ bool PortCeOneScreenMatch();	// patch 0235: port/game/ce_cmdmatch.cpp, a Commander match shown on one screen
+-#define CE_SPLIT_HUD() (GAME.IsMultiplayer() && !PortCeOneScreenMatch())	// the HUD of a split screen: not a match's one screen
++#define CE_SPLIT_HUD() (PortCeIsSplitScreen() && !PortCeOneScreenMatch())	// the HUD of a split screen: not single-viewport MP or a match's one screen
+ #else
+ #define CE_SPLIT_HUD() GAME.IsMultiplayer()
+ #endif
+--- a/DXBattleLine.cpp
++++ b/DXBattleLine.cpp
+@@ -22,7 +22,7 @@
+ #include	"mathsconst.h"	// FUNCTION: 0x00539e10 init:ZERO_FVECTOR
+ #ifdef CE_VERSION
+ bool PortCeOneScreenMatch();	// patch 0235: port/game/ce_cmdmatch.cpp, a Commander match shown on one screen
+-#define CE_SPLIT_HUD() (GAME.IsMultiplayer() && !PortCeOneScreenMatch())	// the HUD of a split screen: not a match's one screen
++#define CE_SPLIT_HUD() (PortCeIsSplitScreen() && !PortCeOneScreenMatch())	// the HUD of a split screen: not single-viewport MP or a match's one screen
+ #else
+ #define CE_SPLIT_HUD() GAME.IsMultiplayer()
+ #endif
+--- a/MessageBox.cpp
++++ b/MessageBox.cpp
+@@ -34,7 +34,7 @@
+ #include	"game.h"
+ #ifdef CE_VERSION
+ bool PortCeOneScreenMatch();	// patch 0235: port/game/ce_cmdmatch.cpp, a Commander match shown on one screen
+-#define CE_SPLIT_HUD() (GAME.IsMultiplayer() && !PortCeOneScreenMatch())	// the HUD of a split screen: not a match's one screen
++#define CE_SPLIT_HUD() (PortCeIsSplitScreen() && !PortCeOneScreenMatch())	// the HUD of a split screen: not single-viewport MP or a match's one screen
+ #else
+ #define CE_SPLIT_HUD() GAME.IsMultiplayer()
+ #endif
+--- a/DXEngine.cpp
++++ b/DXEngine.cpp
+@@ -790,7 +790,7 @@
+ 
+ // Calculate LODs as early as possible to 'avoid stalls'
+ 
+-	if (GAME.IsMultiplayer())
++	if (PortCeCameraSplitAspect())
+ 	{
+ 		static int which_view_lod = 0;
+ 
+--- a/game.cpp
++++ b/game.cpp
+@@ -303,7 +303,7 @@
+ #include "cylinder.h"
+ #ifdef CE_VERSION
+ bool PortCeOneScreenMatch();	// patch 0235: port/game/ce_cmdmatch.cpp, a Commander match shown on one screen
+-#define CE_ONE_SCREEN() PortCeOneScreenMatch()
++#define CE_ONE_SCREEN() (PortCeOneScreenMatch() || (GAME.IsMultiplayer() && !PortCeIsSplitScreen()))
+ #else
+ #define CE_ONE_SCREEN() false
+ #endif

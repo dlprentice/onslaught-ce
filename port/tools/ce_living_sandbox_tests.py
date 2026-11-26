@@ -732,7 +732,7 @@ static void TestPlatoonsCommandAndStrip() {
         Check(kSupportMeshCount >= 3u, "support mesh list present");
         Check(StrEqualsIgnoreCase(SupportMesh(0).mesh, "m_rocket.msh") && SupportMesh(0).texture != nullptr,
               "rocket and escape pod mesh is preloaded with its texture");
-        bool sawWildcat = false, sawWreckage = false;
+        bool sawWildcat = false, sawWreckage = false, sawJason = false, sawTara = false, sawCockpit2b = false;
         for (unsigned i = 0; i < kSupportMeshCount; ++i) {
             const SupportMeshSpec &sp = SupportMesh(i);
             const size_t n = std::strlen(sp.mesh);
@@ -745,8 +745,12 @@ static void TestPlatoonsCommandAndStrip() {
                 Check(!StrEqualsIgnoreCase(sp.mesh, OptionalMeshName(j)), "support list does not repeat the Venturer preload");
             if (StrEqualsIgnoreCase(sp.mesh, "fa_wildcard_t_destroyed.msh")) sawWildcat = true;
             if (StrEqualsIgnoreCase(sp.mesh, "m_innerwreckage.msh")) sawWreckage = true;
+            if (StrEqualsIgnoreCase(sp.mesh, "Fa_wildcard_j.msh")) sawJason = true;
+            if (StrEqualsIgnoreCase(sp.mesh, "Fa_wildcard_t.msh")) sawTara = true;
+            if (StrEqualsIgnoreCase(sp.mesh, "cockpit2b.msh")) sawCockpit2b = true;
         }
-        Check(sawWildcat && sawWreckage, "destroyed Wildcat and wreckage meshes are covered");
+        Check(sawWildcat && sawWreckage && sawJason && sawTara && sawCockpit2b,
+              "destroyed Wildcat, wreckage, optional Wildcats (Jason/Tara), and cockpit2b meshes are covered");
         Check(&SupportMesh(kSupportMeshCount + 5u) == &SupportMesh(0u), "out-of-range index is safe");
     }
 }

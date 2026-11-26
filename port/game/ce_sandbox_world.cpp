@@ -79,14 +79,19 @@ bool ContainsIgnoreCase(const char *haystack, const char *needle) {
 	return false;
 }
 
+constexpr int kHeightGridSide = CeSandboxWorld::kCells + 1;
+const float *gActiveHeightGrid = NULL;
+
 void RefreshProceduralMapExtents() {
 	SINT minX = CeSandboxWorld::kCells;
 	SINT minY = CeSandboxWorld::kCells;
 	SINT maxX = -1;
 	SINT maxY = -1;
 	for (SINT y = 0; y < CeSandboxWorld::kCells; ++y) {
+		const float *row = gActiveHeightGrid ? (gActiveHeightGrid + y * kHeightGridSide) : NULL;
 		for (SINT x = 0; x < CeSandboxWorld::kCells; ++x) {
-			if (CeSandboxWorld::HeightAt(static_cast<float>(x), static_cast<float>(y)) < MAP.mWaterLevel) {
+			const float h = row ? row[x] : CeSandboxWorld::HeightAt(static_cast<float>(x), static_cast<float>(y));
+			if (h < MAP.mWaterLevel) {
 				if (x < minX) minX = x;
 				if (x > maxX) maxX = x;
 				if (y < minY) minY = y;
@@ -151,11 +156,19 @@ bool VerifyPackedAyaFile(const char *gameRelPath, bool *outExists) {
 			ok = false;
 			break;
 		}
-		unsigned long dstLen = kAyaPackBuffer;
-		if (uncompress(unpacked, &dstLen, packed, length) != 0 ||
-		    dstLen == 0ul || dstLen > kAyaUnpackBlock) {
-			ok = false;
-			break;
+		if (blocks == 0u) {
+			unsigned long dstLen = kAyaPackBuffer;
+			if (uncompress(unpacked, &dstLen, packed, length) != 0 ||
+			    dstLen == 0ul || dstLen > kAyaUnpackBlock) {
+				ok = false;
+				break;
+			}
+		} else {
+			if (length < 2ul || (packed[0] & 0x0fu) != 8u ||
+			    ((((unsigned)packed[0] << 8) | (unsigned)packed[1]) % 31u) != 0u) {
+				ok = false;
+				break;
+			}
 		}
 		++blocks;
 	}
@@ -269,6 +282,12 @@ bool LoadRetailMeshFromStandaloneAya(const char *meshName, int32_t runtimeId) {
 	if (!meshName || !meshName[0]) return false;
 	if (CMesh::FindLoadedUnique(meshName) != NULL) return true;
 
+	char meshPath[160] = {};
+	bool exists = false;
+	std::snprintf(meshPath, sizeof(meshPath), "data\\resources\\meshes\\m_%s.aya", meshName);
+	if (!VerifyPackedAyaFile(meshPath, &exists) || !exists)
+		return false;
+
 	int32_t safeId = runtimeId;
 	while (CMesh::GetMeshByResourceID(safeId) != NULL && safeId < runtimeId + 4096) {
 		++safeId;
@@ -330,7 +349,7 @@ void FinalizeHeightFieldLighting() {
 //   0 = grass (central valley), 1 = grey granite stone (cliffs, ridges & Citadel terrace),
 //   2 = pale coastal sand (shoreline & harbor seabed), 5 = dark basalt asphalt (roads,
 //   grand ramp, faction HQ aprons, and contested capture node pads).
-bool BuildProceduralMixerMap(float sunX, float sunY, float sunZ) {
+bool BuildProceduralMixerMap(float sunX, float sunY, float sunZ, const float *hGrid) {
 	MIXERMAP.Destroy();
 	MIXERMAP.mSlots = new(MEMTYPE_MIXERMAP) SMixerSlot[MIXER_MAP_SLOTS];
 	MIXERMAP.mMap = new(MEMTYPE_MIXERMAP) UBYTE[MIXER_MAP_SIZE];
@@ -339,20 +358,53 @@ bool BuildProceduralMixerMap(float sunX, float sunY, float sunZ) {
 		return false;
 	}
 
+	auto sampleH = [hGrid](int ix, int iy) -> float {
+		if (ix < 0) ix = 0;
+		if (ix > CeSandboxWorld::kCells) ix = CeSandboxWorld::kCells;
+		if (iy < 0) iy = 0;
+		if (iy > CeSandboxWorld::kCells) iy = CeSandboxWorld::kCells;
+		return hGrid ? hGrid[iy * kHeightGridSide + ix]
+		             : CeSandboxWorld::HeightAt(static_cast<float>(ix), static_cast<float>(iy));
+	};
+
+	float slen = std::sqrt(sunX * sunX + sunY * sunY + sunZ * sunZ);
+	float lx = sunX, ly = sunY, lz = sunZ;
+	if (slen > 1e-4f) { lx /= slen; ly /= slen; lz /= slen; }
+
 	for (int y = 0; y < CeSandboxWorld::kCells; ++y) {
 		UBYTE *row = MIXERMAP.mMap + y * CeSandboxWorld::kCells;
+		const int y0 = (y > 0) ? (y - 1) : 0;
+		const int y1 = (y < CeSandboxWorld::kCells - 1) ? (y + 1) : (CeSandboxWorld::kCells - 1);
+		const float dySpan = static_cast<float>(y1 - y0);
+		const float invDy = (dySpan > 0.5f) ? (1.0f / dySpan) : 1.0f;
 		for (int x = 0; x < CeSandboxWorld::kCells; ++x) {
-			row[x] = CeSandboxWorld::ComputeCellLight(x, y, sunX, sunY, sunZ);
+			if (!hGrid) {
+				row[x] = CeSandboxWorld::ComputeCellLight(x, y, sunX, sunY, sunZ);
+				continue;
+			}
+			const int x0 = (x > 0) ? (x - 1) : 0;
+			const int x1 = (x < CeSandboxWorld::kCells - 1) ? (x + 1) : (CeSandboxWorld::kCells - 1);
+			const float dxSpan = static_cast<float>(x1 - x0);
+			const float dzdx = (sampleH(x1, y) - sampleH(x0, y)) / ((dxSpan > 0.5f) ? dxSpan : 1.0f);
+			const float dzdy = (sampleH(x, y1) - sampleH(x, y0)) * invDy;
+			float nx = dzdx, ny = dzdy, nz = -1.0f;
+			const float nlen = std::sqrt(nx * nx + ny * ny + nz * nz);
+			if (nlen > 1e-4f) { nx /= nlen; ny /= nlen; nz /= nlen; }
+			float ndotl = nx * lx + ny * ly + nz * lz;
+			if (ndotl < 0.0f) ndotl = 0.0f;
+			if (ndotl > 1.0f) ndotl = 1.0f;
+			const int shade = static_cast<int>(14.0f + ndotl * 16.0f + 0.5f);
+			row[x] = static_cast<UBYTE>(shade < 14 ? 14 : (shade > 30 ? 30 : shade));
 		}
 	}
 
-	auto computeWeights = [](float wx, float wy, float &wSand, float &wRock, float &wAsphalt) {
-		const float h = CeSandboxWorld::HeightAt(wx, wy);
+	auto computeWeights = [&sampleH](int ix, int iy, float &wSand, float &wRock, float &wAsphalt) {
+		const float wx = static_cast<float>(ix);
+		const float wy = static_cast<float>(iy);
+		const float h = sampleH(ix, iy);
 		const float aboveSea = CeSandboxWorld::kWaterLevel - h;
-		const float hx = CeSandboxWorld::HeightAt(wx + 1.0f, wy) -
-		                 CeSandboxWorld::HeightAt(wx > 0.0f ? wx - 1.0f : 0.0f, wy);
-		const float hy = CeSandboxWorld::HeightAt(wx, wy + 1.0f) -
-		                 CeSandboxWorld::HeightAt(wx, wy > 0.0f ? wy - 1.0f : 0.0f);
+		const float hx = sampleH(ix + 1, iy) - sampleH(ix > 0 ? ix - 1 : 0, iy);
+		const float hy = sampleH(ix, iy + 1) - sampleH(ix, iy > 0 ? iy - 1 : 0);
 		const float slope = std::sqrt(hx * hx + hy * hy) * 0.5f;
 
 		// Coastal sand near waterline and shallow harbor seabed
@@ -387,16 +439,17 @@ bool BuildProceduralMixerMap(float sunX, float sunY, float sunZ) {
 			slot.mData = NULL;
 			std::memset(slot.mTextures, 0, sizeof(slot.mTextures));
 
+			float wsArr[81], wrArr[81], waArr[81];
 			bool needSand = false, needRock = false, needAsphalt = false;
 			for (int sy = 0; sy < 9; ++sy) {
-				const float wy = static_cast<float>(tileY * 8 + sy);
+				const int iy = tileY * 8 + sy;
 				for (int sx = 0; sx < 9; ++sx) {
-					const float wx = static_cast<float>(tileX * 8 + sx);
-					float ws = 0.0f, wr = 0.0f, wa = 0.0f;
-					computeWeights(wx, wy, ws, wr, wa);
-					if (ws > 0.02f) needSand = true;
-					if (wr > 0.02f) needRock = true;
-					if (wa > 0.02f) needAsphalt = true;
+					const int ix = tileX * 8 + sx;
+					const int idx = sy * 9 + sx;
+					computeWeights(ix, iy, wsArr[idx], wrArr[idx], waArr[idx]);
+					if (wsArr[idx] > 0.02f) needSand = true;
+					if (wrArr[idx] > 0.02f) needRock = true;
+					if (waArr[idx] > 0.02f) needAsphalt = true;
 				}
 			}
 
@@ -412,31 +465,28 @@ bool BuildProceduralMixerMap(float sunX, float sunY, float sunZ) {
 			slot.mCount = count;
 			for (int l = 0; l < count; ++l) slot.mTextures[l] = layers[l];
 
-			for (int sy = 0; sy < 9; ++sy) {
-				const float wy = static_cast<float>(tileY * 8 + sy);
-				for (int sx = 0; sx < 9; ++sx) {
-					const float wx = static_cast<float>(tileX * 8 + sx);
-					float ws = 0.0f, wr = 0.0f, wa = 0.0f;
-					computeWeights(wx, wy, ws, wr, wa);
+			for (int idx = 0; idx < 81; ++idx) {
+				const float ws = wsArr[idx];
+				const float wr = wrArr[idx];
+				const float wa = waArr[idx];
 
-					// CHeightField::Unknown47eff0 adds pal[*tsrc] top byte [-32,+31] to aa and
-					// compares signed 32-bit d = c - *tp. Keep each layer's signed alpha in
-					// [-62,+62] and within 62 below any stronger earlier layer at this vertex so
-					// neither aa+pal nor c-*tp can wrap signed 32-bit across bilinear spans.
-					int maxPrev = 0;
-					for (int l = 0; l < count; ++l) {
-						const float w = (layers[l] == 2) ? ws
-						              : (layers[l] == 1) ? wr
-						                                 : wa;
-						int val = static_cast<int>(-62.0f + w * 124.0f);
-						const int floorVal = maxPrev - 62;
-						if (val < floorVal) val = floorVal;
-						if (val < -62) val = -62;
-						if (val > 62) val = 62;
-						if (val > maxPrev) maxPrev = val;
-						reinterpret_cast<signed char *>(slot.mData)[l * 81 + sy * 9 + sx] =
-							static_cast<signed char>(val);
-					}
+				// CHeightField::Unknown47eff0 adds pal[*tsrc] top byte [-32,+31] to aa and
+				// compares signed 32-bit d = c - *tp. Keep each layer's signed alpha in
+				// [-62,+62] and within 62 below any stronger earlier layer at this vertex so
+				// neither aa+pal nor c-*tp can wrap signed 32-bit across bilinear spans.
+				int maxPrev = 0;
+				for (int l = 0; l < count; ++l) {
+					const float w = (layers[l] == 2) ? ws
+					              : (layers[l] == 1) ? wr
+					                                 : wa;
+					int val = static_cast<int>(-62.0f + w * 124.0f);
+					const int floorVal = maxPrev - 62;
+					if (val < floorVal) val = floorVal;
+					if (val < -62) val = -62;
+					if (val > 62) val = 62;
+					if (val > maxPrev) maxPrev = val;
+					reinterpret_cast<signed char *>(slot.mData)[l * 81 + idx] =
+						static_cast<signed char>(val);
 				}
 			}
 		}
@@ -567,7 +617,29 @@ extern "C" void PortCeLivingSandboxInstallArena(void) {
 		PortCeLivingSandboxSetMessage("Living Sandbox could not allocate terrain memory. Your career is unchanged.");
 		return;
 	}
-	CeSandboxWorld::FillHeightSamples(MAP.mHeightData);
+	float *hGrid = static_cast<float *>(std::malloc(sizeof(float) * static_cast<size_t>(kHeightGridSide) * static_cast<size_t>(kHeightGridSide)));
+	if (hGrid) {
+		for (int y = 0; y < kHeightGridSide; ++y) {
+			float *row = hGrid + y * kHeightGridSide;
+			const float wy = static_cast<float>(y);
+			for (int x = 0; x < kHeightGridSide; ++x) {
+				row[x] = CeSandboxWorld::HeightAt(static_cast<float>(x), wy);
+			}
+		}
+		for (int tx = 0; tx < CeSandboxWorld::kPatches; ++tx) {
+			for (int ty = 0; ty < CeSandboxWorld::kPatches; ++ty) {
+				int16_t *patch = MAP.mHeightData + ((tx * CeSandboxWorld::kPatches + ty) * CeSandboxWorld::kPatchSamples * CeSandboxWorld::kPatchSamples);
+				for (int sy = 0; sy < CeSandboxWorld::kPatchSamples; ++sy) {
+					const float *row = hGrid + (ty * CeSandboxWorld::kPatchCells + sy) * kHeightGridSide + tx * CeSandboxWorld::kPatchCells;
+					for (int sx = 0; sx < CeSandboxWorld::kPatchSamples; ++sx) {
+						patch[sy * CeSandboxWorld::kPatchSamples + sx] = CeSandboxWorld::QuantizeHeight(row[sx]);
+					}
+				}
+			}
+		}
+	} else {
+		CeSandboxWorld::FillHeightSamples(MAP.mHeightData);
+	}
 
 	MAP.mGridShiftX = CeSandboxWorld::kGridShift;
 	MAP.mGridShiftY = CeSandboxWorld::kGridShift;
@@ -600,8 +672,12 @@ extern "C" void PortCeLivingSandboxInstallArena(void) {
 	MAP.mHFP.SunPosZ = -0.604f;
 
 	FinalizeHeightFieldLighting();
+	gActiveHeightGrid = hGrid;
 	RefreshProceduralMapExtents();
-	if (!BuildProceduralMixerMap(MAP.mHFP.SunPosX, MAP.mHFP.SunPosY, MAP.mHFP.SunPosZ)) {
+	gActiveHeightGrid = NULL;
+	const bool mixerOk = BuildProceduralMixerMap(MAP.mHFP.SunPosX, MAP.mHFP.SunPosY, MAP.mHFP.SunPosZ, hGrid);
+	std::free(hGrid);
+	if (!mixerOk) {
 		gWorld.failed = true;
 		PortCeLivingSandboxSetMessage("Living Sandbox could not allocate terrain blend memory. Your career is unchanged.");
 		return;

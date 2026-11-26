@@ -1,0 +1,61 @@
+--- a/game.cpp
++++ b/game.cpp
+@@ -4187,6 +4187,16 @@
+ 		return(TRUE);
+ 	if (stricmp(mesh,mSettings.mWingmanMesh)==0)
+ 		return(TRUE);
++#ifdef CE_VERSION
++	extern bool PortRecording();
++	if (PortCeLayer() && !PortRecording() && mesh && mesh[0])
++	{
++		if (PortCeLivingSandboxActive() || PortCeCarrierClashActive() || PortCeFlagshipDuelActive())
++			return(TRUE);
++		if (IsMultiplayer() && stricmp(mesh, "cockpit2b.msh") == 0)
++			return(TRUE);
++	}
++#endif
+ 
+ 	return(FALSE);
+ }
+--- a/mesh.cpp
++++ b/mesh.cpp
+@@ -1647,6 +1647,12 @@
+ 		data->Skip();
+ 		if (box)
+ 			delete box;
++#ifdef CE_VERSION
++		extern bool PortCeLayer();
++		extern bool PortRecording();
++		if (PortCeLayer() && !PortRecording())
++			delete mesh;
++#endif
+ 		return NULL;
+ 	}
+ 
+--- a/rtmesh.cpp
++++ b/rtmesh.cpp
+@@ -5,6 +5,9 @@
+ #include "rtmesh.h"
+ #include "meshrenderer.h"
+ #include "mesh.h"
++#ifdef CE_VERSION
++#include "../platform/common/portlog.h"
++#endif
+ #include "meshpose.h"
+ #include "thing.h"
+ #include "engine.h"
+@@ -107,7 +110,14 @@
+ 			mMesh = ENGINE.GetDefaultMesh();
+ 	}
+ 	if (!mMesh)
++	{
++#ifdef CE_VERSION
++		extern bool PortCeLayer();
++		if (init->mName[0] && PortCeLayer())
++			PortSessionLog(PORT_SESSION_GAME, true, "missing mesh fallback to default.msh: %s", init->mName);
++#endif
+ 		mMesh = ENGINE.GetDefaultMesh();
++	}
+ 
+ 	mRadius = mMesh->mRadius;
+ 	mCueFactor = mMesh->mCueFactor;

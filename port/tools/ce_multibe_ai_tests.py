@@ -510,21 +510,133 @@ int main() {
         sm.isJet = true;
         sm.flightAllowed = true;
         sm.groundIsDry = false;
+        sm.aheadGroundIsDry = true;
+        sm.altitudeAboveGround = 4.0f;
         sm.energyRatio = 0.05f;
         sm.ticksSinceMorph = 200;
         Check(!CeMultiBeShouldMorphSmart(sm), "NEVER morphs Jet->Walker over water even at 5% energy");
 
+        // High-altitude Jet->Walker morphing MUST be refused ("flying spider" prevention)!
         sm.groundIsDry = true;
-        sm.energyRatio = 0.30f;
-        Check(CeMultiBeShouldMorphSmart(sm), "lands early over dry ground below 32% energy");
+        sm.aheadGroundIsDry = true;
+        sm.energyRatio = 0.25f;
+        sm.altitudeAboveGround = 30.0f;
+        Check(!CeMultiBeShouldMorphSmart(sm), "refuses Jet->Walker low-energy morph at 30m AGL");
+        sm.energyRatio = 0.80f;
+        sm.hasHostile = true;
+        sm.targetDist = 35.0f;
+        sm.targetAltitude = 0.0f;
+        sm.ticksSinceMorph = 200;
+        Check(!CeMultiBeShouldMorphSmart(sm), "refuses Jet->Walker combat morph at 30m AGL");
 
-        // Base-defense scramble takeoff
+        // Wet runway ahead refuses normal low-altitude landing morph
+        sm.altitudeAboveGround = 4.5f;
+        sm.aheadGroundIsDry = false;
+        sm.energyRatio = 0.25f;
+        Check(!CeMultiBeShouldMorphSmart(sm), "refuses Jet->Walker when forward landing runway is over water");
+
+        // Low altitude over dry land + dry runway ahead -> lands cleanly!
+        sm.aheadGroundIsDry = true;
+        sm.energyRatio = 0.30f;
+        Check(CeMultiBeShouldMorphSmart(sm), "lands cleanly over dry ground below 32% energy at <= 6m AGL");
+        sm.energyRatio = 0.80f;
+        Check(CeMultiBeShouldMorphSmart(sm), "lands cleanly for close ground combat at <= 6m AGL");
+        sm.ticksSinceMorph = 90;
+        Check(!CeMultiBeShouldMorphSmart(sm), "enforces 110-tick cooldown before combat Jet->Walker drop");
+
+        // Critical energy (<10%) fallback allows slightly higher dry landing (<= 14m)
+        sm.energyRatio = 0.08f;
+        sm.altitudeAboveGround = 12.0f;
+        Check(CeMultiBeShouldMorphSmart(sm), "allows critical low-energy dry landing at 12m AGL");
+
+        // Base-defense scramble takeoff (requires grounded or low AGL)
         sm.isJet = false;
+        sm.isOnGround = true;
+        sm.altitudeAboveGround = 0.0f;
         sm.energyRatio = 0.60f;
         sm.baseDefenseUrgent = true;
         sm.targetDist = 100.0f;
         sm.ticksSinceMorph = 60;
         Check(CeMultiBeShouldMorphSmart(sm), "scrambles to Jet promptly when friendly base is under attack");
+
+        // Airborne Walker MUST NOT morph back to Jet mid-fall unless rescuing from water!
+        sm.isOnGround = false;
+        sm.altitudeAboveGround = 15.0f;
+        sm.nearWaterHazard = false;
+        Check(!CeMultiBeShouldMorphSmart(sm), "refuses mid-air Walker->Jet morph when falling over dry land");
+        sm.nearWaterHazard = true;
+        Check(CeMultiBeShouldMorphSmart(sm), "allows emergency mid-air Walker->Jet water rescue");
+
+        // Periodic sortie must not thrash during close-in Walker duel (< 60m)
+        sm.isOnGround = true;
+        sm.altitudeAboveGround = 0.0f;
+        sm.nearWaterHazard = false;
+        sm.baseDefenseUrgent = false;
+        sm.energyRatio = 0.85f;
+        sm.hasHostile = true;
+        sm.targetDist = 35.0f;
+        sm.targetAltitude = 0.0f;
+        sm.ticksSinceMorph = 200;
+        sm.slotIndex = 0;
+        sm.simTicks = 240;
+        Check(!CeMultiBeShouldMorphSmart(sm), "does not fire periodic air sortie during close-in 35m duel");
+        sm.targetDist = 70.0f;
+        Check(CeMultiBeShouldMorphSmart(sm), "fires periodic air sortie at standoff 70m range");
+
+        // ---- 8. Jet Landing Approach & Post-Takeoff Smooth Climb ----
+        Check(CeMultiBeWantsJetLanding(true, true, true, true, 0.28f, false, false, false, -1.0f, 0.0f, 50),
+              "wants jet landing when energy < 34% over dry runway");
+        Check(!CeMultiBeWantsJetLanding(true, true, true, false, 0.28f, false, false, false, -1.0f, 0.0f, 50),
+              "refuses jet landing approach when forward runway is wet");
+        Check(CeMultiBeWantsJetLanding(true, true, true, true, 0.80f, false, false, true, 40.0f, 0.0f, 120),
+              "wants jet landing for close ground combat after cooldown");
+
+        CeMultiBeJetFlightInput lj = {};
+        lj.curYaw = 0.0f;
+        lj.curPitch = 0.0f;
+        lj.posZ = -28.0f;      // 18m above ground at z=-10
+        lj.groundZ = -10.0f;
+        lj.aheadGroundZ = -10.0f;
+        lj.waterZ = 0.0f;
+        lj.toGoal = { 0.0f, 40.0f, 18.0f };
+        lj.hasHostile = true;
+        lj.wantLanding = true;
+        lj.groundIsDry = true;
+        lj.aheadGroundIsDry = true;
+        CeMultiBeJetFlightCmd lcmd = CeMultiBeComputeJetFlight(lj);
+        Check(lcmd.nextPhase == CE_AI_JET_LANDING && lcmd.inLanding && !lcmd.emergencyPullUp,
+              "enters CE_AI_JET_LANDING descent phase over dry runway");
+        Check(lcmd.pitchInput < -0.05f && lcmd.thrustVy > 0.25f,
+              "landing approach pitches nose down smoothly and cuts throttle");
+
+        // Low flare at 5m AGL stays in landing (does NOT trigger 10.5m emergency pull-up!)
+        lj.posZ = -15.0f;
+        lcmd = CeMultiBeComputeJetFlight(lj);
+        Check(lcmd.nextPhase == CE_AI_JET_LANDING && lcmd.inLanding && !lcmd.emergencyPullUp,
+              "landing approach flares cleanly at 5m AGL without emergency pull-up");
+
+        // Water ahead immediately aborts landing and pulls up!
+        lj.aheadGroundIsDry = false;
+        lcmd = CeMultiBeComputeJetFlight(lj);
+        Check(!lcmd.inLanding && lcmd.emergencyPullUp && lcmd.pitchInput > 0.3f,
+              "wet runway ahead aborts landing approach and triggers emergency pull-up");
+
+        // Post-takeoff climb at 6m AGL climbs gently without afterburner emergency pull-up!
+        CeMultiBeJetFlightInput tj = {};
+        tj.curYaw = 0.0f;
+        tj.curPitch = 0.0f;
+        tj.posZ = -16.0f;      // 6m AGL
+        tj.groundZ = -10.0f;
+        tj.aheadGroundZ = -10.0f;
+        tj.waterZ = 0.0f;
+        tj.toGoal = { 0.0f, 120.0f, 0.0f };
+        tj.hasHostile = true;
+        tj.groundIsDry = true;
+        tj.aheadGroundIsDry = true;
+        tj.postTakeoffClimb = true;
+        CeMultiBeJetFlightCmd tcmd = CeMultiBeComputeJetFlight(tj);
+        Check(!tcmd.emergencyPullUp && tcmd.pitchInput > 0.10f && tcmd.pitchInput < 0.65f && tcmd.thrustVy > -0.60f,
+              "post-takeoff climb rises smoothly without violent afterburner pull-up");
     }
 
     if (!gFail)
@@ -659,6 +771,30 @@ class MultiBeAiBrainTests(unittest.TestCase):
             "20_angle_wrap_returns_unwrapped": (
                 "const float r = remainderf(a, 6.283185307179586f);",
                 "const float r = a;",
+            ),
+            "21_high_altitude_jet_to_walker_allowed": (
+                "if (alt > 8.0f || !in.aheadGroundIsDry)\n\t\t\treturn false;",
+                "if (!in.aheadGroundIsDry)\n\t\t\treturn false;",
+            ),
+            "22_wet_runway_jet_to_walker_allowed": (
+                "if (alt > 8.0f || !in.aheadGroundIsDry)\n\t\t\treturn false;",
+                "if (alt > 8.0f)\n\t\t\treturn false;",
+            ),
+            "23_midair_walker_to_jet_allowed": (
+                "if (!in.isOnGround && alt > 3.5f)\n\t\t\treturn false;",
+                "if (false)\n\t\t\treturn false;",
+            ),
+            "24_close_duel_sortie_thrash_allowed": (
+                "if (in.hasHostile && in.targetDist > 60.0f && ((in.simTicks + in.slotIndex * 65) % 240) < 10 && in.energyRatio > 0.65f)",
+                "if (in.hasHostile && ((in.simTicks + in.slotIndex * 65) % 240) < 10 && in.energyRatio > 0.65f)",
+            ),
+            "25_landing_margin_not_lowered": (
+                "const float floorMargin = landingSafe ? 2.2f : ((in.curPitch > 0.12f) ? 13.5f : 10.5f);",
+                "const float floorMargin = (in.curPitch > 0.12f) ? 13.5f : 10.5f;",
+            ),
+            "26_post_takeoff_smooth_climb_disabled": (
+                "const bool postTakeoffSafe = in.postTakeoffClimb && in.groundIsDry && !in.outOfBounds && (altAboveSurf > 2.5f);",
+                "const bool postTakeoffSafe = false;",
             ),
         }
         self.assertGreaterEqual(len(mutants), 12)

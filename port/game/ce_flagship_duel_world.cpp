@@ -146,8 +146,12 @@ bool VerifyPackedAyaFile(const char *gameRelPath, bool *outExists) {
 
 bool PreloadRetailMeshTexture(const char *texName) {
 	if (!texName || !texName[0] || !LT.GetDevice()) return false;
+	const char *suffix = CeFlagshipDuelWorld::InferTextureDiskSuffix(texName);
+	ETextureFormat fmt = TEXFMT_A1R5G5B5;
+	if (std::strcmp(suffix, "A8R8G8B8") == 0) fmt = TEXFMT_A8R8G8B8;
+	else if (std::strcmp(suffix, "A4R4G4B4") == 0) fmt = TEXFMT_A4R4G4B4;
 	for (CDXTexture *o = CDXTexture::mFirst; o; o = o->CTexture::mNext) {
-		if (stricmp(o->GetName(), texName) == 0 && o->mFormat == TEXFMT_A1R5G5B5 &&
+		if (stricmp(o->GetName(), texName) == 0 && o->mFormat == fmt &&
 		    o->mLevels == -1 && o->mTextures[0] != NULL) {
 			return true;
 		}
@@ -162,8 +166,8 @@ bool PreloadRetailMeshTexture(const char *texName) {
 	t->mScaleV = 1.0f;
 	t->mUnknown94 = -1;
 	t->mRefCount = 0;
-	t->mFormat = TEXFMT_A1R5G5B5;
-	t->mTexFormat = TEXFMT_A1R5G5B5;
+	t->mFormat = fmt;
+	t->mTexFormat = fmt;
 	t->mWidth = 0;
 	t->mHeight = 0;
 	t->mLossShift = 0;

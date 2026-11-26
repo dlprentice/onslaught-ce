@@ -38,6 +38,8 @@ FakeEngine ENGINE;
 bool gActive = true;
 float gX = 4.f / 3.f;
 int PortHudAnchored();	// production ce_hud_anchor.cpp
+int PortCeIsSplitScreen();
+int PortCeCameraSplitAspect();
 #include "widescreen_hud.inc"
 
 static void check(bool value, const char *message)
@@ -82,12 +84,23 @@ int main(int argc, char **argv)
 	wideModes = 1;
 	check(iniReads == 0, "a fenced run never reads ce.ini");
 
-	// Ordinary single-player play: the ini decides, and is read once.
+	// Ordinary single-player play and single-viewport MP (Solo Skirmish / Commander): the ini decides, and is read once.
 	check(CeHudAnchorEnabled() == wanted, "the ini's answer (no line means on)");
 	check(PortHudAnchored() == (wanted ? 1 : 0), "one viewpoint, not multiplayer");
 	check(CeHudAnchorEnabled() == wanted && iniReads == 1, "the ini is read once");
 	GAME.multiplayer = true;
-	check(!PortHudAnchored(), "multiplayer keeps the 4:3 columns");
+	ENGINE.viewpoints = 1;
+	check(!PortCeIsSplitScreen() && !PortCeCameraSplitAspect(), "single-viewport MP is not splitscreen and keeps 0.75 aspect");
+	check(PortHudAnchored() == (wanted ? 1 : 0), "single-viewport MP (Solo Skirmish / Commander) follows hud_anchor");
+	layer = false;
+	check(PortCeIsSplitScreen() && PortCeCameraSplitAspect(), "faithful layer keeps retail multiplayer splitscreen");
+	layer = true;
+	ENGINE.viewpoints = 2;
+	check(PortCeIsSplitScreen() && PortCeCameraSplitAspect(), "2P splitscreen keeps splitscreen layout and 0.5 aspect");
+	check(!PortHudAnchored(), "2P splitscreen keeps the 4:3 columns");
+	ENGINE.viewpoints = 4;
+	check(PortCeIsSplitScreen() && !PortCeCameraSplitAspect(), "4P quad-split keeps splitscreen HUD but full 0.75 aspect");
+	check(!PortHudAnchored(), "4P quad-split keeps the 4:3 columns");
 	GAME.multiplayer = false;
 	ENGINE.viewpoints = 2;
 	check(!PortHudAnchored(), "two viewpoints keep the 4:3 columns");
@@ -112,9 +125,11 @@ int main(int argc, char **argv)
 		check(near(began, wanted ? 0.f : s.inset) && near(explicitTerm, wanted ? 0.f : s.inset), "pinned: no inset; else the 4:3 columns");
 		check(near(PortHudOriginal(), 0.f), "the game's own offset is kept");
 		GAME.multiplayer = true;
+		ENGINE.viewpoints = 2;
 		began = PortHudBegin(0.f, s.w);
-		check(near(began, s.inset) && near(PortHudInset(s.w), s.inset), "multiplayer: the 4:3 columns");
+		check(near(began, s.inset) && near(PortHudInset(s.w), s.inset), "2P splitscreen multiplayer: the 4:3 columns");
 		GAME.multiplayer = false;
+		ENGINE.viewpoints = 1;
 	}
 	gActive = true;
 	gX = 4.f / 3.f;
@@ -166,8 +181,10 @@ int main(int argc, char **argv)
 	// The developer log tells each change once, and nothing when it is off.
 	devLog = false;
 	GAME.multiplayer = true;
+	ENGINE.viewpoints = 2;
 	PortHudBegin(0.f, 1920.f);
 	GAME.multiplayer = false;
+	ENGINE.viewpoints = 1;
 	PortHudBegin(0.f, 1920.f);
 	puts("HUD anchoring chain: PASS");
 	return 0;

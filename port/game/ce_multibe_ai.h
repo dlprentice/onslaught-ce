@@ -707,7 +707,8 @@ enum CeAiJetPhase
 {
 	CE_AI_JET_CRUISE = 0,
 	CE_AI_JET_ATTACK_RUN = 1,
-	CE_AI_JET_BREAKOFF = 2
+	CE_AI_JET_BREAKOFF = 2,
+	CE_AI_JET_LANDING = 3
 };
 
 struct CeMultiBeJetFlightInput
@@ -727,6 +728,10 @@ struct CeMultiBeJetFlightInput
 	CeAiJetPhase prevPhase;
 	int          phaseTicks;
 	int          breakTurnDir;    // -1 or +1
+	bool         wantLanding;     // true when AI wants a smooth low-altitude landing approach over dry ground
+	bool         groundIsDry;     // terrain directly beneath BE is dry land
+	bool         aheadGroundIsDry;// forward landing runway (+10m) is dry land
+	bool         postTakeoffClimb;// first ~16 ticks after entering Jet: smooth climb instead of afterburner emergency pull-up
 };
 
 struct CeMultiBeJetFlightCmd
@@ -738,11 +743,30 @@ struct CeMultiBeJetFlightCmd
 	float        pitchErrAbs;     // absolute pitch alignment error to target (radians)
 	bool         emergencyPullUp;
 	bool         inAttackRun;
+	bool         inLanding;
 	CeAiJetPhase nextPhase;
 	int          nextPhaseTicks;
 	int          nextBreakTurnDir;
 	bool         startedBreakoff;
 };
+
+// Decides whether an airborne AI Jet should begin a controlled descent onto dry land before morphing to Walker.
+inline bool CeMultiBeWantsJetLanding(bool isJet, bool flightAllowed, bool groundIsDry, bool aheadGroundIsDry,
+                                     float energyRatio, bool retreating, bool nearRepairPadApproach,
+                                     bool hasHostile, float targetDist, float targetAltitude,
+                                     int ticksSinceMorph)
+{
+	if (!isJet || !flightAllowed || !groundIsDry || !aheadGroundIsDry)
+		return false;
+	if (energyRatio < 0.34f)
+		return true;
+	if (retreating && nearRepairPadApproach && ticksSinceMorph >= 25)
+		return true;
+	if (!retreating && hasHostile && targetDist >= 0.0f && targetDist < 55.0f &&
+	    targetAltitude < 10.0f && ticksSinceMorph >= 110)
+		return true;
+	return false;
+}
 
 inline CeMultiBeJetFlightCmd CeMultiBeComputeJetFlight(const CeMultiBeJetFlightInput &in)
 {
@@ -760,11 +784,15 @@ inline CeMultiBeJetFlightCmd CeMultiBeComputeJetFlight(const CeMultiBeJetFlightI
 	if (!CeAiIsFinite(surfaceZ))
 		surfaceZ = 0.0f;
 
+	const bool landingSafe = in.wantLanding && in.groundIsDry && in.aheadGroundIsDry &&
+	                         !in.outOfBounds && !in.postTakeoffClimb;
+	const float altAboveSurf = surfaceZ - in.posZ;
 	const float cruiseHeight = (in.desiredCruiseHeight > 14.0f && CeAiIsFinite(in.desiredCruiseHeight))
 		? in.desiredCruiseHeight : 22.0f;
 	const float safeCruiseZ = surfaceZ - cruiseHeight;
-	const float floorMargin = (in.curPitch > 0.12f) ? 13.5f : 10.5f;
+	const float floorMargin = landingSafe ? 2.2f : ((in.curPitch > 0.12f) ? 13.5f : 10.5f);
 	const float floorDangerZ = surfaceZ - floorMargin;
+	const bool postTakeoffSafe = in.postTakeoffClimb && in.groundIsDry && !in.outOfBounds && (altAboveSurf > 2.5f);
 
 	const float horizDist = sqrtf(in.toGoal.x * in.toGoal.x + in.toGoal.y * in.toGoal.y);
 	const float targetYaw = (horizDist > 1.0f) ? CeAiAzimuth(in.toGoal.x, in.toGoal.y) : in.curYaw;
@@ -772,8 +800,20 @@ inline CeMultiBeJetFlightCmd CeMultiBeComputeJetFlight(const CeMultiBeJetFlightI
 	cmd.yawErrAbs = fabsf(CeAiWrapAngle(targetYaw - in.curYaw));
 	cmd.pitchErrAbs = fabsf(CeAiWrapAngle(targetPitch - in.curPitch));
 
-	// Phase transitions (Boom-and-Zoom).
-	if (in.isRetreating || in.outOfBounds || !in.hasHostile)
+	// Phase transitions (Landing approach + Boom-and-Zoom).
+	if (landingSafe)
+	{
+		if (in.prevPhase != CE_AI_JET_LANDING)
+			cmd.nextPhaseTicks = 0;
+		cmd.nextPhase = CE_AI_JET_LANDING;
+		cmd.inLanding = true;
+	}
+	else if (in.isRetreating || in.outOfBounds || !in.hasHostile)
+	{
+		cmd.nextPhase = CE_AI_JET_CRUISE;
+		cmd.nextPhaseTicks = 0;
+	}
+	else if (in.prevPhase == CE_AI_JET_LANDING)
 	{
 		cmd.nextPhase = CE_AI_JET_CRUISE;
 		cmd.nextPhaseTicks = 0;
@@ -813,15 +853,40 @@ inline CeMultiBeJetFlightCmd CeMultiBeComputeJetFlight(const CeMultiBeJetFlightI
 	float desiredPitch = 0.0f;
 	float thrust = 0.80f;
 
-	if (in.posZ > floorDangerZ)
+	if (postTakeoffSafe)
+	{
+		// Smooth level climb right after takeoff instead of violent afterburner pitch-up.
+		desiredYaw = targetYaw;
+		desiredPitch = -0.16f;
+		thrust = 0.72f;
+	}
+	else if (in.posZ > floorDangerZ)
 	{
 		// Absolute terrain/water collision avoidance pull-up!
 		cmd.emergencyPullUp = true;
+		cmd.inLanding = false;
 		desiredPitch = -0.44f;	// strong nose UP (-Z climb!)
 		thrust = 1.0f;
 		// Bank slightly away from steep ground if diving into a hillside near target.
 		if (in.hasHostile && horizDist < 45.0f)
 			desiredYaw = CeAiWrapAngle(targetYaw + (float)cmd.nextBreakTurnDir * 0.85f);
+	}
+	else if (cmd.nextPhase == CE_AI_JET_LANDING)
+	{
+		// Controlled low-speed glide slope down to ~4.5m AGL (using local ground height so distant hills
+		// do not block descent), flaring cleanly above BEA's 5m ground-effect hover cushion before morphing.
+		desiredYaw = targetYaw;
+		const float localAlt = CeAiIsFinite(in.groundZ) ? (in.groundZ - in.posZ) : altAboveSurf;
+		if (localAlt > 8.5f)
+		{
+			desiredPitch = CeAiClamp((localAlt - 5.0f) * 0.032f, 0.12f, 0.34f);
+			thrust = 0.28f;
+		}
+		else
+		{
+			desiredPitch = CeAiClamp((localAlt - 4.5f) * 0.025f, -0.05f, 0.12f);
+			thrust = 0.20f;
+		}
 	}
 	else if (cmd.nextPhase == CE_AI_JET_BREAKOFF)
 	{
@@ -845,7 +910,6 @@ inline CeMultiBeJetFlightCmd CeMultiBeComputeJetFlight(const CeMultiBeJetFlightI
 		}
 		else
 		{
-			const float altAboveSurf = surfaceZ - in.posZ;
 			const float maxSafeDive = (altAboveSurf > 20.0f) ? 0.36f :
 			                          (altAboveSurf > 14.5f) ? 0.24f : 0.08f;
 			desiredPitch = CeAiClamp(targetPitch, -0.38f, maxSafeDive);
@@ -1050,20 +1114,31 @@ struct CeMultiBeSmartMorphInput
 	int   ticksSinceMorph;
 	int   slotIndex;
 	int   simTicks;
+	float altitudeAboveGround;  // meters above ground directly beneath BE (0 on ground)
+	bool  isOnGround;           // true when Walker feet are planted on ground or walkable object
+	bool  aheadGroundIsDry;     // forward landing runway (+10m) is dry land
 };
 
 // Fair-rules combined-arms Walker <-> Jet morph selector.
-// CRITICAL SAFETY INVARIANT: NEVER morph from Jet -> Walker unless `groundIsDry == true`!
+// CRITICAL SAFETY INVARIANTS:
+//   1. NEVER morph from Jet -> Walker unless `groundIsDry == true`!
+//   2. NEVER drop into Walker mode high in the sky — descend to low landing altitude (<= 6m AGL) over dry runway first!
+//   3. NEVER morph Walker -> Jet mid-fall unless rescuing from a water hazard!
 inline bool CeMultiBeShouldMorphSmart(const CeMultiBeSmartMorphInput &in)
 {
 	if (!in.flightAllowed)
 		return false;
 
+	const float alt = CeAiIsFinite(in.altitudeAboveGround) ? in.altitudeAboveGround : 999.0f;
+
 	if (!in.isJet)
 	{
-		// Immediate emergency takeoff if walker is dangerously close to water.
+		// Immediate emergency takeoff if walker is dangerously close to water (even if airborne).
 		if (in.nearWaterHazard && in.energyRatio > 0.25f)
 			return true;
+		// Never re-morph to Jet mid-fall unless rescuing from water.
+		if (!in.isOnGround && alt > 3.5f)
+			return false;
 		if (in.energyRatio < 0.45f)
 			return false;
 		// Urgent scramble to defend friendly base or retreat to a distant repair pad.
@@ -1075,14 +1150,14 @@ inline bool CeMultiBeShouldMorphSmart(const CeMultiBeSmartMorphInput &in)
 			return false;
 		if (in.energyRatio < 0.50f)
 			return false;
-		// Take off to intercept airborne targets, close on distant targets/objectives, or run air sorties.
+		// Take off to intercept airborne targets, close on distant targets/objectives, or run air sorties at standoff range.
 		if (in.hasHostile && in.targetAltitude > 11.0f)
 			return true;
 		if (in.hasHostile && in.targetDist > 85.0f)
 			return true;
 		if (!in.hasHostile && in.goalDist > 90.0f)
 			return true;
-		if (in.hasHostile && ((in.simTicks + in.slotIndex * 65) % 240) < 10 && in.energyRatio > 0.65f)
+		if (in.hasHostile && in.targetDist > 60.0f && ((in.simTicks + in.slotIndex * 65) % 240) < 10 && in.energyRatio > 0.65f)
 			return true;
 		return false;
 	}
@@ -1091,17 +1166,26 @@ inline bool CeMultiBeShouldMorphSmart(const CeMultiBeSmartMorphInput &in)
 		// ABSOLUTE INVARIANT: never morph Jet -> Walker over water!
 		if (!in.groundIsDry)
 			return false;
-		// Land early on dry ground before energy stalls.
-		if (in.energyRatio < 0.32f)
+		// Critical energy fallback over dry land if still descending to avoid uncontrolled retail stall.
+		if (in.energyRatio < 0.05f && alt <= 14.0f)
+			return true;
+		if (in.energyRatio < 0.10f && alt <= 14.0f && in.aheadGroundIsDry)
+			return true;
+		// Controlled landings require low skim altitude (<= 8.0m AGL, just above BEA's 5m ground-effect hover cushion)
+		// AND dry runway ahead so AI swoops down and lands cleanly without dropping as a "flying spider".
+		if (alt > 8.0f || !in.aheadGroundIsDry)
+			return false;
+		// Land early on dry ground before energy stalls (matches CeMultiBeWantsJetLanding threshold, zero deadband).
+		if (in.energyRatio < 0.34f)
 			return true;
 		// Land promptly when arriving at a friendly repair pad while retreating.
 		if (in.retreating && in.nearRepairPad && in.ticksSinceMorph >= 25)
 			return true;
-		if (in.ticksSinceMorph < 75)
+		if (in.ticksSinceMorph < 110)
 			return false;
-		// Drop to Walker mode for precision close-in ground combat over dry terrain.
+		// Drop to Walker mode for precision close-in ground combat over dry terrain (matches CeMultiBeWantsJetLanding).
 		if (!in.retreating && in.hasHostile && in.targetDist >= 0.0f &&
-		    in.targetDist < 50.0f && in.targetAltitude < 10.0f)
+		    in.targetDist < 55.0f && in.targetAltitude < 10.0f)
 			return true;
 		return false;
 	}

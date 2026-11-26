@@ -3734,8 +3734,8 @@ bool CePlayUnitHudOverlay(CPlayer *player, int viewpoint)
 	HUD.mSafeRight = HUD.mSafeX + HUD.mSafeWidth;
 	HUD.SetOverlayRenderStates();
 	RENDERINFO.SRS(D3DRS_ALPHATESTENABLE, FALSE);
-	// Each part inside the HUD scale scope the Battle Engine's overlay gives it (CHud::RenderOverlayForViewpoint, patches 0089 and 0190).
-	const int eligible = (!GAME.IsMultiplayer() || PortCeOneScreenMatch()) && ENGINE.GetNumViewpoints() == 1;
+	// Each part inside the HUD scale scope the Battle Engine's overlay gives it (CHud::RenderOverlayForViewpoint, patches 0089, 0190, 0387).
+	const int eligible = (!PortCeIsSplitScreen() || PortCeOneScreenMatch()) && ENGINE.GetNumViewpoints() == 1;
 	{
 		// Projected world target & objective markers (mScreenMarker diamonds), scaled about each marker's own screen position.
 		CeHudScope scope(eligible, HUD.mViewportWidth, HUD.mViewportHeight, 0.f, 0.f);

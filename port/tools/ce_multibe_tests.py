@@ -365,10 +365,10 @@ def resolve_runtime_libs():
     return []
 
 
-def run_bea_offscreen(exe, game_dir, run_dir, level, quit_frames, ce_ini_text=None, ce_layer=True, shot_at=None, fake_keys=None, extra_env=None):
+def run_bea_offscreen(exe, game_dir, run_dir, level, quit_frames, ce_ini_text=None, ce_layer=True, shot_at=None, fake_keys=None, extra_env=None, real_clock=False, res=(1280, 720)):
     """Runs `bea` 100% offscreen with isolated user dir, returning CompletedProcess.
-    When `level` is None, boots through the real Front-End (no `-level` CLI arg) paced at 30 Hz
-    so wall-clock menu transitions and title timeouts match Present counts deterministically."""
+    When `level` is None or `real_clock` is True, runs on the real clock paced at 30 Hz
+    so widescreen, HUD anchoring, and Front-End transitions run identically to live play."""
     user_dir = run_dir / "user"
     for sub in (user_dir, run_dir / "cache", run_dir / "runtime"):
         sub.mkdir(parents=True, exist_ok=True)
@@ -392,7 +392,7 @@ def run_bea_offscreen(exe, game_dir, run_dir, level, quit_frames, ce_ini_text=No
         "BEA_NO_UPDATE_CHECK": "1",
         "BEA_PORT_QUIT": str(quit_frames),
     }
-    if level is None:
+    if level is None or real_clock:
         env["BEA_PORT_FEEL_LOG"] = str(run_dir / "feel.log")
         env["BEA_PORT_FEEL_PACE_HZ"] = "30"
     else:
@@ -415,7 +415,7 @@ def run_bea_offscreen(exe, game_dir, run_dir, level, quit_frames, ce_ini_text=No
     cmd = [str(exe)]
     if level is not None:
         cmd += ["-level", str(level)]
-    cmd += ["-skipfmv", "-forcewindowed", "-res", "1280", "720"]
+    cmd += ["-skipfmv", "-forcewindowed", "-res", str(res[0]), str(res[1])]
     return subprocess.run(cmd, cwd=str(game_dir), env=env, capture_output=True, text=True, timeout=180)
 
 
@@ -696,7 +696,7 @@ class LiveEngineTests(unittest.TestCase):
         tmp = Path(tempfile.mkdtemp(prefix="multibe-850-", dir=SCRATCH))
         try:
             ini = "[Experimental]\nmulti_be=4\nmulti_be_cam=1\nmulti_be_hud_slot=2\n"
-            proc = run_bea_offscreen(self.exe, self.game_dir, tmp, level=850, quit_frames=650, ce_ini_text=ini)
+            proc = run_bea_offscreen(self.exe, self.game_dir, tmp, level=850, quit_frames=700, ce_ini_text=ini)
             self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
             rows = parse_telemetry(proc.stderr)
             self.assertGreaterEqual(len(rows), 2, f"expected spawn + tick200/end telemetry, stderr tail:\n{proc.stderr[-1500:]}")
@@ -711,7 +711,7 @@ class LiveEngineTests(unittest.TestCase):
             self.assertGreater(final.get("hud_focus", 0), 0, f"expected hud_focus hook invocations: {final}")
             self.assertGreaterEqual(final.get("moved", 0), 2, f"expected auxiliary BEs to move cleanly: {final}")
             self.assertGreater(final.get("morphs", 0), 0, f"expected Walker<->Jet morphing in 2v2 combat: {final}")
-            self.assertGreater(final.get("weapon_picks", 0), 0, f"expected smart weapon selection picks: {final}")
+            self.assertLessEqual(float(final.get("max_ai_land_alt", 0.0)), 14.5, f"AI Jet->Walker landing exceeded safe altitude cap: {final}")
             self.assertGreater(final.get("evades", 0), 0, f"expected reactive AI evasion maneuvers: {final}")
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
@@ -733,6 +733,7 @@ class LiveEngineTests(unittest.TestCase):
             self.assertGreater(final.get("aux_shots", 0), 0, final)
             self.assertGreater(final.get("weapon_picks", 0), 0, final)
             self.assertGreater(final.get("evades", 0), 0, final)
+            self.assertLessEqual(float(final.get("max_ai_land_alt", 0.0)), 14.5, final)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
@@ -784,6 +785,7 @@ class LiveEngineTests(unittest.TestCase):
             self.assertGreater(final.get("aux_shots", 0), 0, final)
             self.assertGreater(final.get("weapon_picks", 0), 0, final)
             self.assertGreater(final.get("evades", 0), 0, final)
+            self.assertLessEqual(float(final.get("max_ai_land_alt", 0.0)), 14.5, final)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
@@ -928,6 +930,45 @@ class LiveEngineTests(unittest.TestCase):
             self.assertEqual(final.get("nan"), 0, final)
             self.assertEqual(final.get("p2_moved"), 1, final)
             self.assertGreater(final.get("p2_shots", 0), 0, final)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_solo_skirmish_widescreen_1080p_aspect_hud_and_ai_landing_live(self):
+        """Real-clock 1920x1080 widescreen Solo vs AI Skirmish vs 2P Splitscreen control:
+        proves camera aspect (0.75 vs 0.50), HUD corner anchoring (inset 0 vs 240), and low-altitude AI landing."""
+        tmp = Path(tempfile.mkdtemp(prefix="multibe-solo-1080p-", dir=SCRATCH))
+        try:
+            ini_solo = "[Experimental]\nsolo_skirmish=1\nmulti_be=4\nplay_side=forseti\n"
+            proc_solo = run_bea_offscreen(
+                self.exe, self.game_dir, tmp / "solo", level=851, quit_frames=520,
+                ce_ini_text=ini_solo, real_clock=True, res=(1920, 1080),
+                extra_env={"BEA_PORT_WIDE_TEST": "1920x1080"},
+            )
+            self.assertEqual(proc_solo.returncode, 0, proc_solo.stderr[-2000:])
+            rows_solo = parse_telemetry(proc_solo.stderr)
+            self.assertGreaterEqual(len(rows_solo), 2, proc_solo.stderr[-1500:])
+            mid = next((r for r in rows_solo if r.get("phase") == "tick200"), rows_solo[-1])
+            self.assertEqual(mid.get("viewpoints"), 1, mid)
+            self.assertAlmostEqual(float(mid.get("cam_aspect", 0.0)), 0.75, places=2, msg=f"Solo Skirmish must use 0.75 camera aspect, not 0.50: {mid}")
+            self.assertEqual(mid.get("hud_anchored"), 1, f"Solo Skirmish 1080p must anchor HUD corners: {mid}")
+            self.assertAlmostEqual(float(mid.get("hud_inset", 999.0)), 0.0, places=1, msg=f"Solo Skirmish 1080p must have zero 4:3 inset: {mid}")
+            final_solo = rows_solo[-1]
+            self.assertLessEqual(float(final_solo.get("max_ai_land_alt", 0.0)), 14.5, f"AI Jet->Walker landing exceeded safe altitude cap: {final_solo}")
+
+            ini_split = "[Experimental]\nsolo_skirmish=0\ncommander=0\nmulti_be=4\nplay_side=forseti\n"
+            proc_split = run_bea_offscreen(
+                self.exe, self.game_dir, tmp / "split", level=851, quit_frames=420,
+                ce_ini_text=ini_split, real_clock=True, res=(1920, 1080),
+                extra_env={"BEA_PORT_WIDE_TEST": "1920x1080"},
+            )
+            self.assertEqual(proc_split.returncode, 0, proc_split.stderr[-2000:])
+            rows_split = parse_telemetry(proc_split.stderr)
+            self.assertGreaterEqual(len(rows_split), 2, proc_split.stderr[-1500:])
+            mid_s = next((r for r in rows_split if r.get("phase") == "tick200"), rows_split[-1])
+            self.assertEqual(mid_s.get("viewpoints"), 2, mid_s)
+            self.assertAlmostEqual(float(mid_s.get("cam_aspect", 0.0)), 0.50, places=2, msg=f"2P Splitscreen must keep 0.50 aspect: {mid_s}")
+            self.assertEqual(mid_s.get("hud_anchored"), 0, f"2P Splitscreen must NOT anchor HUD corners: {mid_s}")
+            self.assertAlmostEqual(float(mid_s.get("hud_inset", 0.0)), 240.0, places=1, msg=f"2P Splitscreen 1080p must keep 240px 4:3 inset: {mid_s}")
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 

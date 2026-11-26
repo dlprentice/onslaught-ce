@@ -17,6 +17,7 @@
 #include <mutex>
 #else
 #include <curl/curl.h>
+#include <unistd.h>
 #if LIBCURL_VERSION_NUM < 0x074a00
 #error Native signaling requires libcurl 7.74 or newer
 #endif
@@ -544,6 +545,18 @@ public:
             CE_ONLINE_CURL_SET(CURLOPT_FOLLOWLOCATION, 0L);
             CE_ONLINE_CURL_SET(CURLOPT_MAXREDIRS, 0L);
             if (origin_.https) {
+                static const char *const kLinuxCaBundles[] = {
+                    "/etc/ssl/certs/ca-certificates.crt",
+                    "/etc/pki/tls/certs/ca-bundle.crt",
+                    "/etc/ssl/ca-bundle.pem",
+                    "/etc/ssl/cert.pem",
+                };
+                for (const char *bundle : kLinuxCaBundles) {
+                    if (access(bundle, R_OK) == 0) {
+                        CE_ONLINE_CURL_SET(CURLOPT_CAINFO, bundle);
+                        break;
+                    }
+                }
                 CE_ONLINE_CURL_SET(CURLOPT_PROTOCOLS, long(CURLPROTO_HTTPS));
                 CE_ONLINE_CURL_SET(CURLOPT_REDIR_PROTOCOLS, long(CURLPROTO_HTTPS));
                 CE_ONLINE_CURL_SET(CURLOPT_SSL_VERIFYPEER, 1L);

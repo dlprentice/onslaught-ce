@@ -39,7 +39,7 @@ int main()
 	ENGINE.viewpoints = 2;
 	check(!PortHudAnchored(), "a solo level that counts two viewpoints is not anchored");
 	ENGINE.viewpoints = 1; GAME.multiplayer = true;
-	check(!PortHudAnchored(), "local multiplayer is not anchored");
+	check(PortHudAnchored(), "single-viewport multiplayer (Solo Skirmish / Commander / Online) is anchored");
 	ENGINE.viewpoints = 2;
 	check(!PortHudAnchored(), "local split screen (two viewpoints, no network game) is not anchored");
 	lockstep = 1;

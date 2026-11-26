@@ -231,13 +231,16 @@ struct SupportMeshSpec {
 	const char *texture;
 };
 
-constexpr unsigned kSupportMeshCount = 4u;
+constexpr unsigned kSupportMeshCount = 7u;
 inline const SupportMeshSpec &SupportMesh(unsigned index) {
 	static const SupportMeshSpec kMeshes[kSupportMeshCount] = {
 		{"m_rocket.msh",                "meshtex\\m_rocket.TGA"},
 		{"fa_wildcard_t_destroyed.msh", nullptr},
 		{"m_innerwreckage.msh",         "meshtex\\BOSSfenrir-FRONT.tga"},
 		{"fa_f24.msh",                  nullptr},
+		{"Fa_wildcard_j.msh",           nullptr},
+		{"Fa_wildcard_t.msh",           nullptr},
+		{"cockpit2b.msh",               nullptr},
 	};
 	return kMeshes[index < kSupportMeshCount ? index : 0u];
 }

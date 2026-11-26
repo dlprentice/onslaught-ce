@@ -452,6 +452,7 @@ void PortCeOnlineUiUpdate(void) {
 
 void PortCeOnlineUiRender(void) {
     if (sExitingToMultiplayer || !PortCeOnlineHostActive() || FEMESSBOX.BeingDisplayed()) return;
+    if (FRONTEND.GetCurrentPage() == FEP_TRANSITION && (PLATFORM.GetSysTimeFloat() - sOpenTime < 0.5f)) return;
     EnsureHostOps();
     ApplyTextStates();
 

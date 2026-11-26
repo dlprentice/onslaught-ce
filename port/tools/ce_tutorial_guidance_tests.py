@@ -134,7 +134,7 @@ def main():
     box_source = (mirror / 'MessageBox.cpp').read_text()
     dinput = (ROOT / 'port/platform/common/dinput.cpp').read_text()
     keys = (ROOT / 'port/platform/common/ce_tutorial_keys.cpp').read_text()
-    controller_h = (ROOT / 'src/Controller.h').read_text()
+    controller_h = (mirror / 'Controller.h').read_text()
     controller = (ROOT / 'src/Controller.cpp').read_text()
     console_h = (ROOT / 'src/console.h').read_text()
     game_source = (ROOT / 'src/game.cpp').read_text()
@@ -151,9 +151,9 @@ def main():
     patched_controller = (mirror/'Controller.cpp').read_text()
     mappings = body(patched_controller, r'^void\s+CController::DoMappings\(')
     assert 'int pad = mPadNumber;' in mappings
-    assert re.search(r'int input_num = pad;.*?if \(GAME.IsMultiplayer\(\) \|\| input_num != 0\)\s*break;\s*input_num = 1;', mappings, re.S)
+    assert re.search(r'int input_num = pad;.*?if \(GAME.IsMultiplayer\(\) \|\| input_num != 0\)\s*(?:#endif\s*)?break;\s*input_num = 1;', mappings, re.S)
     control = joy + '\n' + '\n'.join(action_lines + axis_lines) + '\n' + structs
-    constructors = controller[controller.index('SControlBinding::SControlBinding(bool'):controller.index('HRESULT InitMouse()')]
+    constructors = patched_controller[patched_controller.index('SControlBinding::SControlBinding(bool'):patched_controller.index('HRESULT InitMouse()')]
     names = ('BUTTON_MECH_STRAFE_LEFT', 'BUTTON_MECH_STRAFE_RIGHT', 'BUTTON_MECH_CHANGE_ZOOM_IN', 'BUTTON_MECH_CHANGE_ZOOM_OUT')
     rows = []
     for name in names:

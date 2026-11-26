@@ -11,6 +11,7 @@
 
 #include "common.h"
 #include "game.h"
+#include "DXEngine.h"
 #include "world.h"
 #include "unit.h"
 #include "thing.h"
@@ -72,7 +73,7 @@ bool PortCeOneScreenMatch() { return gScreenSet; }
 
 bool PortCeAudioSingleListener()
 {
-	return gScreenSet || !GAME.IsMultiplayer() || (CE_BootRequested && CE_BootRequested()) || (CE_SessionActive && CE_SessionActive());
+	return gScreenSet || !PortCeIsSplitScreen() || (CE_BootRequested && CE_BootRequested()) || (CE_SessionActive && CE_SessionActive());
 }
 
 void CeCmdMatchLevelEnd()

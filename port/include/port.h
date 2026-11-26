@@ -62,6 +62,8 @@ float PortHudInset(float viewportWidth);	// the HUD's shift into a viewport's 4:
 float PortHudBegin(float offset, float viewportWidth);	// HUD_OFFSET_X with that shift (the game's value kept)
 float PortHudOriginal();			// the game's HUD_OFFSET_X while the shifted one is in place
 int PortHudAnchored();				// ce_hud_anchor.cpp: the HUD's corner groups sit in the screen's corners (single player, hud_anchor)
+int PortCeIsSplitScreen();			// ce_hud_anchor.cpp: multiplayer with multiple viewpoints (false for single-viewport MP)
+int PortCeCameraSplitAspect();		// ce_hud_anchor.cpp: half-height 2P splitscreen aspect (false for 1-viewpoint MP and 3P/4P quad-split)
 void PortUiMouse(int *x, int *y);	// back buffer pixels to the virtual screen's, clamped to 640 x 480
 int PortUiMouseMenu(int mouseInputActive);	// an in-game menu's pointer (the game's mouse released, CE layer, the commander map not open): its position is the virtual screen's like the front end's
 void PortUiMouseMenuPoint(int *x, int *y);	// a window position (back buffer pixels) as that pointer: the virtual screen's

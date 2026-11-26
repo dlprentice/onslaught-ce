@@ -1,0 +1,58 @@
+--- a/DXShadows.cpp
++++ b/DXShadows.cpp
+@@ -363,6 +363,16 @@
+ 	if (mNumTextures <= 0)
+ 		return;
+ #endif
++#ifdef CE_VERSION
++	extern bool PortCeLayer();
++	extern bool PortRecording();
++	if (PortCeLayer() && !PortRecording() && unit)
++	{
++		CBoundingBox *box = unit->GetBoundingBox();
++		if (box && (box->mAxes.X > 25.f || box->mAxes.Y > 25.f))
++			return;
++	}
++#endif
+ 
+ 	SINT	i;
+ 	for (i = 0; i < mNumTextures; i++)
+@@ -776,6 +786,11 @@
+ 		}
+ 		if (!t->mUnit.ToRead())
+ 			continue;
++#ifdef CE_VERSION
++		extern bool PortCeLayer();
++		if (PortCeLayer() && (t->mRadius <= 0.f || t->mAlpha <= 0))
++			continue;
++#endif
+ 
+ 		FVector	pos = t->mPos;
+ 		float	radius = t->mRadius;
+--- a/DXWater.cpp
++++ b/DXWater.cpp
+@@ -252,7 +252,14 @@
+ {
+ 	static int	count = 0;							// 009cc220: a rebuild every 20 frames regardless (= 0 here and in Render: retail's .bss order, placement evidence)
+ 	UWORD		indices[0xd80];
++#ifdef CE_VERSION
++	extern bool PortCeLayer();
++	static int	sGridMirrorState = -1;
++	const int	hasMirror = (ENGINE.GetLandscape() && ENGINE.GetLandscape()->mMirrorTexture) ? 1 : 0;
++	if (colour != mGridColour || (PortCeLayer() ? (hasMirror != sGridMirrorState) : (count++ == 20)))
++#else
+ 	if (colour != mGridColour || count++ == 20)
++#endif
+ 	{
+ 		count = 0;
+ 		TRACE("Creating water VBuf\n");
+@@ -294,6 +301,9 @@
+ 			x -= WATER_GRID_SIZE;
+ 		}
+ 		mGridColour = colour;
++#ifdef CE_VERSION
++		sGridMirrorState = hasMirror;
++#endif
+ 		mVB->SetPersist();
+ 	}
+ 	FVector cam = ENGINE.GetCamera()->GetPos();

@@ -643,14 +643,26 @@ inline bool BuildMeshStubChunk(const char *meshName, int32_t runtimeId, bool kee
 	return true;
 }
 
+inline const char *InferTextureDiskSuffix(const char *texName) {
+	if (!texName) return "A1R5G5B5";
+	const char *base = texName;
+	for (const char *p = texName; *p; ++p) {
+		if (*p == '\\' || *p == '/') base = p + 1;
+	}
+	if ((base[0] == 'A' || base[0] == 'a') && base[1] == '8') return "A8R8G8B8";
+	if ((base[0] == 'A' || base[0] == 'a') && base[1] == '4') return "A4R4G4B4";
+	return "A1R5G5B5";
+}
+
 inline bool BuildTextureDiskPath(const char *texName, char *outPath, size_t outSize) {
 	if (!texName || !texName[0] || !outPath || outSize < 64u) return false;
+	const char *suffix = InferTextureDiskSuffix(texName);
 	char mangled[160] = {};
 	size_t i = 0u;
 	for (; texName[i] && i + 1u < sizeof(mangled); ++i)
 		mangled[i] = (texName[i] == '\\') ? '%' : texName[i];
 	mangled[i] = '\0';
-	snprintf(outPath, outSize, "data\\resources\\dxtntextures\\%s(0)A1R5G5B5.aya", mangled);
+	snprintf(outPath, outSize, "data\\resources\\dxtntextures\\%s(0)%s.aya", mangled, suffix);
 	return true;
 }
 

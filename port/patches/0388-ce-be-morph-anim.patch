@@ -1,0 +1,55 @@
+--- a/BattleEngine.cpp
++++ b/BattleEngine.cpp
+@@ -57,6 +57,8 @@
+ CParticleDescriptor		*CBattleEngine::sWaterEffect;
+ CParticleDescriptor		*CBattleEngine::sLandEffect;
+ #ifdef CE_VERSION
++extern bool PortCeLayer();
++extern bool PortRecording();
+ extern "C" int PortCeMultiBeAllowTeamKills(void) __attribute__((weak));
+ extern "C" void PortCeMultiBeOnConfirmedKill(void *killer, void *killed) __attribute__((weak));
+ extern "C" int PortCeMultiBeHandleDeath(void *battleEngine) __attribute__((weak));
+@@ -537,6 +539,10 @@
+ 	  mRenderThing = mOtherMeshHackRenderThing ;
+ 	  mOtherMeshHackRenderThing = temp ;
+ 	  mHackRenderThingIsWalker = TRUE ;
++#ifdef CE_VERSION
++	  if (PortCeLayer() && !PortRecording())
++		  SetAnimMode("walk", TRUE, TRUE) ;
++#endif
+ 	  mMotionController = mHackBackupMC ;
+ 	  mMotionController->SetThing(this);
+ 	  mHackBackupMC = NULL ;
+@@ -2285,6 +2291,10 @@
+ 
+ 		mState=BATTLE_ENGINE_STATE_MORPHING_INTO_WALKER;
+ 		SetAnimMode("flytowalk", TRUE, FALSE) ;
++#ifdef CE_VERSION
++		if (PortCeLayer() && !PortRecording() && mAnimation)
++			mAnimation->mFrameIncrement *= 2.0f ;
++#endif
+ 
+ 		if (mInFlightSound)
+ 		{
+@@ -2313,6 +2323,10 @@
+ 			MassiveHackPutUsInRightMesh();
+ 		
+ 			SetAnimMode("walktofly", TRUE,FALSE);
++#ifdef CE_VERSION
++			if (PortCeLayer() && !PortRecording() && mAnimation)
++				mAnimation->mFrameIncrement *= (EVENT_MANAGER.GetTime()-mLastTimeOnGround<0.6f) ? 2.2f : 5.0f;
++#endif
+ 
+ 			if (EVENT_MANAGER.GetTime()-mLastTimeOnGround<0.6f)
+ 				mTakeOffHeight=mPos.Z;
+@@ -2938,6 +2952,10 @@
+ 			{
+ 				mTransformStartTime=EVENT_MANAGER.GetTime();
+ 				mState=BATTLE_ENGINE_STATE_JET;
++#ifdef CE_VERSION
++				if (PortCeLayer() && !PortRecording())
++					SetAnimMode("fly", TRUE, TRUE);
++#endif
+ 				SetCollisionShape();
+ 			}
+ 			break ;

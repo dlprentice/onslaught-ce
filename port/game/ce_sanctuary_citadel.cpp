@@ -2098,6 +2098,23 @@ bool RuntimeCue(float eyeX, float eyeY, char *title, unsigned titleCap,
     return false;
 }
 
+static bool CitadelWithinDrawRange(float floorZ) {
+    if (!gCitadel) return false;
+    if (gCitadel->insideCinema) return true;
+    float ex = gCitadel->eyeX, ey = gCitadel->eyeY, ez = gCitadel->eyeZ;
+    if (CCamera *cam = ENGINE.GetCameraForViewpoint(0)) {
+        const FVector p = cam->GetPos();
+        ex = p.X;
+        ey = p.Y;
+        ez = p.Z;
+    }
+    const float dx = ex - kCenterX;
+    const float dy = ey - kCenterY;
+    const float dz = ez - (floorZ - 20.0f);
+    // Keep Citadel drawn everywhere within fog/sightline range (500m sphere around center).
+    return (dx * dx + dy * dy + dz * dz) <= (500.0f * 500.0f);
+}
+
 void RuntimeDrawWorld() {
     if (!gCitadel || !gCitadel->active || !gCitadel->built || gMirrorPass) return;
     IDirect3DDevice9 *dev = LT.GetDevice();
@@ -2109,6 +2126,8 @@ void RuntimeDrawWorld() {
     }
     EnsureGpuBuffers(dev);
     EnsureFactionEmblemTextures(dev);
+
+    if (!CitadelWithinDrawRange(gCitadel->floorZ)) return;
 
     IDirect3DStateBlock9 *saved = NULL;
     if (FAILED(dev->CreateStateBlock(D3DSBT_ALL, &saved)) || !saved) return;
@@ -2300,6 +2319,8 @@ void RuntimeDrawWorld() {
 
 void RuntimeDrawDomeFx() {
     if (!gCitadel || !gCitadel->active || !gCitadel->built || gMirrorPass)
+        return;
+    if (gCitadel->insideCinema || !CitadelWithinDrawRange(gCitadel->floorZ))
         return;
     IDirect3DDevice9 *dev = LT.GetDevice();
     if (!dev) return;

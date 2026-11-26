@@ -421,6 +421,7 @@ static void TestGeometryBounds() {
         for (int i = 0; i < CeOnlineLayout::kCreateFieldCount; ++i) r.push_back(CeOnlineLayout::CreateFieldRow(i));
         r.push_back(CeOnlineLayout::CreatePrivacyBox());
         r.push_back(CeOnlineLayout::CreateSubmitBtn());
+        r.push_back(CeOnlineLayout::CreateLanBtn());
         r.push_back(CeOnlineLayout::CreateBackBtn());
         CheckNonOverlappingSet(r, "Create layout in 640x480 safe band without overlaps");
     }
@@ -433,6 +434,7 @@ static void TestGeometryBounds() {
         r.push_back(CeOnlineLayout::JoinPwdField());
         r.push_back(CeOnlineLayout::JoinPasteBtn());
         r.push_back(CeOnlineLayout::JoinSubmitBtn());
+        r.push_back(CeOnlineLayout::JoinLanBtn());
         r.push_back(CeOnlineLayout::JoinBackBtn());
         CheckNonOverlappingSet(r, "JoinCode layout in 640x480 safe band without overlaps");
     }
@@ -1267,6 +1269,30 @@ static void TestLaunchClosePreservationAndGamepadNav() {
         CHECK(ui.BrowserPagerFocus() == CeOnlineUiModel::BROWSER_PG_JOIN, "single-page pager skips disabled < Prev");
         ui.SetBrowserPagerFocus(CeOnlineUiModel::BROWSER_PG_PREV);
         CHECK(!ui.BrowserNavActivate(), "disabled < Prev refuses activation");
+    }
+
+    // 5. Offline / unavailable lobby server keeps Direct LAN reachable from Browser, Create, and Join Code
+    {
+        FakeOnlineBackend be;
+        be.profile.connStatus = CE_ONLINE_CONN_OFFLINE;
+        be.profile.pingMs = -1;
+        be.profile.statusDetail = "Online lobby service is currently unavailable.";
+        CeOnlineUiModel ui;
+        ui.SetBackend(&be);
+        ui.Open(true); // from Multiplayer -> Browser
+        CHECK(ui.Page() == CE_ONLINE_PAGE_BROWSER, "opens Browser when launched from Multiplayer");
+        CHECK(ui.BrowserZoneFocus() == CeOnlineUiModel::BROWSER_ZONE_FOOTER &&
+              ui.BrowserFooterFocus() == CeOnlineUiModel::BROWSER_FT_LAN,
+              "offline empty browser focuses Direct LAN / IP");
+        ui.EnterCreate(CE_ONLINE_PAGE_BROWSER);
+        CHECK(ui.StatusIsError() && !ui.StatusNotice().empty(),
+              "offline Create Lobby preserves server-unavailable notice");
+        ui.EnterJoinCode(CE_ONLINE_PAGE_BROWSER);
+        CHECK(ui.StatusIsError() && !ui.StatusNotice().empty(),
+              "offline Join by Code preserves server-unavailable notice");
+        ui.TriggerDirectLan();
+        CHECK(!ui.Active() && ui.TakeRequestedDirectLan(),
+              "Direct LAN trigger closes Online UI and flags Direct LAN handoff");
     }
 }
 

@@ -501,7 +501,7 @@ void EnsureBound() {
 void HandleExitFlags() {
     if (gModel.TakeRequestedDirectLan()) {
         if (gHasOps && gOps.exit_action) {
-            gOps.exit_action(gModel.ReturnToMultiplayer() ? CE_OUI_EXIT_DIRECT_LAN : CE_OUI_EXIT_CLOSE_NET);
+            gOps.exit_action(CE_OUI_EXIT_DIRECT_LAN);
         }
         return;
     }
@@ -618,8 +618,19 @@ void RenderBrowser(float mx, float my, bool mouseMoved, int *wheel, bool canClic
     if (rooms.empty()) {
         CeOnlineRect emptyBox = { 84.f, 180.f, 556.f, 344.f };
         DrawPanelBox(emptyBox, kRowBg, kBorder);
-        DrawTextCenter(emptyBox, kGrey,
-                       gModel.BrowserLoading() ? "Loading public lobbies..." : "No lobbies found. Choose Create Lobby or Refresh.");
+        const CeOnlineProfileView &prof = gModel.Profile();
+        const char *emptyMsg = "No lobbies found. Choose Create Lobby or Refresh.";
+        uint32_t emptyCol = kGrey;
+        if (gModel.BrowserLoading()) {
+            emptyMsg = "Loading public lobbies...";
+        } else if (prof.connStatus == CE_ONLINE_CONN_CONNECTING) {
+            emptyMsg = "Connecting to lobby server...";
+            emptyCol = kWarn;
+        } else if (prof.connStatus != CE_ONLINE_CONN_ONLINE) {
+            emptyMsg = "Lobby server unavailable. Use Direct LAN / IP below.";
+            emptyCol = kWarn;
+        }
+        DrawTextCenter(emptyBox, emptyCol, emptyMsg);
     } else {
         for (int vis = 0; vis < CE_ONLINE_UI_BROWSER_PAGE_SIZE; ++vis) {
             const int idx = start + vis;
@@ -782,11 +793,18 @@ void RenderCreate(float mx, float my, bool mouseMoved, bool canClick) {
 
     if (mouseMoved) {
         if (CeOnlineLayout::CreateSubmitBtn().Contains(mx, my)) gModel.SetCreateFocus(CeOnlineUiModel::CREATE_SUBMIT);
+        else if (CeOnlineLayout::CreateLanBtn().Contains(mx, my)) gModel.SetCreateFocus(CeOnlineUiModel::CREATE_DIRECT_LAN);
         else if (CeOnlineLayout::CreateBackBtn().Contains(mx, my)) gModel.SetCreateFocus(CeOnlineUiModel::CREATE_BACK);
     }
     if (DrawButton(CeOnlineLayout::CreateSubmitBtn(), "Create Lobby",
                    gModel.CreateFocus() == CeOnlineUiModel::CREATE_SUBMIT, true, mx, my, canClick, kGood)) {
         gModel.CreateSubmit();
+    }
+    if (DrawButton(CeOnlineLayout::CreateLanBtn(), "Direct LAN / IP",
+                   gModel.CreateFocus() == CeOnlineUiModel::CREATE_DIRECT_LAN, true, mx, my, canClick)) {
+        gModel.TriggerDirectLan();
+        HandleExitFlags();
+        return;
     }
     if (DrawButton(CeOnlineLayout::CreateBackBtn(), "Back",
                    gModel.CreateFocus() == CeOnlineUiModel::CREATE_BACK, true, mx, my, canClick)) {
@@ -823,6 +841,7 @@ void RenderJoinCode(float mx, float my, bool mouseMoved, bool canClick) {
     if (mouseMoved) {
         if (CeOnlineLayout::JoinPasteBtn().Contains(mx, my)) gModel.SetJoinCodeFocus(CeOnlineUiModel::JOIN_PASTE_BTN);
         else if (CeOnlineLayout::JoinSubmitBtn().Contains(mx, my)) gModel.SetJoinCodeFocus(CeOnlineUiModel::JOIN_SUBMIT_BTN);
+        else if (CeOnlineLayout::JoinLanBtn().Contains(mx, my)) gModel.SetJoinCodeFocus(CeOnlineUiModel::JOIN_LAN_BTN);
         else if (CeOnlineLayout::JoinBackBtn().Contains(mx, my)) gModel.SetJoinCodeFocus(CeOnlineUiModel::JOIN_BACK_BTN);
     }
     const CeOnlineRect paste = CeOnlineLayout::JoinPasteBtn();
@@ -834,6 +853,12 @@ void RenderJoinCode(float mx, float my, bool mouseMoved, bool canClick) {
     }
     if (DrawButton(CeOnlineLayout::JoinSubmitBtn(), "Join Lobby",
                    gModel.JoinCodeFocus() == CeOnlineUiModel::JOIN_SUBMIT_BTN, true, mx, my, canClick, kGood)) gModel.JoinCodeSubmit();
+    if (DrawButton(CeOnlineLayout::JoinLanBtn(), "Direct LAN / IP",
+                   gModel.JoinCodeFocus() == CeOnlineUiModel::JOIN_LAN_BTN, true, mx, my, canClick)) {
+        gModel.TriggerDirectLan();
+        HandleExitFlags();
+        return;
+    }
     if (DrawButton(CeOnlineLayout::JoinBackBtn(), "Back",
                    gModel.JoinCodeFocus() == CeOnlineUiModel::JOIN_BACK_BTN, true, mx, my, canClick)) {
         gModel.NavigateBack();
@@ -1223,14 +1248,20 @@ void PortCeOnlineHostButton(int btn) {
         if (btn == CE_OUI_BTN_UP)    { gModel.CreateMoveFocus(-1); PlaySnd(CE_OUI_SND_MOVE); }
         if (btn == CE_OUI_BTN_DOWN)  { gModel.CreateMoveFocus(1);  PlaySnd(CE_OUI_SND_MOVE); }
         if (btn == CE_OUI_BTN_LEFT)  {
-            if (gModel.CreateFocus() == CeOnlineUiModel::CREATE_SUBMIT || gModel.CreateFocus() == CeOnlineUiModel::CREATE_BACK)
+            if (gModel.CreateFocus() == CeOnlineUiModel::CREATE_BACK)
+                gModel.SetCreateFocus(CeOnlineUiModel::CREATE_DIRECT_LAN);
+            else if (gModel.CreateFocus() == CeOnlineUiModel::CREATE_DIRECT_LAN ||
+                     gModel.CreateFocus() == CeOnlineUiModel::CREATE_SUBMIT)
                 gModel.SetCreateFocus(CeOnlineUiModel::CREATE_SUBMIT);
             else
                 gModel.CreateAdjustFocused(-1);
             PlaySnd(CE_OUI_SND_MOVE);
         }
         if (btn == CE_OUI_BTN_RIGHT) {
-            if (gModel.CreateFocus() == CeOnlineUiModel::CREATE_SUBMIT || gModel.CreateFocus() == CeOnlineUiModel::CREATE_BACK)
+            if (gModel.CreateFocus() == CeOnlineUiModel::CREATE_SUBMIT)
+                gModel.SetCreateFocus(CeOnlineUiModel::CREATE_DIRECT_LAN);
+            else if (gModel.CreateFocus() == CeOnlineUiModel::CREATE_DIRECT_LAN ||
+                     gModel.CreateFocus() == CeOnlineUiModel::CREATE_BACK)
                 gModel.SetCreateFocus(CeOnlineUiModel::CREATE_BACK);
             else
                 gModel.CreateAdjustFocused(1);
@@ -1243,6 +1274,8 @@ void PortCeOnlineHostButton(int btn) {
                 gModel.CreateMoveFocus(1);
             } else if (gModel.CreateFocus() == CeOnlineUiModel::CREATE_SUBMIT) {
                 gModel.CreateSubmit();
+            } else if (gModel.CreateFocus() == CeOnlineUiModel::CREATE_DIRECT_LAN) {
+                gModel.TriggerDirectLan(); HandleExitFlags();
             } else if (gModel.CreateFocus() == CeOnlineUiModel::CREATE_BACK) {
                 gModel.NavigateBack(); HandleExitFlags();
             } else {
@@ -1270,7 +1303,10 @@ void PortCeOnlineHostButton(int btn) {
                 if (gModel.JoinCodePaste()) PlaySnd(CE_OUI_SND_SELECT);
             } else {
                 PlaySnd(CE_OUI_SND_SELECT);
-                if (gModel.JoinCodeFocus() == CeOnlineUiModel::JOIN_BACK_BTN) {
+                if (gModel.JoinCodeFocus() == CeOnlineUiModel::JOIN_LAN_BTN) {
+                    gModel.TriggerDirectLan();
+                    HandleExitFlags();
+                } else if (gModel.JoinCodeFocus() == CeOnlineUiModel::JOIN_BACK_BTN) {
                     gModel.NavigateBack();
                     HandleExitFlags();
                 } else {

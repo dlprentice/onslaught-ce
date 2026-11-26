@@ -62,10 +62,12 @@ def static_checks():
         fail("PortHudBegin returns the offset with the inset it logged")
     anchor = anchor_text(False)
     eligible = "!GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1"
-    if "CeHudAnchorEnabled() && " + eligible not in anchor:
+    anchor_eligible = "!PortCeIsSplitScreen() && ENGINE.GetNumViewpoints() == 1"
+    if "CeHudAnchorEnabled() && " + anchor_eligible not in anchor:
         fail("the viewpoint test of ce_hud_anchor.cpp changed")
     coop = "(CE_LockstepRequested() || (!GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1))"
-    if "CeHudAnchorEnabled() && " + coop not in anchor_text(True):
+    anchor_coop = "(CE_LockstepRequested() || (!PortCeIsSplitScreen() && ENGINE.GetNumViewpoints() == 1))"
+    if "CeHudAnchorEnabled() && " + anchor_coop not in anchor_text(True):
         fail("a network co-op game is not let through ce_hud_anchor.cpp's gate")
     after = (PORT / "patches/0157-network-hud-scale-coop.patch").read_text()
     if after.count(coop) != 5 or after.count(eligible) != 10 or after.count("\n+#ifdef CE_NETWORK_OFF\n") != 5:
@@ -83,7 +85,10 @@ def static_checks():
 
 # One-line weakenings; each must make the executed driver fail on its own, in at least one of its three ini modes (the static checks above are not consulted): (name, file, old, new)
 MUTANTS = (
-    ("multiplayer not tested", "port/game/ce_hud_anchor.cpp", " && !GAME.IsMultiplayer()", ""),
+    ("splitscreen not tested", "port/game/ce_hud_anchor.cpp", "return (GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() != 1) ? 1 : 0;", "return GAME.IsMultiplayer() ? 1 : 0;"),
+    ("camera aspect ignores single viewport", "port/game/ce_hud_anchor.cpp", "return (GAME.IsMultiplayer() && vp != 1 && vp != 3 && vp != 4) ? 1 : 0;", "return GAME.IsMultiplayer() ? 1 : 0;"),
+    ("camera aspect squashes quad split", "port/game/ce_hud_anchor.cpp", "vp != 1 && vp != 3 && vp != 4", "vp != 1"),
+    ("faithful layer bypasses retail split", "port/game/ce_hud_anchor.cpp", "if (!PortCeLayer())\n\t\treturn GAME.IsMultiplayer() ? 1 : 0;\n\treturn (GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() != 1)", "if (false)\n\t\treturn GAME.IsMultiplayer() ? 1 : 0;\n\treturn (GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() != 1)"),
     ("viewpoints not tested", "port/game/ce_hud_anchor.cpp", " && ENGINE.GetNumViewpoints() == 1", ""),
     ("the ini's default is off", "port/platform/common/hud_scale.cpp", 'CE_SettingGetBool("hud_anchor", 1)', 'CE_SettingGetBool("hud_anchor", 0)'),
     ("the ini is ignored", "port/platform/common/hud_scale.cpp", "return sAnchorIni == 1;", "return true;"),
@@ -174,8 +179,8 @@ def main():
         if ran.returncode or "PASS" not in ran.stdout:
             fail("the co-op gate: " + ran.stdout + ran.stderr)
         # the mutant of the network flavour: a co-op game not let through must fail that driver
-        gate = "(CE_LockstepRequested() || (!GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1))"
-        weak = anchor_text(True).replace(gate, "(!GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1)")
+        gate = "(CE_LockstepRequested() || (!PortCeIsSplitScreen() && ENGINE.GetNumViewpoints() == 1))"
+        weak = anchor_text(True).replace(gate, "(!PortCeIsSplitScreen() && ENGINE.GetNumViewpoints() == 1)")
         (out / "ce_hud_anchor_weak.cpp").write_text(weak)
         subprocess.run(["g++", "-std=c++17", "-O2", "-w", "-I" + str(fakes), "-I" + str(PORT / "include"), str(PORT / "tools/hud_anchor_coop_driver.cpp"),
                         str(out / "ce_hud_anchor_weak.cpp"), str(PORT / "platform/common/hud_scale.cpp"), "-o", str(out / "coop-weak")], check=True, timeout=60)

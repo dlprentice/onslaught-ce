@@ -79,7 +79,9 @@ DISPATCH = {
     "menu_rows": "POSITIONAL_INSERT", "save_gate": "FILTER", "audio_clock": "ORDERED_BROADCAST", "render_camera": "OVERRIDE_CHAIN",
     "hud_focus": "OVERRIDE_CHAIN", "unit_spawn": "ORDERED_BROADCAST", "unit_destroyed": "ORDERED_BROADCAST",
     "spawner_trigger": "FILTER", "weapon_fire": "ORDERED_BROADCAST", "render_pass": "ORDERED_BROADCAST"}
-DEPENDS = {("0314-ce-hook-audio-clock", "0062-music-finished-poll"), ("0313-ce-hook-save-gate", "0052-ce-god-not-saved-Career")}
+DEPENDS = {("0314-ce-hook-audio-clock", "0062-music-finished-poll"), ("0313-ce-hook-save-gate", "0052-ce-god-not-saved-Career"),
+           ("0387-ce-single-viewport-mp", "0235-ce-commander-one-screen"),
+           ("0389-ce-frontend-widescreen-transition", "0042-widescreen-virtual-ui")}
 SITE_FILES = sorted({f for _, sites in SITES.values() for f, _, _ in sites})
 TABLE = re.compile(r"static constexpr CeHookRow<\w+> (k\w+)\[\] = \{(.*?)\n\s*CE_HOOK_END\n\};\nCE_HOOK_CHECK\(\1, CE_HOOK_(SIM|RENDER), CE_DISPATCH_(\w+), \"(\w+)\"\);", re.S)
 ROW = re.compile(r"\{\s*(-?\d+)\s*,\s*\"([^\"]+)\"\s*,\s*CE_HOOK_(\w+)\s*,\s*CE_GATE_(\w+)\s*,\s*CE_MODE_(\w+)\s*,\s*(\w+)\s*\}")
