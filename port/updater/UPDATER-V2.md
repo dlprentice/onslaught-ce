@@ -228,7 +228,15 @@ starting the base with `BEA_CE_NO_HANDOFF=1`.
   (test key, localhost http, scripted answers). Native Windows, a real GitHub redirect and a desktop dialog have not
   been run.
 - The Windows manifest does not declare `longPathAware`: it is shared with `bea.exe`, whose own fixed path buffers
-  have not been reviewed for longer paths. Paths stay within MAX_PATH on Windows.
+  have not been reviewed for longer paths. Inside the updater (`ce_update_v2.h`), file operations use UTF-16 `*W`
+  APIs with extended `\\?\` paths so updates still unpack cleanly beyond 260 characters, and Windows release packages
+  keep every archive member path within an 85-character safety budget for older ANSI launchers.
+- On Windows 11, non-surrogate Cloud Files reparse tags (`IO_REPARSE_TAG_CLOUD`..`CLOUD_F`, used by OneDrive Files
+  On-Demand on Desktop/Documents) are accepted as ordinary files/directories; every name-surrogate reparse point
+  (symlinks, junctions, volume mount points) and every other reparse tag remains strictly refused.
+- `port/updater/tests/release_update_landing_tests.py` verifies real-layout update landing, handoff and rollback on
+  both Linux and Windows (under Wine, including >270-char extended paths), and supports `--verify-release` against
+  built release archives before publishing.
 - Under Wine 11 the unchanged 0.1.7 settings-folder check refuses a user folder on `Z:\` or below any mount point
   (Wine appears to report those directories as reparse points); the Wine cases therefore keep the user folder on `C:\`,
   and the full-user-folder case runs on Linux only (Wine covers a failing download with the simulated full disk).

@@ -64,7 +64,7 @@ class SourceReconstructionTests(unittest.TestCase):
             def reconstruct(label, caller_umask, block):
                 destination = root / label
                 destination.mkdir()
-                archive = destination / "libjuice-authored-revision.tar.gz"
+                archive = destination / "libjuice.tar.gz"
                 with tarfile.open(archive, "w:gz") as stream:
                     top = tarfile.TarInfo("libjuice-authored-revision")
                     top.type, top.mode = tarfile.DIRTYPE, 0o775

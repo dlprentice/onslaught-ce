@@ -329,6 +329,7 @@ port/updater/tests/messagebox_tests.py	script	-	deps+game+launcher+xvfb	release	
 port/updater/tests/recording_publication_tests.py	script	-	deps	release	-	
 port/updater/tests/report_box_tests.py	script	-	none	release	-	
 port/updater/tests/update_restart_tests.py	script	-	none	release	-	
+port/updater/tests/release_update_landing_tests.py	script	--platform all	deps+wine	release	-	end-to-end Linux and Windows (Wine) real-layout update landing, handoff, rollback, Windows MAX_PATH zip budget, and >270-char Windows extended-path update
 port/updater/tests/updater_v2_tests.py	script	--platform linux	deps+game+bwrap+clone	release	-	needs a local clone of the public onslaught-ce tags at local-data/updater-v2-tests/onslaught-ce.git (git clone --bare of any clone that has the v0.1.* tags); the Windows half needs Wine and is not run by --platform linux
 port/tools/dump_diff_tests.py	script	-	none	release	-	the first difference between two per-update dumps, truncated dumps and stored hashes, on authored dumps
 port/tools/runmode_tests.py	script	-	none	release	-	the run mode each environment gives, and that only a test-kit build can be in test-kit mode; needs a C++ compiler

@@ -1310,6 +1310,10 @@ def package(a):
             sys.exit(f"{top}: missing {missing}")
         if windows:
             files.update({f"{top}/{d.name}": (d.read_bytes(), 0o644) for d in WINDOWS_DLLS})
+            too_long = [name for name in sorted(files) if len(name) > 85]
+            if too_long:
+                sys.exit(f"{top}: Windows zip member exceeds 85-char MAX_PATH safety budget:\n  " +
+                         "\n  ".join(f"{len(n)}: {n}" for n in too_long))
             pkg = out / f"{top}.zip"
             with zipfile.ZipFile(pkg, "w", zipfile.ZIP_DEFLATED) as z:
                 for name, (data, mode) in sorted(files.items()):

@@ -215,31 +215,78 @@ enum { UPD_ABSENT = 0, UPD_DIR = 1, UPD_FILE = 2, UPD_OTHER = 3 };
 
 static int upd_same(const UpdId *a, const UpdId *b) { return a->dev == b->dev && a->ino == b->ino; }
 
+#ifdef _WIN32
+static int upd_win_transient(DWORD err)
+{
+	return err == ERROR_ACCESS_DENIED || err == ERROR_SHARING_VIOLATION;
+}
+
+static int upd_win_reparse_is_cloud_only(DWORD tag)
+{
+	/* Windows 11 OneDrive Files On-Demand (cldflt.sys) tags synced folders/files with non-surrogate
+	 * IO_REPARSE_TAG_CLOUD..CLOUD_F (0x9000001A..0x9000F01A). All symlinks, junctions, and volume mount
+	 * points set the name-surrogate bit (0x20000000) and remain strictly refused. */
+	return (tag & 0x20000000u) == 0 && (tag & ~0x0000F000u) == 0x9000001Au;
+}
+
+static int upd_win_handle_is_link(HANDLE h, DWORD attrs)
+{
+	if (!(attrs & FILE_ATTRIBUTE_REPARSE_POINT)) return 0;
+	FILE_ATTRIBUTE_TAG_INFO tag;
+	memset(&tag, 0, sizeof tag);
+	if (GetFileInformationByHandleEx(h, FileAttributeTagInfo, &tag, sizeof tag) &&
+		upd_win_reparse_is_cloud_only(tag.ReparseTag))
+		return 0;
+	return 1;
+}
+#endif
+
 /* What path itself is, never following a final link: ABSENT, DIR, FILE (regular, one link), OTHER (a symlink, junction
  * or other reparse point, device, multiply linked file), or -1 when it cannot be inspected. */
 static int upd_kind(const char *path, UpdId *id)
 {
 #ifdef _WIN32
-	DWORD attr = GetFileAttributesA(path);
+	WCHAR wp[PATHN + 16];
+	if (!ce_win_wide_path(path, wp, sizeof wp / sizeof *wp, 1)) return -1;
+	DWORD attr = GetFileAttributesW(wp);
 	if (attr == INVALID_FILE_ATTRIBUTES)
 	{
 		DWORD e = GetLastError();
 		return e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND ? UPD_ABSENT : -1;
 	}
-	if (attr & FILE_ATTRIBUTE_REPARSE_POINT) return UPD_OTHER;
-	HANDLE h = CreateFileA(path, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
-		OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
-	if (h == INVALID_HANDLE_VALUE) return -1;
+	HANDLE h = INVALID_HANDLE_VALUE;
+	DWORD open_err = 0;
+	for (int attempt = 0; attempt < 6; ++attempt)
+	{
+		h = CreateFileW(wp, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+			OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+		if (h != INVALID_HANDLE_VALUE) break;
+		open_err = GetLastError();
+		if (!upd_win_transient(open_err)) break;
+		if (attempt + 1 < 6) Sleep(25);
+	}
+	if (h == INVALID_HANDLE_VALUE)
+	{
+		SetLastError(open_err);
+		if (upd_win_transient(open_err)) return -1;
+		return (attr & FILE_ATTRIBUTE_REPARSE_POINT) ? UPD_OTHER : -1;
+	}
 	BY_HANDLE_FILE_INFORMATION info;
 	int ok = GetFileInformationByHandle(h, &info);
+	DWORD info_err = ok ? 0 : GetLastError();
+	int is_link = ok ? upd_win_handle_is_link(h, info.dwFileAttributes | attr) : 1;
 	CloseHandle(h);
-	if (!ok) return -1;
+	if (!ok)
+	{
+		SetLastError(info_err);
+		return (attr & FILE_ATTRIBUTE_REPARSE_POINT) ? UPD_OTHER : -1;
+	}
 	if (id)
 	{
 		id->dev = info.dwVolumeSerialNumber;
 		id->ino = (uint64_t)info.nFileIndexHigh << 32 | info.nFileIndexLow;
 	}
-	if (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) return UPD_OTHER;
+	if (is_link) return UPD_OTHER;
 	if (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) return UPD_DIR;
 	return info.nNumberOfLinks == 1 ? UPD_FILE : UPD_OTHER;
 #else
@@ -256,7 +303,9 @@ static int upd_mkdir(const char *path, int private_dir)
 {
 #ifdef _WIN32
 	(void)private_dir;
-	if (CreateDirectoryA(path, NULL)) return 1;
+	WCHAR wp[PATHN + 16];
+	if (!ce_win_wide_path(path, wp, sizeof wp / sizeof *wp, 1)) return -1;
+	if (CreateDirectoryW(wp, NULL)) return 1;
 	return GetLastError() == ERROR_ALREADY_EXISTS ? 0 : -1;
 #else
 	if (!mkdir(path, private_dir ? 0700 : 0755)) return 1;
@@ -267,8 +316,16 @@ static int upd_mkdir(const char *path, int private_dir)
 static int upd_unlink_file(const char *path)
 {
 #ifdef _WIN32
-	SetFileAttributesA(path, FILE_ATTRIBUTE_NORMAL);
-	return DeleteFileA(path) != 0;
+	WCHAR wp[PATHN + 16];
+	if (!ce_win_wide_path(path, wp, sizeof wp / sizeof *wp, 1)) return 0;
+	for (int attempt = 0; attempt < 8; ++attempt)
+	{
+		SetFileAttributesW(wp, FILE_ATTRIBUTE_NORMAL);
+		if (DeleteFileW(wp)) return 1;
+		if (!upd_win_transient(GetLastError())) return 0;
+		Sleep(25);
+	}
+	return 0;
 #else
 	return !unlink(path);
 #endif
@@ -277,7 +334,15 @@ static int upd_unlink_file(const char *path)
 static int upd_rmdir(const char *path)
 {
 #ifdef _WIN32
-	return RemoveDirectoryA(path) != 0;
+	WCHAR wp[PATHN + 16];
+	if (!ce_win_wide_path(path, wp, sizeof wp / sizeof *wp, 1)) return 0;
+	for (int attempt = 0; attempt < 8; ++attempt)
+	{
+		if (RemoveDirectoryW(wp)) return 1;
+		if (!upd_win_transient(GetLastError())) return 0;
+		Sleep(25);
+	}
+	return 0;
 #else
 	return !rmdir(path);
 #endif
@@ -310,7 +375,9 @@ static int upd_file_create(UpdFile *f, const char *path, int exec)
 	f->failed = 0;
 #ifdef _WIN32
 	(void)exec;
-	f->h = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+	WCHAR wp[PATHN + 16];
+	if (!ce_win_wide_path(path, wp, sizeof wp / sizeof *wp, 1)) { f->h = INVALID_HANDLE_VALUE; return 0; }
+	f->h = CreateFileW(wp, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
 	if (f->h == INVALID_HANDLE_VALUE) return 0;
 	SetHandleInformation(f->h, HANDLE_FLAG_INHERIT, 0);
 	return 1;
@@ -366,7 +433,12 @@ static int upd_write_new(const char *path, const void *data, size_t n)
 static char *upd_read_small(const char *path, size_t max, size_t *len)
 {
 	if (upd_kind(path, NULL) != UPD_FILE) return NULL;
+#ifdef _WIN32
+	WCHAR wp[PATHN + 16];
+	FILE *f = ce_win_wide_path(path, wp, sizeof wp / sizeof *wp, 1) ? _wfopen(wp, L"rb") : NULL;
+#else
 	FILE *f = fopen(path, "rb");
+#endif
 	if (!f) return NULL;
 	char *b = malloc(max + 1);
 	size_t n = b ? fread(b, 1, max + 1, f) : 0;
@@ -411,12 +483,14 @@ static int upd_lock(UpdLock *l, const char *dir)
 	int kind = upd_kind(path, NULL);
 	if (kind != UPD_ABSENT && kind != UPD_FILE) return -1;
 #ifdef _WIN32
-	l->h = CreateFileA(path, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_ALWAYS,
+	WCHAR wp[PATHN + 16];
+	if (!ce_win_wide_path(path, wp, sizeof wp / sizeof *wp, 1)) return -1;
+	l->h = CreateFileW(wp, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_ALWAYS,
 		FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
 	if (l->h == INVALID_HANDLE_VALUE) return -1;
 	BY_HANDLE_FILE_INFORMATION info;
 	if (!GetFileInformationByHandle(l->h, &info) || info.nNumberOfLinks != 1 ||
-		(info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)))
+		(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || upd_win_handle_is_link(l->h, info.dwFileAttributes))
 	{ CloseHandle(l->h); return -1; }
 	SetHandleInformation(l->h, HANDLE_FLAG_INHERIT, 0);
 	OVERLAPPED at = {0};
@@ -614,36 +688,47 @@ static int upd_tree_at(int parent, const char *name, dev_t dev, uint64_t mnt, in
 #else
 static int upd_tree_win(const char *path, int depth, int scan)
 {
-	DWORD attr = GetFileAttributesA(path);
+	WCHAR wp[PATHN + 16];
+	if (!ce_win_wide_path(path, wp, sizeof wp / sizeof *wp, 1)) { sUpdRefusal = "an item path is too long"; return 0; }
+	DWORD attr = GetFileAttributesW(wp);
 	if (attr == INVALID_FILE_ATTRIBUTES) { sUpdRefusal = "an item could not be inspected"; return 0; }
-	if (attr & FILE_ATTRIBUTE_REPARSE_POINT) { sUpdRefusal = "it holds a link, junction or mount point"; return 0; }
 	if (depth > 24) { sUpdRefusal = "it is nested too deeply"; return 0; }
+	int kind = upd_kind(path, NULL);
 	if (!(attr & FILE_ATTRIBUTE_DIRECTORY))
 	{
-		int kind = upd_kind(path, NULL);
 		if (kind != UPD_FILE)
 		{
-			sUpdRefusal = kind == UPD_OTHER ? "it holds a hard-linked file" : "an item could not be inspected";
+			sUpdRefusal = kind == UPD_OTHER ? ((attr & FILE_ATTRIBUTE_REPARSE_POINT) ? "it holds a link, junction or mount point" : "it holds a hard-linked file") : "an item could not be inspected";
 			return 0;
 		}
 		if (scan || upd_unlink_file(path)) return 1;
 		sUpdRefusal = "a file could not be removed";
 		return 0;
 	}
-	char pattern[PATHN], child[PATHN];
-	if (!upd_join(pattern, sizeof pattern, path, "*")) return 0;
-	WIN32_FIND_DATAA fd;
-	HANDLE h = FindFirstFileA(pattern, &fd);
+	if (kind != UPD_DIR)
+	{
+		sUpdRefusal = kind == UPD_OTHER ? "it holds a link, junction or mount point" : "a folder could not be inspected";
+		return 0;
+	}
+	char pattern[PATHN], child[PATHN], cname[PATHN];
+	WCHAR wpat[PATHN + 16];
+	if (!upd_join(pattern, sizeof pattern, path, "*") || !ce_win_wide_path(pattern, wpat, sizeof wpat / sizeof *wpat, 1)) return 0;
+	WIN32_FIND_DATAW fd;
+	HANDLE h = FindFirstFileW(wpat, &fd);
 	if (h == INVALID_HANDLE_VALUE) { sUpdRefusal = "a folder could not be read"; return 0; }
 	int ok = 1;
 	do
 	{
-		if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
-		if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)
+		if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..")) continue;
+		if ((fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) && !upd_win_reparse_is_cloud_only(fd.dwReserved0))
 		{ sUpdRefusal = "it holds a link, junction or mount point"; ok = 0; }
-		else if (!upd_join(child, sizeof child, path, fd.cFileName)) ok = 0;
+		else if (!ce_win_from_wide(fd.cFileName, cname, sizeof cname) ||
+			!*cname || !strcmp(cname, ".") || !strcmp(cname, "..") || strchr(cname, '\\') || strchr(cname, '/'))
+		{ sUpdRefusal = "it holds a name that cannot be represented safely"; ok = 0; }
+		else if (!upd_join(child, sizeof child, path, cname))
+		{ sUpdRefusal = "an item path is too long"; ok = 0; }
 		else ok = upd_tree_win(child, depth + 1, scan);
-	} while (ok && FindNextFileA(h, &fd));
+	} while (ok && FindNextFileW(h, &fd));
 	if (ok && GetLastError() != ERROR_NO_MORE_FILES)
 	{
 		sUpdRefusal = "a folder could not be read";
@@ -670,8 +755,10 @@ static void upd_hold_entry(const char *entry)
 #ifdef _WIN32
 	if (sUpdHold != INVALID_HANDLE_VALUE) { CloseHandle(sUpdHold); sUpdHold = INVALID_HANDLE_VALUE; }
 	snprintf(sUpdHoldEntry, sizeof sUpdHoldEntry, "%s", entry ? entry : "");
-	sUpdHold = CreateFileA(entry, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING,
-		FILE_FLAG_BACKUP_SEMANTICS, NULL);
+	WCHAR wp[PATHN + 16];
+	if (entry && ce_win_wide_path(entry, wp, sizeof wp / sizeof *wp, 1))
+		sUpdHold = CreateFileW(wp, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING,
+			FILE_FLAG_BACKUP_SEMANTICS, NULL);
 #else
 	sUpdHold = open(entry, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);	/* kept across exec into the game */
 	if (sUpdHold >= 0 && flock(sUpdHold, LOCK_SH | LOCK_NB)) { close(sUpdHold); sUpdHold = -1; }
@@ -682,7 +769,9 @@ static void upd_hold_entry(const char *entry)
 static int upd_entry_in_use(const char *path)
 {
 #ifdef _WIN32
-	HANDLE h = CreateFileA(path, DELETE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+	WCHAR wp[PATHN + 16];
+	if (!ce_win_wide_path(path, wp, sizeof wp / sizeof *wp, 1)) return 0;
+	HANDLE h = CreateFileW(wp, DELETE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
 		FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
 	if (h != INVALID_HANDLE_VALUE) { CloseHandle(h); return 0; }
 	return GetLastError() == ERROR_SHARING_VIOLATION;
@@ -1183,8 +1272,9 @@ static uint16_t upd_le16(const unsigned char *p) { return (uint16_t)(p[0] | p[1]
 /* The Windows package: a zip of stored or deflated regular files under one top folder. */
 static int upd_unpack(const char *pkg, UpdOut *o)
 {
-	FILE *f = fopen(pkg, "rb");
-	if (!f) return 0;
+	WCHAR wpkg[PATHN + 16];
+	FILE *f = ce_win_wide_path(pkg, wpkg, sizeof wpkg / sizeof *wpkg, 1) ? _wfopen(wpkg, L"rb") : NULL;
+	if (!f) { say("update: could not open staged package (error %lu)", (unsigned long)GetLastError()); return 0; }
 	int ok = 0;
 	unsigned char *cd = NULL, *tail = NULL;
 	static unsigned char in[65536], out[65536];
@@ -1224,7 +1314,11 @@ static int upd_unpack(const char *pkg, UpdOut *o)
 		if (nl && name[nl - 1] == '/')
 		{
 			name[nl - 1] = 0;
-			if (usize || !upd_member_path(o, name, path, sizeof path, 1)) goto done;
+			if (usize || !upd_member_path(o, name, path, sizeof path, 1))
+			{
+				say("update: unpack refused directory entry %s (error %lu)", name, (unsigned long)GetLastError());
+				goto done;
+			}
 			continue;
 		}
 		if (type == 0040000 || o->bytes + usize > UPD_UNPACK_MAX) goto done;
@@ -1232,9 +1326,17 @@ static int upd_unpack(const char *pkg, UpdOut *o)
 		if (fseek(f, (long)lho, SEEK_SET) || fread(lh, 1, 30, f) != 30 || upd_le32(lh) != 0x04034b50) goto done;
 		uint64_t data = (uint64_t)lho + 30 + upd_le16(lh + 26) + upd_le16(lh + 28);
 		if (data + csize > cdoff || fseek(f, (long)data, SEEK_SET)) goto done;
-		if (!upd_member_path(o, name, path, sizeof path, 0)) goto done;
+		if (!upd_member_path(o, name, path, sizeof path, 0))
+		{
+			say("update: unpack could not prepare destination for %s (error %lu)", name, (unsigned long)GetLastError());
+			goto done;
+		}
 		UpdFile w;
-		if (!upd_file_create(&w, path, 0)) goto done;
+		if (!upd_file_create(&w, path, 0))
+		{
+			say("update: unpack could not create %s (path_len=%u, error %lu)", name, (unsigned)strlen(path), (unsigned long)GetLastError());
+			goto done;
+		}
 		int good = 1;
 		uint32_t got = 0, sum = (uint32_t)crc32(0, NULL, 0);
 		if (method == 0)
@@ -1280,8 +1382,18 @@ static int upd_unpack(const char *pkg, UpdOut *o)
 			if (r != Z_STREAM_END) good = 0;
 			inflateEnd(&z);
 		}
-		if (!upd_file_close(&w)) good = 0;
-		if (!good || got != usize || sum != crc) goto done;
+		DWORD write_err = good ? 0 : GetLastError();
+		if (!upd_file_close(&w))
+		{
+			if (!write_err) write_err = GetLastError();
+			good = 0;
+		}
+		if (!good || got != usize || sum != crc)
+		{
+			say("update: unpack write/checksum error on %s (got %u/%u bytes, crc_ok=%d, error %lu)",
+				name, got, usize, sum == crc ? 1 : 0, (unsigned long)write_err);
+			goto done;
+		}
 		o->files++;
 		o->bytes += usize;
 		if (o->files == 1) upd_crash_point("unpack-mid");
@@ -1396,11 +1508,29 @@ static int upd_state_store(const char *vdir, UpdLock *lk, UpdJournal *jr, UpdSta
 		upd_crash_point("state-temp-written");
 		UpdId now;
 #ifdef _WIN32
-		if (s->have_file)
-			ok = upd_kind(path, &now) == UPD_FILE && upd_same(&now, &s->file) &&
-				MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
-		else ok = upd_kind(path, NULL) == UPD_ABSENT && MoveFileExA(tmp, path, MOVEFILE_WRITE_THROUGH);
-		if (!ok) upd_unlink_file(tmp);
+		WCHAR wtmp[PATHN + 16], wpath[PATHN + 16];
+		DWORD move_err = 0;
+		if (ce_win_wide_path(tmp, wtmp, sizeof wtmp / sizeof *wtmp, 1) &&
+			ce_win_wide_path(path, wpath, sizeof wpath / sizeof *wpath, 1))
+		{
+			for (int attempt = 0; attempt < 15; ++attempt)
+			{
+				int identity_ok = s->have_file ? (upd_kind(path, &now) == UPD_FILE && upd_same(&now, &s->file)) :
+					(upd_kind(path, NULL) == UPD_ABSENT);
+				if (!identity_ok) { move_err = GetLastError(); break; }
+				DWORD flags = s->have_file ? (MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) : MOVEFILE_WRITE_THROUGH;
+				if (MoveFileExW(wtmp, wpath, flags)) { ok = 1; break; }
+				move_err = GetLastError();
+				if (!upd_win_transient(move_err)) break;
+				Sleep(attempt < 5 ? 25 : 75);
+			}
+		}
+		else move_err = ERROR_FILENAME_EXCED_RANGE;
+		if (!ok)
+		{
+			say("update: could not replace versions\\state (error %lu)", (unsigned long)move_err);
+			upd_unlink_file(tmp);
+		}
 #else
 		if (s->have_file)
 		{
@@ -1558,9 +1688,15 @@ static int upd_run_program(const char *exe, int argc, char **argv, int *status)
 #ifdef _WIN32
 	char cmd[8192];
 	if (!ce_windows_command(cmd, sizeof cmd, exe, argv + 1, argc - 1, 0)) return 0;
-	STARTUPINFOEXA si;
+	WCHAR wexe[PATHN + 16], wcmd[8192];
+	UINT cp = GetACP();
+	DWORD cflags = cp == CP_UTF8 ? MB_ERR_INVALID_CHARS : 0;
+	if (!ce_win_wide_path(exe, wexe, sizeof wexe / sizeof *wexe, 0) ||
+		MultiByteToWideChar(cp, cflags, cmd, -1, wcmd, (int)(sizeof wcmd / sizeof *wcmd)) <= 0)
+		return 0;
+	STARTUPINFOEXW si;
 	memset(&si, 0, sizeof si);
-	si.StartupInfo.cb = sizeof(STARTUPINFOA);
+	si.StartupInfo.cb = sizeof(STARTUPINFOW);
 	HANDLE in = GetStdHandle(STD_INPUT_HANDLE), out = GetStdHandle(STD_OUTPUT_HANDLE), err = GetStdHandle(STD_ERROR_HANDLE);
 	int valid_in = upd_valid_std_handle(in), valid_out = upd_valid_std_handle(out), valid_err = upd_valid_std_handle(err);
 	int pass = valid_in || valid_out || valid_err;
@@ -1618,7 +1754,7 @@ static int upd_run_program(const char *exe, int argc, char **argv, int *status)
 				UpdateProcThreadAttribute(attr_list, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
 					inherit_handles, inherit_count * sizeof(HANDLE), NULL, NULL))
 			{
-				si.StartupInfo.cb = sizeof(STARTUPINFOEXA);
+				si.StartupInfo.cb = sizeof(STARTUPINFOEXW);
 				si.lpAttributeList = attr_list;
 				create_flags |= EXTENDED_STARTUPINFO_PRESENT;
 			}
@@ -1636,12 +1772,27 @@ static int upd_run_program(const char *exe, int argc, char **argv, int *status)
 		had_hold = 1;
 	}
 	PROCESS_INFORMATION pi;
-	BOOL started = CreateProcessA(exe, cmd, NULL, NULL, pass, create_flags, NULL, NULL, &si.StartupInfo, &pi);
+	BOOL started = CreateProcessW(wexe, wcmd, NULL, NULL, pass, create_flags, NULL, NULL, &si.StartupInfo, &pi);
 	if (!started && (create_flags & EXTENDED_STARTUPINFO_PRESENT))
 	{
-		si.StartupInfo.cb = sizeof(STARTUPINFOA);
+		si.StartupInfo.cb = sizeof(STARTUPINFOW);
 		si.lpAttributeList = NULL;
-		started = CreateProcessA(exe, cmd, NULL, NULL, pass, 0, NULL, NULL, &si.StartupInfo, &pi);
+		started = CreateProcessW(wexe, wcmd, NULL, NULL, pass, 0, NULL, NULL, &si.StartupInfo, &pi);
+	}
+	if (!started && strlen(exe) >= 248)
+	{
+		WCHAR wext[PATHN + 16], wshort[PATHN + 16], wclean[PATHN + 16];
+		if (ce_win_wide_path(exe, wext, sizeof wext / sizeof *wext, 1))
+		{
+			DWORD sn = GetShortPathNameW(wext, wshort, (DWORD)(sizeof wshort / sizeof *wshort));
+			if (sn > 0 && sn < (DWORD)(sizeof wshort / sizeof *wshort) &&
+				ce_win_strip_extended(wshort, wclean, sizeof wclean / sizeof *wclean))
+			{
+				si.StartupInfo.cb = sizeof(STARTUPINFOW);
+				si.lpAttributeList = NULL;
+				started = CreateProcessW(wclean, wcmd, NULL, NULL, pass, 0, NULL, NULL, &si.StartupInfo, &pi);
+			}
+		}
 	}
 	if (attr_list) { DeleteProcThreadAttributeList(attr_list); free(attr_list); }
 	if (own_in != INVALID_HANDLE_VALUE) CloseHandle(own_in);
@@ -1813,11 +1964,32 @@ static int upd_install(const char *package, const UpdOffer *o, char *installed, 
 	UpdId id;
 	if (!upd_join(vdir, sizeof vdir, sRoot, "versions")) return UPD_INSTALL_FAILED;
 	int made = upd_mkdir(vdir, 0);
-	int kind = upd_kind(vdir, &id);
-	if (made < 0 || kind != UPD_DIR) { say("update: the versions folder could not be made or is a link; nothing changed"); return UPD_INSTALL_FAILED; }
+#ifdef _WIN32
+	DWORD mk_err = made < 0 ? GetLastError() : 0;
+#endif
+	int kind = made < 0 ? -1 : upd_kind(vdir, &id);
+	if (made < 0 || kind != UPD_DIR)
+	{
+#ifdef _WIN32
+		DWORD err = made < 0 ? mk_err : GetLastError();
+		say("update: the versions folder could not be made or is a link (made=%d kind=%d error=%lu); nothing changed",
+			made, kind, (unsigned long)err);
+#else
+		say("update: the versions folder could not be made or is a link; nothing changed");
+#endif
+		return UPD_INSTALL_FAILED;
+	}
 	int locked = upd_lock(&lk, vdir);
 	if (locked == 0) { say("update: another Onslaught CE is updating this folder"); return UPD_BUSY; }
-	if (locked < 0) { say("update: the versions folder's lock is not usable; nothing changed"); return UPD_INSTALL_FAILED; }
+	if (locked < 0)
+	{
+#ifdef _WIN32
+		say("update: the versions folder's lock is not usable (error=%lu); nothing changed", (unsigned long)GetLastError());
+#else
+		say("update: the versions folder's lock is not usable; nothing changed");
+#endif
+		return UPD_INSTALL_FAILED;
+	}
 	upd_journal_read(&lk, &jr);
 	int loaded = upd_state_load(vdir, &st);
 	int rc = UPD_INSTALL_FAILED;
@@ -1825,12 +1997,13 @@ static int upd_install(const char *package, const UpdOffer *o, char *installed, 
 	if (loaded == 0)
 	{
 		/* First update: a versions folder without state is adopted only while it is empty. */
-		char pattern[PATHN];
+		char pattern[PATHN], unexpected[128] = "";
 		int empty = 1;
 #ifdef _WIN32
-		WIN32_FIND_DATAA fd;
-		if (!upd_join(pattern, sizeof pattern, vdir, "*")) goto out;
-		HANDLE h = FindFirstFileA(pattern, &fd);
+		WIN32_FIND_DATAW fd;
+		WCHAR wpat[PATHN + 16];
+		if (!upd_join(pattern, sizeof pattern, vdir, "*") || !ce_win_wide_path(pattern, wpat, sizeof wpat / sizeof *wpat, 1)) goto out;
+		HANDLE h = FindFirstFileW(wpat, &fd);
 		if (h == INVALID_HANDLE_VALUE)
 		{
 			DWORD ferr = GetLastError();
@@ -1844,8 +2017,12 @@ static int upd_install(const char *package, const UpdOffer *o, char *installed, 
 		{
 			for (;;)
 			{
-				if (strcmp(fd.cFileName, ".") && strcmp(fd.cFileName, "..") && strcmp(fd.cFileName, "lock")) empty = 0;
-				if (!FindNextFileA(h, &fd))
+				if (wcscmp(fd.cFileName, L".") && wcscmp(fd.cFileName, L"..") && wcscmp(fd.cFileName, L"lock"))
+				{
+					empty = 0;
+					if (!*unexpected) ce_win_from_wide(fd.cFileName, unexpected, sizeof unexpected);
+				}
+				if (!FindNextFileW(h, &fd))
 				{
 					DWORD ferr = GetLastError();
 					if (ferr != ERROR_NO_MORE_FILES)
@@ -1881,11 +2058,20 @@ static int upd_install(const char *package, const UpdOffer *o, char *installed, 
 				}
 				break;
 			}
-			if (strcmp(de->d_name, ".") && strcmp(de->d_name, "..") && strcmp(de->d_name, "lock")) empty = 0;
+			if (strcmp(de->d_name, ".") && strcmp(de->d_name, "..") && strcmp(de->d_name, "lock"))
+			{
+				empty = 0;
+				if (!*unexpected) snprintf(unexpected, sizeof unexpected, "%s", de->d_name);
+			}
 		}
 		if (closedir(d) != 0) goto out;
 #endif
-		if (!empty && !*jr.tmp && !*jr.dir) { say("update: the versions folder holds files this updater did not record; nothing changed"); goto out; }
+		if (!empty && !*jr.tmp && !*jr.dir)
+		{
+			say("update: the versions folder holds files this updater did not record (e.g. %s); nothing changed",
+				*unexpected ? unexpected : "unknown");
+			goto out;
+		}
 		st.dir = id;
 		snprintf(st.active, sizeof st.active, "base");
 		snprintf(st.previous, sizeof st.previous, "none");
@@ -1910,7 +2096,11 @@ static int upd_install(const char *package, const UpdOffer *o, char *installed, 
 	snprintf(jr.dir, sizeof jr.dir, "%s", name);
 	if (!upd_journal_write(&lk, &jr) || upd_mkdir(entry, 0) != 1 || upd_kind(entry, &id) != UPD_DIR)
 	{
+#ifdef _WIN32
+		say("update: could not create the new version folder (error=%lu); nothing changed", (unsigned long)GetLastError());
+#else
 		say("update: could not create the new version folder; nothing changed");
+#endif
 		goto out;
 	}
 	UpdEntry *e = &st.e[st.n++];
@@ -1934,14 +2124,38 @@ static int upd_install(const char *package, const UpdOffer *o, char *installed, 
 	int unpacked = upd_unpack(package, &out);
 	if (unpacked)
 	{
-		int p1 = snprintf(probe, sizeof probe, "%s" SEP "%s" SEP "%s", entry, top, UPD_LAUNCHER);
-		unpacked = p1 > 0 && (size_t)p1 < sizeof probe && upd_kind(probe, NULL) == UPD_FILE;
-		int p2 = snprintf(probe, sizeof probe, "%s" SEP "%s" SEP "%s", entry, top, GAME_EXE);
-		unpacked = unpacked && p2 > 0 && (size_t)p2 < sizeof probe && upd_kind(probe, NULL) == UPD_FILE;
+		const char *probes[] = {
+			UPD_LAUNCHER,
+			GAME_EXE,
 #ifndef _WIN32
-		int p3 = snprintf(probe, sizeof probe, "%s" SEP "%s" SEP "onslaught-ce-launch", entry, top);
-		unpacked = unpacked && p3 > 0 && (size_t)p3 < sizeof probe && upd_kind(probe, NULL) == UPD_FILE;
+			"onslaught-ce-launch",
 #endif
+		};
+		for (size_t pi = 0; pi < sizeof probes / sizeof *probes && unpacked; ++pi)
+		{
+			int pl = snprintf(probe, sizeof probe, "%s" SEP "%s" SEP "%s", entry, top, probes[pi]);
+			int pk = -1;
+			if (pl > 0 && (size_t)pl < sizeof probe)
+			{
+				pk = upd_kind(probe, NULL);
+#ifdef _WIN32
+				for (int attempt = 0; pk < 0 && attempt < 10; ++attempt)
+				{
+					Sleep(50);
+					pk = upd_kind(probe, NULL);
+				}
+#endif
+			}
+			if (pk != UPD_FILE)
+			{
+#ifdef _WIN32
+				say("update: unpacked %s could not be confirmed (kind=%d error=%lu)", probes[pi], pk, (unsigned long)GetLastError());
+#else
+				say("update: unpacked %s could not be confirmed (kind=%d)", probes[pi], pk);
+#endif
+				unpacked = 0;
+			}
+		}
 	}
 	if (!unpacked)
 	{
@@ -2116,7 +2330,7 @@ static int upd_check(int explicit_cmd)
 	say("update: package size and SHA-256 match the signed feed");
 	char installed[64];
 	rc = upd_install(pkg, &o, installed, sizeof installed);
-	if (rc != UPD_UPDATED && rc != UPD_BUSY)
+	if (rc != UPD_UPDATED && rc != UPD_BUSY && rc != UPD_CURRENT)
 		upd_tell(explicit_cmd, CE_BOX_UPDATE_INSTALL_FAILED);
 recover:
 	upd_stage_recover(area, &lk, &jr);

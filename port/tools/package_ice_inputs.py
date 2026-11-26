@@ -148,7 +148,7 @@ def reconstruction_commands(revision, patch_name):
     """Normalize source modes without changing the recipient shell's umask."""
     return ("  (\n"
             "    umask 022 &&\n"
-            f"    tar -xzf libjuice-{revision}.tar.gz &&\n"
+            "    tar -xzf libjuice.tar.gz &&\n"
             f"    cd libjuice-{revision} &&\n"
             f"    patch --batch --forward --fuzz=0 -p1 -i ../{patch_name}\n"
             "  )\n")
@@ -172,7 +172,7 @@ def prepare(build, with_native_signaling=False):
             raise SystemExit("ICE package source profile must have a valid source ID")
         recipe = read_regular(deps.PORT / "tools/ice_deps.py", 2_000_000)
         lock = read_regular(deps.PORT / "ice-deps.lock", 65536)
-        archive_name = "source/libjuice-" + REVIEWED_PIN["url"].rsplit("/", 1)[1] + ".tar.gz"
+        archive_name = "source/libjuice.tar.gz"
         patch_name = "source/" + REVIEWED_PATCH["name"]
         revision = REVIEWED_PIN["url"].rsplit("/", 1)[1]
         instructions = ("Corresponding modified libjuice source\n\n"

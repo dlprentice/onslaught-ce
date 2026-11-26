@@ -1023,9 +1023,109 @@ static char *read_ini_bounded(const char *ini_path, size_t *n)
 #endif
 }
 
+#ifdef _WIN32
+static int ce_win_clean_tail(const WCHAR *s)
+{
+	if (*s == L'\\') return 0;
+	while (*s)
+	{
+		if (*s == L'/') return 0;
+		if (*s == L'\\')
+		{
+			if (s[1] == L'\\') return 0;
+			++s;
+			continue;
+		}
+		const WCHAR *seg = s;
+		while (*s && *s != L'\\' && *s != L'/') ++s;
+		size_t len = (size_t)(s - seg);
+		if ((len == 1 && seg[0] == L'.') || (len == 2 && seg[0] == L'.' && seg[1] == L'.')) return 0;
+	}
+	return 1;
+}
+
+/* Strips \\?\UNC\ (converting back to \\) or \\?\ from an extended UTF-16 path into out. */
+static int ce_win_strip_extended(const WCHAR *in, WCHAR *out, size_t cap)
+{
+	if (!in || !out || !cap) return 0;
+	if (!wcsncmp(in, L"\\\\?\\UNC\\", 8))
+	{
+		size_t tail = wcslen(in + 8);
+		if (2 + tail + 1 > cap) return 0;
+		out[0] = L'\\';
+		out[1] = L'\\';
+		memcpy(out + 2, in + 8, (tail + 1) * sizeof(WCHAR));
+		return 1;
+	}
+	const WCHAR *src = !wcsncmp(in, L"\\\\?\\", 4) ? in + 4 : in;
+	size_t len = wcslen(src);
+	if (len + 1 > cap) return 0;
+	memcpy(out, src, (len + 1) * sizeof(WCHAR));
+	return 1;
+}
+
+/* Converts a launcher path (in the active code page: UTF-8 via utf8.manifest on Win10 1903+/Win11) to UTF-16.
+ * When allow_extended is set and the path is a clean absolute drive or UNC path, prefixes \\?\ (or \\?\UNC\) so
+ * Win32 *W file APIs bypass Windows' 260-char MAX_PATH limit even when registry LongPathsEnabled is 0. */
+static int ce_win_wide_path(const char *path, WCHAR *out, size_t cap, int allow_extended)
+{
+	if (!path || !*path || !out || !cap) return 0;
+	WCHAR tmp[PATHN];
+	UINT cp = GetACP();
+	DWORD flags = cp == CP_UTF8 ? MB_ERR_INVALID_CHARS : 0;
+	int n = MultiByteToWideChar(cp, flags, path, -1, tmp, PATHN);
+	if (n <= 0) return 0;
+	size_t wlen = (size_t)n - 1;
+	if (allow_extended && !(wlen >= 4 && tmp[0] == L'\\' && tmp[1] == L'\\' && (tmp[2] == L'?' || tmp[2] == L'.') && tmp[3] == L'\\'))
+	{
+		int is_drive = wlen >= 3 && ((tmp[0] >= L'A' && tmp[0] <= L'Z') || (tmp[0] >= L'a' && tmp[0] <= L'z')) &&
+			tmp[1] == L':' && tmp[2] == L'\\';
+		if (is_drive && ce_win_clean_tail(tmp + 3))
+		{
+			if (4 + wlen + 1 > cap) return 0;
+			memcpy(out, L"\\\\?\\", 4 * sizeof(WCHAR));
+			memcpy(out + 4, tmp, (wlen + 1) * sizeof(WCHAR));
+			return 1;
+		}
+		int is_unc = wlen >= 4 && tmp[0] == L'\\' && tmp[1] == L'\\' && tmp[2] != L'\\' && tmp[2] != L'?' && tmp[2] != L'.';
+		if (is_unc && ce_win_clean_tail(tmp + 2))
+		{
+			if (8 + (wlen - 2) + 1 > cap) return 0;
+			memcpy(out, L"\\\\?\\UNC\\", 8 * sizeof(WCHAR));
+			memcpy(out + 8, tmp + 2, (wlen - 1) * sizeof(WCHAR));
+			return 1;
+		}
+	}
+	if (wlen + 1 > cap) return 0;
+	memcpy(out, tmp, (wlen + 1) * sizeof(WCHAR));
+	return 1;
+}
+
+/* Lossless UTF-16 -> active-code-page conversion: refuses best-fit substitutions (e.g. U+FF0E -> '.' or U+FF3C -> '\')
+ * and invalid UTF-16 surrogates by verifying exact round-trip back to UTF-16. */
+static int ce_win_from_wide(const WCHAR *w, char *out, size_t cap)
+{
+	if (!w || !out || !cap) return 0;
+	UINT cp = GetACP();
+	DWORD wflags = cp == CP_UTF8 ? WC_ERR_INVALID_CHARS : 0;
+	int n = WideCharToMultiByte(cp, wflags, w, -1, out, (int)cap, NULL, NULL);
+	if (n <= 0) { out[0] = 0; return 0; }
+	WCHAR back[PATHN];
+	DWORD mflags = cp == CP_UTF8 ? MB_ERR_INVALID_CHARS : 0;
+	int bn = MultiByteToWideChar(cp, mflags, out, -1, back, PATHN);
+	if (bn <= 0 || wcscmp(back, w) != 0) { out[0] = 0; return 0; }
+	return 1;
+}
+#endif
+
 static int sha256_file(const char *p, uint8_t out[32])
 {
+#ifdef _WIN32
+	WCHAR wp[PATHN + 16];
+	FILE *f = ce_win_wide_path(p, wp, sizeof wp / sizeof *wp, 1) ? _wfopen(wp, L"rb") : fopen(p, "rb");
+#else
 	FILE *f = fopen(p, "rb");
+#endif
 	if (!f) return 0;
 	SHA256_CTX c;
 	sha256_init(&c);
@@ -1429,7 +1529,39 @@ static int find_game(char *dir, size_t n)
 static void init_here(void)
 {
 #ifdef _WIN32
-	GetModuleFileNameA(NULL, sHere, sizeof sHere);
+	WCHAR w[PATHN], wext[PATHN + 16], wlong[PATHN + 16], wclean[PATHN + 16];
+	DWORD n = GetModuleFileNameW(NULL, w, PATHN);
+	int converted = 0;
+	if (n > 0 && n < PATHN)
+	{
+		w[n] = 0;
+		const WCHAR *src = w;
+		/* Expand any 8.3 short components (e.g. when spawned via GetShortPathNameW fallback) via an extended
+		 * path so upd_find_root() still matches "versions" and "onslaught-ce-<ver>-windows-i686" beyond MAX_PATH. */
+		const WCHAR *q = w;
+		if (!(n >= 4 && w[0] == L'\\' && w[1] == L'\\' && (w[2] == L'?' || w[2] == L'.') && w[3] == L'\\'))
+		{
+			if (n >= 3 && ((w[0] >= L'A' && w[0] <= L'Z') || (w[0] >= L'a' && w[0] <= L'z')) &&
+				w[1] == L':' && w[2] == L'\\' && ce_win_clean_tail(w + 3) && 4 + n + 1 <= PATHN + 16)
+			{
+				memcpy(wext, L"\\\\?\\", 4 * sizeof(WCHAR));
+				memcpy(wext + 4, w, (n + 1) * sizeof(WCHAR));
+				q = wext;
+			}
+			else if (n >= 4 && w[0] == L'\\' && w[1] == L'\\' && w[2] != L'\\' && w[2] != L'?' && w[2] != L'.' &&
+				ce_win_clean_tail(w + 2) && 8 + (n - 2) + 1 <= PATHN + 16)
+			{
+				memcpy(wext, L"\\\\?\\UNC\\", 8 * sizeof(WCHAR));
+				memcpy(wext + 8, w + 2, (n - 1) * sizeof(WCHAR));
+				q = wext;
+			}
+		}
+		DWORD ln = GetLongPathNameW(q, wlong, (DWORD)(sizeof wlong / sizeof *wlong));
+		if (ln > 0 && ln < (DWORD)(sizeof wlong / sizeof *wlong)) src = wlong;
+		if (ce_win_strip_extended(src, wclean, sizeof wclean / sizeof *wclean))
+			converted = ce_win_from_wide(wclean, sHere, sizeof sHere);
+	}
+	if (!converted) GetModuleFileNameA(NULL, sHere, sizeof sHere);
 	char *s = strrchr(sHere, '\\');
 #else
 	ssize_t n = readlink("/proc/self/exe", sHere, sizeof sHere - 1);
@@ -1846,17 +1978,39 @@ static int start_game(char **args, int nargs, const char *game)
 			rd = wr = NULL;
 		}
 	}
-	STARTUPINFOA si = {sizeof si};
+	STARTUPINFOW si = {sizeof si};
 	if (piped)
 	{
 		si.dwFlags = STARTF_USESTDHANDLES;
 		si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
 		si.hStdOutput = si.hStdError = wr;
 	}
+	WCHAR wexe[PATHN + 16], wcmd[8192], wuser[PATHN + 16];
+	UINT cp = GetACP();
+	DWORD cflags = cp == CP_UTF8 ? MB_ERR_INVALID_CHARS : 0;
+	int wide_ok = ce_win_wide_path(exe, wexe, sizeof wexe / sizeof *wexe, 0) &&
+		MultiByteToWideChar(cp, cflags, cmd, -1, wcmd, (int)(sizeof wcmd / sizeof *wcmd)) > 0 &&
+		ce_win_wide_path(sUser, wuser, sizeof wuser / sizeof *wuser, 0);
 	PROCESS_INFORMATION pi;
-	if (!CreateProcessA(exe, cmd, NULL, NULL, piped, 0, NULL, sUser, &si, &pi))
+	DWORD err = 0;
+	BOOL started = wide_ok && CreateProcessW(wexe, wcmd, NULL, NULL, piped, 0, NULL, wuser, &si, &pi);
+	if (!started) err = wide_ok ? GetLastError() : ERROR_INVALID_NAME;
+	if (!started && wide_ok && strlen(exe) >= 248)
 	{
-		DWORD err = GetLastError();
+		WCHAR wext[PATHN + 16], wshort[PATHN + 16], wclean[PATHN + 16];
+		if (ce_win_wide_path(exe, wext, sizeof wext / sizeof *wext, 1))
+		{
+			DWORD sn = GetShortPathNameW(wext, wshort, (DWORD)(sizeof wshort / sizeof *wshort));
+			if (sn > 0 && sn < (DWORD)(sizeof wshort / sizeof *wshort) &&
+				ce_win_strip_extended(wshort, wclean, sizeof wclean / sizeof *wclean))
+			{
+				started = CreateProcessW(wclean, wcmd, NULL, NULL, piped, 0, NULL, wuser, &si, &pi);
+				if (!started) err = GetLastError();
+			}
+		}
+	}
+	if (!started)
+	{
 		if (piped)
 		{
 			CloseHandle(rd);
