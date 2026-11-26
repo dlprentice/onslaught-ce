@@ -52,7 +52,7 @@ POSITIONAL = ()    # none since patch 0189 carries context (port/tools/patch_con
 # The CE hook points (patches 0300-0319, port/game/ce_hooks.h): each adds one call into an empty, ordered table, and their
 # include hunks rest on the exact lines of the whole queue, so in the tree without the commander patches they cannot apply.
 # They change nothing the commander's faithful comparison measures (no handler is registered); ce_hooks_tests.py checks them.
-HOOK_SITES = tuple(sorted(p.name for p in (Path(__file__).resolve().parents[1] / "patches").glob("03[01][0-9]-ce-hook-*.patch")))
+HOOK_SITES = tuple(sorted(p.name for p in (Path(__file__).resolve().parents[1] / "patches").glob("03[0-9][0-9]-ce-hook-*.patch")))
 LEFT_OUT = (*POSITIONAL, *BUILT_ON_COMMANDER, *HOOK_SITES)
 OVERLAY_HOOK = r"(?:\tif \(!gMirrorPass\) ce_hook_draw_overlay\(\);[^\n]*\n)?"   # the optional CE hook point line (patch 0311)
 MODULE = ROOT / "port/game/ce_commander.cpp"

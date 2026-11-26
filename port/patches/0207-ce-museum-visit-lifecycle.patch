@@ -59,48 +59,6 @@
 +    return TRUE;
 +}
 +#endif
---- a/world.cpp
-+++ b/world.cpp
-@@ -1,3 +1,6 @@
-+#ifdef CE_VERSION
-+#include "ce_museum_visit.h"
-+#endif
- #ifdef CE_VERSION
- #include "ce_project.h"
- #endif
-@@ -368,7 +371,11 @@
- 	// when the level archive holds its own. It is decided for the real world and the base world separately: the other one
- 	// keeps its place in the archive. With no mod supplying the file nothing here changes.
- 	extern bool PortModHas(const char *game_path);
--	BOOL	modWorld = PortModHas(name);
-+	BOOL modWorld =
-+#ifdef CE_VERSION
-+        PortCeMuseumVisitActive() ||
-+#endif
-+        PortModHas(name);
- 
- 	if (base)
- 	{
-@@ -411,7 +418,18 @@
- 		mWorldLevel = level;
- 
- 	CDXMemBuffer	mem;
--	if (!mem.InitFromFile(name, MEMTYPE_MEMBUFFER, TRUE, start))
-+	#ifdef CE_VERSION
-+    const void *ceMuseumBytes = NULL;
-+    unsigned ceMuseumLength = 0;
-+    const int ceMuseumBody = PortCeMuseumVisitReadWorld(name, &ceMuseumBytes, &ceMuseumLength);
-+    // Active but unexpected/missing data must never fall back to the campaign.
-+    if (ceMuseumBody < 0)
-+        return FALSE;
-+    if (!(ceMuseumBody > 0 ? mem.InitOwnedRead(ceMuseumBytes, ceMuseumLength) :
-+          mem.InitFromFile(name, MEMTYPE_MEMBUFFER, TRUE, start)))
-+#else
-+    if (!mem.InitFromFile(name, MEMTYPE_MEMBUFFER, TRUE, start))
-+#endif
- 	{
- 		mem.Close();
- 		return FALSE;
 --- a/game.cpp
 +++ b/game.cpp
 @@ -1,5 +1,6 @@

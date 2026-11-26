@@ -49,6 +49,7 @@
 #include "frontend.h"
 #include "Career.h"
 #include "game.h"
+#include "ce_modes.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -107,7 +108,10 @@ static bool Start(int level, bool mod)
 		return false;
 	if (!EnsureSnapshot())
 		return false;
+	if (!CeModeActive(CE_MODE_BONUS_LEVEL) && CeModeBegin(CE_MODE_BONUS_LEVEL) != CE_MODE_BEGUN)
+		return false;
 	memcpy((void *)sCareer, (const void *)&CAREER, sizeof(CCareer));
+	CeCareerSnapshotAcquire(CE_MODE_BONUS_LEVEL, sCareer, sizeof(CCareer));
 	sLevel = level;
 	sActive = true;
 	sReturning = false;
@@ -293,6 +297,7 @@ bool PortCeBonusLevelEnd()
 	if (!sActive)
 		return false;
 	sActive = false;
+	CeModeEnd(CE_MODE_BONUS_LEVEL);
 	if (FRONTEND.mSelectedLevel != sLevel)
 		return false;	// backed out of the start page and played something else: the career is updated as usual
 	float music = CAREER.GetMusicVolume(), sound = CAREER.GetSoundVolume();
@@ -402,6 +407,7 @@ extern "C" bool PortCeBonusCancelMpStart(void)
 		PortCeFlagshipDuelCancel();
 	sFlagshipDuel2P = false;
 	sActive = false;
+	CeModeEnd(CE_MODE_BONUS_LEVEL);
 	sReturning = false;
 	sRaceReturning = false;
 	sCoopReturning = false;

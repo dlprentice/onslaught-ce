@@ -10,6 +10,7 @@
 #include <new>
 #include <vector>
 #include "ce_hooks.h"
+#include "ce_modes.h"
 #ifdef CE_VERSION
 // Non-save hook handlers referenced by port/game/ce_hooks.cpp (not exercised by this save driver).
 void PortCeGamepadBeginCycle() {}
@@ -220,7 +221,10 @@ int main(int argc, char **argv)
         gEditorCareer = &entry;
         verifyBytes(directSave(CAREER), live);
         gEditorRequested = true;
+        check(CeModeBegin(CE_MODE_EDITOR) == CE_MODE_BEGUN, "editor mode begins");
+        check(CeCareerSnapshotAcquire(CE_MODE_EDITOR, &entry, sizeof(entry)), "editor snapshot acquired");
         verifyBytes(directSave(CAREER), expectedFiltered(entry, live, false));
+        CeModeEnd(CE_MODE_EDITOR);
         check(!std::memcmp(&CAREER, &live, sizeof(live)), "editor save preserves the live career");
         return 0;
     }

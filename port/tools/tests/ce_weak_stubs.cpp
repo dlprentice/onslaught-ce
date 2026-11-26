@@ -31,6 +31,11 @@ CE_WEAK void			ce_hook_unit_destroyed(CUnit *) {}
 CE_WEAK void			ce_hook_spawner_trigger(CeSpawnerTrigger *) {}
 CE_WEAK void			ce_hook_weapon_fire(CWeapon *, CUnit *, CRound *) {}
 CE_WEAK void			ce_hook_render_pass(const CeRenderPass *) {}
+CE_WEAK bool			ce_hook_world_source(CeWorldSourceReq *) { return false; }
+CE_WEAK void			ce_hook_projectile_intercept(CeProjectileIntercept *) {}
+CE_WEAK void			ce_hook_unit_damage(const CeUnitDamage *) {}
+CE_WEAK uint32_t		CeHooksStepGameplayTick(void) { return 0u; }
+CE_WEAK void			ce_hook_player_act(uint32_t) {}
 
 // Common port-layer query defaults (override with strong definitions in any driver that tests them).
 CE_WEAK bool			PortCeLayer() { return true; }

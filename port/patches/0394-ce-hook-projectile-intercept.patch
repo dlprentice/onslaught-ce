@@ -1,0 +1,101 @@
+--- a/Round.cpp
++++ b/Round.cpp
+@@ -4,6 +4,9 @@
+ #include "common.h"
+ #include "round.h"
+ #include "WorldPhysicsManager.h"
++#ifdef CE_VERSION
++#include "ce_hooks.h"	// Port: the CE hook points (port/game/ce_hooks.h)
++#endif
+ #include "world.h"
+ #include "eventmanager.h"
+ #include "BattleEngine.h"
+@@ -387,7 +390,37 @@
+ 			mVelocity.Z = MAP.Collide(mPos) - mPos.Z;
+ 	}
+ 
++#ifdef CE_VERSION
++	FVector	cePrevPos = mPos;
++	{
++		FVector ceNextPos = mPos + mVelocity;
++		CeProjectileIntercept ceEv = {CE_PROJ_PRE_MOVE, this, mPos.X, mPos.Y, mPos.Z, ceNextPos.X, ceNextPos.Y, ceNextPos.Z, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, (mFlags & TF_DYING) != 0, false};
++		ce_hook_projectile_intercept(&ceEv);	// CE hook point (port/game/ce_hooks.h): pre-move intercept
++		if (ceEv.intercepted)
++		{
++			mPos = FVector(ceEv.hit_x, ceEv.hit_y, ceEv.hit_z);
++			StartDieProcess();
++			mUnknown120 = TRUE;
++			mVelocity = FVector(0, 0, 0);
++			return;
++		}
++	}
++#endif
+ 	SUPERTYPE::Move();
++#ifdef CE_VERSION
++	{
++		CeProjectileIntercept ceEv = {CE_PROJ_POST_MOVE, this, cePrevPos.X, cePrevPos.Y, cePrevPos.Z, mPos.X, mPos.Y, mPos.Z, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, (mFlags & TF_DYING) != 0, false};
++		ce_hook_projectile_intercept(&ceEv);	// CE hook point (port/game/ce_hooks.h): post-move intercept
++		if (ceEv.intercepted)
++		{
++			mPos = FVector(ceEv.hit_x, ceEv.hit_y, ceEv.hit_z);
++			StartDieProcess();
++			mUnknown120 = TRUE;
++			mVelocity = FVector(0, 0, 0);
++			return;
++		}
++	}
++#endif
+ 
+ 	if (Data_mWiggle(this) > 0)
+ 		mVelocity = unwiggle * mVelocity;
+@@ -481,10 +514,29 @@
+ 		break;
+ 
+ 	case 4000:
++#ifdef CE_VERSION
++		if ((mData->mFlak) || (mData->mExplode))
++		{
++			CeProjectileIntercept ceFlakEv = {CE_PROJ_FLAK_CHECK, this, mPos.X, mPos.Y, mPos.Z, mPos.X, mPos.Y, mPos.Z, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, (mFlags & TF_DYING) != 0, false};
++			ce_hook_projectile_intercept(&ceFlakEv);	// CE hook point (port/game/ce_hooks.h): flak/explode check
++			if (!ceFlakEv.intercepted)
++				Unknown4d9f30(0, 0, 0);
++		}
++#else
+ 		if ((mData->mFlak) || (mData->mExplode))
+ 			Unknown4d9f30(0, 0, 0);
++#endif
+ 		else if (mData->mBeam)
+ 		{
++#ifdef CE_VERSION
++			{
++				FVector ceBeamSeg = (mPos + mVelocity) - mBeamStart;
++				CeProjectileIntercept ceBeamEv = {CE_PROJ_BEAM_CLAMP, this, mBeamStart.X, mBeamStart.Y, mBeamStart.Z, mPos.X + mVelocity.X, mPos.Y + mVelocity.Y, mPos.Z + mVelocity.Z, 0.f, 0.f, 0.f, ceBeamSeg.X, ceBeamSeg.Y, ceBeamSeg.Z, (mFlags & TF_DYING) != 0, false};
++				ce_hook_projectile_intercept(&ceBeamEv);	// CE hook point (port/game/ce_hooks.h): beam clamp
++				if (ceBeamEv.intercepted)
++					mVelocity = (mBeamStart + FVector(ceBeamEv.vel_x, ceBeamEv.vel_y, ceBeamEv.vel_z)) - mPos;
++			}
++#endif
+ 			CLine			line(mBeamStart, mPos + mVelocity);
+ 			CInitCSThing	init;
+ 
+@@ -531,6 +581,20 @@
+ //******************************************************************************************
+ void CRound::DeclareOnGround()	// FUNCTION: 0x004d9dd0
+ {
++#ifdef CE_VERSION
++	{
++		CeProjectileIntercept ceEv = {CE_PROJ_ON_GROUND, this, mOldPos.X, mOldPos.Y, mOldPos.Z, mPos.X, mPos.Y, mPos.Z, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, (mFlags & TF_DYING) != 0, false};
++		ce_hook_projectile_intercept(&ceEv);	// CE hook point (port/game/ce_hooks.h): on-ground intercept
++		if (ceEv.intercepted)
++		{
++			mPos = FVector(ceEv.hit_x, ceEv.hit_y, ceEv.hit_z);
++			StartDieProcess();
++			mUnknown120 = TRUE;
++			mVelocity = FVector(0, 0, 0);
++			return;
++		}
++	}
++#endif
+ 	if (mData->mBounceFactor != 0)
+ 		SUPERTYPE::DeclareOnGround();
+ 	else if (!mData->mUnknown60)

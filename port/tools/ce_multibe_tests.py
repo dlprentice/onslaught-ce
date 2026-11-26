@@ -567,7 +567,8 @@ class HostHelperTests(unittest.TestCase):
 class GateAuditTests(unittest.TestCase):
     def test_no_new_bea_env_vars_and_spdx_present(self):
         allowed_fence_envs = {"BEA_PORT_PILOT", "BEA_PORT_AUTOPILOT"}
-        for rel in ("game/ce_multibe.h", "game/ce_multibe_state.h", "game/ce_multibe_ai.h", "game/ce_multibe.cpp"):
+        for rel in ("game/ce_multibe.h", "game/ce_multibe_state.h", "game/ce_multibe_ai.h", "game/ce_multibe.cpp",
+                    "game/ai/ce_ai_pilot_l1.h", "game/ai/ce_ai_pilot_l1.cpp"):
             text = (PORT / rel).read_text(encoding="utf-8")
             self.assertIn("SPDX-License-Identifier: GPL-3.0-only", text[:200], rel)
             found = set(re.findall(r"BEA_[A-Z0-9_]+", text))
@@ -606,15 +607,17 @@ class GateAuditTests(unittest.TestCase):
         self.assertIn("gCachedSoloSkirmish = choice;", src, "CCeSoloSkirmishItem::SetValue must update cache synchronously")
         self.assertIn("gCachedPlaySide = side;", src, "CCePlaySideItem::SetValue must update cache synchronously")
         self.assertIn("gCachedMultiBeChoice = choice;", src, "CCeBattleEnginesItem::SetValue must update cache synchronously")
-        self.assertNotIn("GetUnitNB().First()", src, "must not call WORLD.GetUnitNB().First(); use ListIterator<CUnit>")
-        self.assertNotIn("GetUnitNB().Next()", src, "must not call WORLD.GetUnitNB().Next(); use ListIterator<CUnit>")
-        self.assertNotIn("mNodes.First()", src, "must not call INFLUENCEMAP->mNodes.First(); use ListIterator<CInfluenceNode>")
-        self.assertGreaterEqual(src.count("ListIterator<CUnit>"), 4, "all unit scans must use stack-local ListIterator<CUnit>")
-        self.assertIn("ListIterator<CInfluenceNode>", src, "battle-line scan must use stack-local ListIterator<CInfluenceNode>")
+        l1_src = (PORT / "game/ai/ce_ai_pilot_l1.cpp").read_text(encoding="utf-8")
+        combined_src = src + "\n" + l1_src
+        self.assertNotIn("GetUnitNB().First()", combined_src, "must not call WORLD.GetUnitNB().First(); use ListIterator<CUnit>")
+        self.assertNotIn("GetUnitNB().Next()", combined_src, "must not call WORLD.GetUnitNB().Next(); use ListIterator<CUnit>")
+        self.assertNotIn("mNodes.First()", combined_src, "must not call INFLUENCEMAP->mNodes.First(); use ListIterator<CInfluenceNode>")
+        self.assertGreaterEqual(combined_src.count("ListIterator<CUnit>"), 4, "all unit scans must use stack-local ListIterator<CUnit>")
+        self.assertIn("ListIterator<CInfluenceNode>", combined_src, "battle-line scan must use stack-local ListIterator<CInfluenceNode>")
         for ai_fn in ("CeMultiBeComputeLeadPoint", "CeMultiBeEvaluateFireGate", "CeMultiBePickWeapon",
                       "CeMultiBeComputeWalkerMove", "CeMultiBeStepWalkerDash", "CeMultiBeComputeJetFlight",
                       "CeMultiBeScoreTarget", "CeMultiBeEvaluateSurvival", "CeMultiBeShouldMorphSmart"):
-            self.assertIn(ai_fn, src, f"ce_multibe.cpp must wire fair-rules AI helper {ai_fn}")
+            self.assertIn(ai_fn, l1_src, f"ce_ai_pilot_l1.cpp must wire fair-rules AI helper {ai_fn}")
         self.assertIn("MAP.GetWaterLevel()", src, "must check MAP.GetWaterLevel() when spawning/patrolling aux BEs")
         self.assertIn("PortCeMultiBeHandleDeath", src, "must intercept aux BE StartDieProcess cleanly")
         self.assertIn("focused->GetPlayer()->GetNumber() == player->GetNumber()", src, "2P split-screen hud_focus must match player numbers")
@@ -626,9 +629,9 @@ class GateAuditTests(unittest.TestCase):
         self.assertIn("PortCeSoloSkirmishActive", src, "PortCeSoloSkirmishActive definition missing")
         self.assertIn("SyncHumanPlayerEngines", src, "human player respawn synchronization missing")
         self.assertIn("SyncSoloP2Engine", src, "Solo Skirmish P2 respawn synchronization missing")
-        self.assertIn("tgtSurfaceZ = (tgtGroundZ < waterZ) ? tgtGroundZ : waterZ;", src, "target altitude must measure above min(ground, water)")
-        self.assertIn("CalcUnitOverCrossHair(NULL, TRUE, TRUE)", src, "aux BE weapon/lock calls must refresh CalcUnitOverCrossHair under bound camera")
-        self.assertIn("curMode != NULL", src, "CWeapon::CanLock must guard against null GetCurrentMode()")
+        self.assertIn("tgtSurfaceZ = (tgtGroundZ < waterZ) ? tgtGroundZ : waterZ;", l1_src, "target altitude must measure above min(ground, water)")
+        self.assertIn("CalcUnitOverCrossHair(NULL, TRUE, TRUE)", l1_src, "aux BE weapon/lock calls must refresh CalcUnitOverCrossHair under bound camera")
+        self.assertIn("curMode != NULL", l1_src, "CWeapon::CanLock must guard against null GetCurrentMode()")
         self.assertIn("CeCmdMatchUpdate()", src, "Solo Skirmish must invoke CeCmdMatchUpdate() even when commander=0")
         self.assertIn("CeCmdMatchLevelEnd()", src, "Solo Skirmish must restore mFullscreenMultiplayer on level_end")
         patch_0375 = (PORT / "patches/0375-ce-solo-skirmish.patch").read_text(encoding="latin-1")

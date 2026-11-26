@@ -54,8 +54,8 @@ def serializer(folder: Path, career: str) -> None:
     if save.count("ce_hook_save_gate(CE_SAVE_CAREER, this, dest, sizeof(CCareer));") != 1:
         raise ValueError("save_gate serializer hook is missing")
     hooks_text = (ROOT / "port/game/ce_hooks.cpp").read_text()
-    if not re.search(r"kSaveGate\[\].*?CeHookEditorSave\b", hooks_text, re.S):
-        raise ValueError("editor save filter is not registered on kSaveGate")
+    if not re.search(r"kSaveGate\[\].*?CeHookCareerSnapshotSave\b", hooks_text, re.S):
+        raise ValueError("single-owner career snapshot save filter is not registered on kSaveGate")
     enabled = "#ifndef CE_VERSION\n#error Enable production serializer code\n#endif\n"
     (folder / "editor-career-save.private.inc").write_text(enabled + save)
     (folder / "editor-career-mark.private.inc").write_text(enabled + mark)
@@ -119,8 +119,13 @@ def main() -> int:
     # ce_hooks.h forward-declares `class CUnit;`; convert the lifecycle fixture's type alias into a subclass
     # of CThing so the production serializer driver compiles cleanly against CE Hooks v2.0.
     engine_inc = out / "editor-playtest-engine.private.inc"
-    engine_inc.write_text(replace_once(
+    engine_text = replace_once(
         engine_inc.read_text(),
+        "struct CThing : IAudibleThing, IRenderableThing {",
+        "class CThing : public IAudibleThing, public IRenderableThing { public:",
+    )
+    engine_inc.write_text(replace_once(
+        engine_text,
         "using CUnit=CThing;",
         "class CUnit : public CThing { public: using CThing::CThing; };",
     ))

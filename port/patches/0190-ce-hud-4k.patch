@@ -1,14 +1,10 @@
 --- a/Hud.cpp
 +++ b/Hud.cpp
-@@ -1245,6 +1245,11 @@
+@@ -1245,6 +1245,7 @@
  		if (fabsf(AngleDifference(yaw, mBattleEngine->GetCurrentOrientation().mYaw)) < PI / 2)
  		{
  			RENDERINFO.Project((D3DXVECTOR3 *)&screen, (D3DXVECTOR3 *)&pos, mViewport);
-+#ifdef CE_NETWORK_OFF
-+			CeHudScope scope(!GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1, mViewportWidth, mViewportHeight, screen.X, screen.Y);	// Port (patch 0190)
-+#else
-+			CeHudScope scope((CE_LockstepRequested() || (!GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1)), mViewportWidth, mViewportHeight, screen.X, screen.Y);	// Port (patch 0190)
-+#endif
++			CeHudScope scope(CePolicyHudScaleEligible(), mViewportWidth, mViewportHeight, screen.X, screen.Y);	// Port (patch 0190)
  			float	aspect = LT.mScreenShapeScale;
  			CSPRITERENDERER::DrawSprite(screen.X, screen.Y, 0.011f, mSpeakers[(SINT)floorf(mUnknown190[mViewpoint])], SA_CENTRE, SPT_NONE, 1.f, 0.f, 0xffffff00, 1.f, aspect, 0.f, 1.f, 0.f, 1.f);
  		}

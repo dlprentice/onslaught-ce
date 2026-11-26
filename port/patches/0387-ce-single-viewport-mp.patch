@@ -5,7 +5,7 @@
  	if (CE_WorldActive()) return CE_WorldViewAspect(0.75f);
  #endif
 -	if (GAME.IsMultiplayer())
-+	int ceSplitAspect = PortCeCameraSplitAspect();
++	int ceSplitAspect = CePolicyCameraSplitAspect();
 +	if (ceSplitAspect == 2)
 +		return 1.5f;
 +	else if (ceSplitAspect)
@@ -146,10 +146,88 @@
  // Calculate LODs as early as possible to 'avoid stalls'
  
 -	if (GAME.IsMultiplayer())
-+	if (PortCeCameraSplitAspect())
++	if (CePolicyUseHalfHeightAspect())
  	{
  		static int which_view_lod = 0;
  
+--- a/DXLandscape.cpp
++++ b/DXLandscape.cpp
+@@ -660,14 +660,15 @@
+ 	}
+ 
+ 	CLandscapeTexture::ResetUpdateQueue();
+-	if (GAME.IsMultiplayer())
++	const SINT ceViews = CePolicyLandscapeViewCount();
++	if (ceViews > 1)
+ 	{
+ #line 434
+-		mViews = new(MEMTYPE_LANDSCAPE) CLandscapeView[2];
+-		mNumViews = 2;
+-		mViews[0].CreateMipLevels(4);
+-		mViews[1].CreateMipLevels(4);
++		mViews = new(MEMTYPE_LANDSCAPE) CLandscapeView[ceViews];
++		mNumViews = ceViews;
++		for (SINT ceV = 0; ceV < mNumViews; ceV++)
++			mViews[ceV].CreateMipLevels(4);
+-		SHADOWS.mShadows = false;
++		SHADOWS.mShadows = !CePolicyIsSplitViewport();
+ 	}
+ 	else
+ 	{
+@@ -745,10 +746,10 @@
+ 	for (t = 0; t < 64 * 64; t++)
+ 		view->mTiles[t].mComplexity *= 128.0f;
+ 
+-	if (mNumViews == 2)
++	for (SINT ceV = 1; ceV < mNumViews; ceV++)
+ 	{
+ 		SLandscapeCell	*src = mViews[0].mTiles;
+-		SLandscapeCell	*dst = mViews[1].mTiles;
++		SLandscapeCell	*dst = mViews[ceV].mTiles;
+ 		for (t = 0; t < 64 * 64; t++)
+ 		{
+ 			dst->mMaxHeight = src->mMaxHeight;
+@@ -1489,9 +1490,8 @@
+ {
+ 	if (mViews)
+ 	{
+-		mViews[0].mLastPos.X = 1234567.0f;
+-		if (GAME.IsMultiplayer())
+-			mViews[1].mLastPos.X = 1234567.0f;
++		for (SINT ceV = 0; ceV < mNumViews; ceV++)
++			mViews[ceV].mLastPos.X = 1234567.0f;
+ 	}
+ }
+ 
+--- a/LevelBriefingLog.cpp
++++ b/LevelBriefingLog.cpp
+@@ -95,7 +95,7 @@
+ 	int y = x;
+ 	int w = int(mFade * 580.f);
+ 	int h = int(mFade * 420.f);
+-	if (GAME.IsMultiplayer())
++	if (CePolicyIsSplitViewport())
+ 	{
+ 		h >>= 1;
+ 		y = 140;
+@@ -128,7 +128,7 @@
+ 
+ 	// the briefing, one paragraph at a time
+ 	DWORD briefing = CFrontEndText::GetBriefingTextId(GAME.GetCurrentLevel());
+-	if (!GAME.IsMultiplayer())
++	if (!CePolicyIsSplitViewport())
+ 	{
+ 		for (c0 = 0; c0 < 9; c0 ++)
+ 		{
+@@ -155,7 +155,7 @@
+ 	// the objectives: their texts, then (on a second pass, beside the longest) a mark for each one's state
+ 	wcscpy(title, TEXT.GetString(0xf4213fbf));
+ 	ty = 179.f;
+-	if (GAME.IsMultiplayer())
++	if (CePolicyIsSplitViewport())
+ 		ty = 100.f;
+ 
+ 	BOOL found = FALSE;
 --- a/game.cpp
 +++ b/game.cpp
 @@ -303,7 +303,7 @@

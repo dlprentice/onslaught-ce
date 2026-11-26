@@ -12,6 +12,7 @@
 #include "ce_museum_world.h"
 #include "ce_museum_label_rules.h"
 #include "ce_museum_options.h"
+#include "ce_modes.h"
 #include "../platform/common/portlog.h"
 #include <cmath>
 #include <cstdio>
@@ -65,13 +66,20 @@ bool Begin(bool preparedCache) {
         PortSessionLog(PORT_SESSION_GAME, false, "museum refused before loading: another mode is open");
         return false;
     }
+    if (CeModeBegin(CE_MODE_MUSEUM_VISIT) != CE_MODE_BEGUN) {
+        CeMuseumVisit::Refuse("Close mods, online play and the Map Editor, then open the museum.");
+        PortSessionLog(PORT_SESSION_GAME, false, "museum refused before loading: mode conflict");
+        return false;
+    }
     if (!(preparedCache ? CeMuseumVisit::Prepare() : CeMuseumVisit::PrepareInstalled(Carrier()))) {
+        CeModeEnd(CE_MODE_MUSEUM_VISIT);
         const char *why = PortCeMuseumVisitMessage();
         PortSessionLog(PORT_SESSION_GAME, true, "museum refused before loading: %s", why && *why ? why : "a visit is already opening");
         return false;
     }
     std::memcpy(gMuseumCareer, &CAREER, sizeof(CCareer));
     gMuseumCareerSaved = true;
+    CeCareerSnapshotAcquire(CE_MODE_MUSEUM_VISIT, gMuseumCareer, sizeof(CCareer));
     if (!CeMuseumVisit::Activate()) {
         PortCeMuseumVisitCancel();
         CeMuseumVisit::Refuse("The museum could not be opened. Your careers are unchanged.");
@@ -175,6 +183,7 @@ extern "C" void PortCeMuseumVisitCancel(void) {
 #endif
         gMuseumCareerSaved = false;
     }
+    CeModeEnd(CE_MODE_MUSEUM_VISIT);
     CeMuseumVisit::Clear();
 #if defined(CE_VERSION) && !defined(CE_MUSEUM_VISIT_HOST_FIXTURE)
     PortCeMuseumLabelsClear();

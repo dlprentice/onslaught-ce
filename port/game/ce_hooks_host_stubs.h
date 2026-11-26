@@ -30,5 +30,10 @@ void			ce_hook_unit_destroyed(CUnit *) {}
 void			ce_hook_spawner_trigger(CeSpawnerTrigger *) {}
 void			ce_hook_weapon_fire(CWeapon *, CUnit *, CRound *) {}
 void			ce_hook_render_pass(const CeRenderPass *) {}
+bool			ce_hook_world_source(CeWorldSourceReq *) { return false; }
+void			ce_hook_projectile_intercept(CeProjectileIntercept *) {}
+void			ce_hook_unit_damage(const CeUnitDamage *) {}
+uint32_t		CeHooksStepGameplayTick(void) { return 0u; }
+void			ce_hook_player_act(uint32_t) {}
 
 #endif

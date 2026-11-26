@@ -106,6 +106,7 @@ def main() -> int:
     shared_dir.mkdir(exist_ok=True)
     editor_obj = shared_dir / 'ce_editor.o'
     project_obj = shared_dir / 'ce_project.o'
+    modes_obj = shared_dir / 'ce_modes.o'
     driver_obj = shared_dir / 'driver.o'
 
     def compile_obj(src: Path, obj: Path, inc_dir: Path | None = None) -> subprocess.CompletedProcess:
@@ -131,6 +132,7 @@ def main() -> int:
     shared_tasks = [
         (source_path, editor_obj, None),
         (project_path, project_obj, None),
+        (ROOT / 'port/game/ce_modes.cpp', modes_obj, None),
         (driver, driver_obj, out),
     ]
     if jobs == 1:
@@ -143,7 +145,7 @@ def main() -> int:
         (out / 'compile.stderr').write_bytes(b''.join(r.stderr for r in shared_built))
         baseline = {'compiled': False, 'exit': None}
     else:
-        baseline = link_and_run(out, [str(driver_obj), str(editor_obj), str(project_obj)], link_only=True)
+        baseline = link_and_run(out, [str(driver_obj), str(editor_obj), str(project_obj), str(modes_obj)], link_only=True)
     controls = {}
     if args.causal_controls and baseline == {'compiled': True, 'exit': 0}:
         variants = {
@@ -237,10 +239,10 @@ def main() -> int:
             if file == 'project.cpp':
                 project = folder / file
                 project.write_text(target.replace(before, after, 1))
-                prepared.append((name, folder, [str(driver_obj), str(editor_obj), str(project)], None))
+                prepared.append((name, folder, [str(driver_obj), str(editor_obj), str(project), str(modes_obj)], None))
             else:
                 (folder / file).write_text(target.replace(before, after, 1))
-                prepared.append((name, folder, [str(driver), str(editor_obj), str(project_obj)], folder))
+                prepared.append((name, folder, [str(driver), str(editor_obj), str(project_obj), str(modes_obj)], folder))
 
         def eval_variant(item):
             name, folder, inputs, inc_dir = item

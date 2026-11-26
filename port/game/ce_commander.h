@@ -91,6 +91,11 @@ int CeCmdDrawnSquad(const CSquad *squad);
 // Ground squads can march only to land within the battlefield.
 bool	CeCmdMarchLand(float x, float y);
 bool	CeCmdIssue(int ordinal, int verb, float x, float y, const char **why);
+// Team-parameterized ICommanderPort (Phase 3): allegiance-scoped squad listing & ordering for any player/AI slot.
+// Cross-team orders are rejected with CE_WHY_ENEMY; zero heap allocation, zero RNG, zero Player-0 hardcoding.
+int		CeCmdListForTeam(int allegiance, CeCmdSquad *out, int max);
+unsigned CeCmdSquadHandle(int ordinal);
+bool	CeCmdIssueForSlot(unsigned char slot, int allegiance, unsigned squadHandle, int verb, float x, float y, int *outWhy, const char **whyText);
 
 #ifdef CE_COMMANDER_TEST
 // A hash of every thing's class, number, position and (for units) life, over all things and over all but the components (the parts a unit wears on its

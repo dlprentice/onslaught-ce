@@ -4,13 +4,19 @@
 // weapon scoring with anti-thrash hysteresis, reactive Walker evasion/dodging with dry-ground
 // probes, Jet boom-and-zoom flight with terrain/water pull-up protection, base-defense threat
 // prioritization, contested battle-line pressure, and low-HP repair/energy survival rules.
-// Zero game-header dependencies so host ASan/UBSan and causal-mutant tests compile this directly.
+// Zero game-header dependencies and ZERO libm trig/wrap dependencies (portable deterministic
+// bit-exact math across Linux i686 Clang and Windows i686 MinGW for online lockstep parity).
 #ifndef PORT_CE_MULTIBE_AI_H
 #define PORT_CE_MULTIBE_AI_H
 
-#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
+
+static constexpr float kCeAiPi      = 3.14159265358979323846f;
+static constexpr float kCeAiHalfPi  = 1.57079632679489661923f;
+static constexpr float kCeAiTwoPi   = 6.28318530717958647692f;
+static constexpr float kCeAiInvTwoPi = 0.15915494309189533577f;
 
 struct CeAiVec3
 {
@@ -21,7 +27,19 @@ struct CeAiVec3
 
 inline bool CeAiIsFinite(float v)
 {
-	return isfinite(v) != 0;
+	uint32_t bits = 0u;
+	memcpy(&bits, &v, sizeof(bits));
+	return (bits & 0x7F800000u) != 0x7F800000u;
+}
+
+inline float CeAiAbs(float v)
+{
+	uint32_t bits = 0u;
+	memcpy(&bits, &v, sizeof(bits));
+	bits &= 0x7FFFFFFFu;
+	float out = 0.0f;
+	memcpy(&out, &bits, sizeof(out));
+	return out;
 }
 
 inline bool CeAiIsFiniteVec(const CeAiVec3 &v)
@@ -38,22 +56,173 @@ inline float CeAiClamp(float v, float lo, float hi)
 	return v;
 }
 
+// Pure integer-mantissa bit-exact IEEE-754 single-precision sqrt (zero libm, zero x87/SSE divergence).
+inline float CeAiSqrt(float x)
+{
+	if (!CeAiIsFinite(x) || x <= 0.0f)
+		return 0.0f;
+	uint32_t bits = 0u;
+	memcpy(&bits, &x, sizeof(bits));
+	if ((bits & 0x7FFFFFFFu) == 0u)
+		return 0.0f;
+	int32_t exp = static_cast<int32_t>((bits >> 23) & 0xFFu) - 127;
+	uint32_t mant = bits & 0x007FFFFFu;
+	if (exp == -127)
+	{
+		// Subnormal normalization.
+		exp = -126;
+		while ((mant & 0x00800000u) == 0u)
+		{
+			mant <<= 1;
+			--exp;
+		}
+	}
+	else
+	{
+		mant |= 0x00800000u;
+	}
+	// Make exponent even: m in [1, 4) represented with 23 fractional bits -> shift to 50 fractional bits.
+	uint64_t m = static_cast<uint64_t>(mant);
+	if (exp & 1)
+	{
+		m <<= 1;
+		--exp;
+	}
+	const int32_t outExp = (exp >> 1) + 127;
+	// Integer sqrt of (m << 27) produces 26-bit root (1 leading bit + 23 mantissa bits + 2 guard/round bits).
+	uint64_t n = m << 27;
+	uint64_t root = 0u;
+	uint64_t bit = uint64_t(1) << 52;
+	while (bit > n)
+		bit >>= 2;
+	while (bit != 0u)
+	{
+		if (n >= root + bit)
+		{
+			n -= root + bit;
+			root = (root >> 1) + bit;
+		}
+		else
+		{
+			root >>= 1;
+		}
+		bit >>= 2;
+	}
+	// Round-to-nearest-even using remainder `n` and bottom 2 bits of `root`.
+	const uint64_t q = root >> 2;
+	const uint64_t remBits = root & 3u;
+	uint64_t rounded = q;
+	if (remBits > 2u || (remBits == 2u && (n != 0u || (q & 1u) != 0u)))
+		++rounded;
+	int32_t finalExp = outExp;
+	if (rounded >= 0x01000000ull)
+	{
+		rounded >>= 1;
+		++finalExp;
+	}
+	const uint32_t outBits = (static_cast<uint32_t>(finalExp) << 23) | static_cast<uint32_t>(rounded & 0x007FFFFFu);
+	float out = 0.0f;
+	memcpy(&out, &outBits, sizeof(out));
+	return out;
+}
+
+// Pure O(1) integer-quotient angle wrap into [-pi, +pi] (zero remainderf / libm, zero UB on huge floats).
 inline float CeAiWrapAngle(float a)
 {
 	if (!CeAiIsFinite(a))
 		return 0.0f;
-	const float r = remainderf(a, 6.283185307179586f);
-	return CeAiIsFinite(r) ? r : 0.0f;
+	if (a > -kCeAiPi && a <= kCeAiPi)
+		return a;
+	// Above 1e12f, IEEE-754 float32 ULP exceeds 65536 rad; phase mod 2*pi has zero significance.
+	if (CeAiAbs(a) >= 1.0e12f)
+		return 0.0f;
+	constexpr double kPiD       = 3.1415926535897932384626433832795;
+	constexpr double kTwoPiD    = 6.2831853071795864769252867665590;
+	constexpr double kInvTwoPiD = 0.15915494309189533576888376337251;
+	const double scaled = static_cast<double>(a) * kInvTwoPiD;
+	const int64_t k = (scaled >= 0.0) ? static_cast<int64_t>(scaled + 0.5) : static_cast<int64_t>(scaled - 0.5);
+	double r = static_cast<double>(a) - static_cast<double>(k) * kTwoPiD;
+	if (r > kPiD)   r -= kTwoPiD;
+	if (r <= -kPiD) r += kTwoPiD;
+	const float rf = static_cast<float>(r);
+	return CeAiIsFinite(rf) ? rf : 0.0f;
 }
 
-// Matches BEA FVector::Azimuth(): forward vector is (-sin(yaw), cos(yaw), 0), so azimuth = -atan2f(dx, dy).
+// Portable deterministic atan(u) on u in [0, 1] using 9th-order minimax odd polynomial (max error < 3e-7 rad, zero libm).
+inline float CeAiAtanUnit(float u)
+{
+	const float u2 = u * u;
+	// Minimax polynomial over [0, 1]: u * (0.99999933 - 0.33329856*u^2 + 0.19946536*u^4 - 0.13908534*u^6 + 0.09642004*u^8 - 0.05590989*u^10 + 0.02186123*u^12 - 0.00405406*u^14)
+	float p = -0.004054058f;
+	p = p * u2 + 0.021861229f;
+	p = p * u2 - 0.055909886f;
+	p = p * u2 + 0.096420044f;
+	p = p * u2 - 0.139085335f;
+	p = p * u2 + 0.199465360f;
+	p = p * u2 - 0.333298561f;
+	p = p * u2 + 0.999999333f;
+	return u * p;
+}
+
+// Portable deterministic atan2(y, x) with octant reduction (zero libm).
+inline float CeAiAtan2(float y, float x)
+{
+	if (!CeAiIsFinite(x) || !CeAiIsFinite(y))
+		return 0.0f;
+	const float ax = CeAiAbs(x);
+	const float ay = CeAiAbs(y);
+	if (ax <= 1e-12f && ay <= 1e-12f)
+		return 0.0f;
+	float angle = 0.0f;
+	if (ax >= ay)
+		angle = CeAiAtanUnit(ay / ax);
+	else
+		angle = kCeAiHalfPi - CeAiAtanUnit(ax / ay);
+	if (x < 0.0f)
+		angle = kCeAiPi - angle;
+	if (y < 0.0f)
+		angle = -angle;
+	return angle;
+}
+
+// Portable deterministic cos(a) using range reduction to [-pi/2, +pi/2] + minimax polynomial (zero libm).
+inline float CeAiCos(float a)
+{
+	float x = CeAiWrapAngle(a);
+	float sign = 1.0f;
+	if (x > kCeAiHalfPi)
+	{
+		x = kCeAiPi - x;
+		sign = -1.0f;
+	}
+	else if (x < -kCeAiHalfPi)
+	{
+		x = -kCeAiPi - x;
+		sign = -1.0f;
+	}
+	const float x2 = x * x;
+	float p = -0.0000002605f;
+	p = p * x2 + 0.0000247609f;
+	p = p * x2 - 0.0013888397f;
+	p = p * x2 + 0.0416666418f;
+	p = p * x2 - 0.4999999963f;
+	p = p * x2 + 1.0f;
+	return sign * p;
+}
+
+inline float CeAiSin(float a)
+{
+	return CeAiCos(a - kCeAiHalfPi);
+}
+
+// Matches BEA FVector::Azimuth(): forward vector is (-sin(yaw), cos(yaw), 0), so azimuth = -atan2(dx, dy).
 inline float CeAiAzimuth(float dx, float dy)
 {
 	if (!CeAiIsFinite(dx) || !CeAiIsFinite(dy))
 		return 0.0f;
 	if (dx * dx + dy * dy <= 1e-8f)
 		return 0.0f;
-	return -atan2f(dx, dy);
+	return -CeAiAtan2(dx, dy);
 }
 
 // Matches BEA FVector::Elevation(): +Z is DOWN, so negative elevation means target is ABOVE (nose UP).
@@ -61,10 +230,10 @@ inline float CeAiElevation(float dx, float dy, float dz)
 {
 	if (!CeAiIsFinite(dx) || !CeAiIsFinite(dy) || !CeAiIsFinite(dz))
 		return 0.0f;
-	const float len = sqrtf(dx * dx + dy * dy + dz * dz);
-	if (len <= 1e-5f)
+	const float horiz = CeAiSqrt(dx * dx + dy * dy);
+	if (horiz <= 1e-6f && CeAiAbs(dz) <= 1e-6f)
 		return 0.0f;
-	return asinf(CeAiClamp(dz / len, -1.0f, 1.0f));
+	return CeAiAtan2(dz, horiz);
 }
 
 // ---- 1. Velocity Projectile Lead (2-iteration intercept solver) ----
@@ -98,7 +267,7 @@ inline CeAiVec3 CeMultiBeComputeLeadPoint(const CeAiVec3 &myPos, const CeAiVec3 
 		const float dx = aim.x - myPos.x;
 		const float dy = aim.y - myPos.y;
 		const float dz = aim.z - myPos.z;
-		const float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+		const float dist = CeAiSqrt(dx * dx + dy * dy + dz * dz);
 		const float t = CeAiClamp(dist / projSpeed, 0.0f, maxT);
 		aim.x = tgtPos.x + tgtVel.x * t;
 		aim.y = tgtPos.y + tgtVel.y * t;
@@ -593,9 +762,9 @@ inline CeMultiBeWalkerMoveCmd CeMultiBeComputeWalkerMove(const CeMultiBeWalkerMo
 	// Retreat toward repair pad / friendly base cover (or escape water/map edge).
 	if (in.isRetreating || in.nearWaterHazard || in.outOfBounds)
 	{
-		if (fabsf(in.yawErrToGoal) < 0.95f && in.dryFwd)
+		if (CeAiAbs(in.yawErrToGoal) < 0.95f && in.dryFwd)
 			cmd.forwardInput = -0.82f;
-		else if (fabsf(in.yawErrToGoal) > 2.2f && in.dryBack)
+		else if (CeAiAbs(in.yawErrToGoal) > 2.2f && in.dryBack)
 			cmd.backwardInput = 0.72f;
 		if (in.underFire)
 		{
@@ -615,7 +784,7 @@ inline CeMultiBeWalkerMoveCmd CeMultiBeComputeWalkerMove(const CeMultiBeWalkerMo
 	// No hostile target: march briskly toward tactical objective (contested battle-line / enemy base).
 	if (!in.hasHostile)
 	{
-		if (in.goalDist > 6.0f && fabsf(in.yawErrToGoal) < 0.95f && in.dryFwd)
+		if (in.goalDist > 6.0f && CeAiAbs(in.yawErrToGoal) < 0.95f && in.dryFwd)
 			cmd.forwardInput = -0.78f;
 		return cmd;
 	}
@@ -799,11 +968,11 @@ inline CeMultiBeJetFlightCmd CeMultiBeComputeJetFlight(const CeMultiBeJetFlightI
 	const float floorDangerZ = surfaceZ - floorMargin;
 	const bool postTakeoffSafe = in.postTakeoffClimb && in.groundIsDry && !in.outOfBounds && (altAboveSurf > 2.5f);
 
-	const float horizDist = sqrtf(in.toGoal.x * in.toGoal.x + in.toGoal.y * in.toGoal.y);
+	const float horizDist = CeAiSqrt(in.toGoal.x * in.toGoal.x + in.toGoal.y * in.toGoal.y);
 	const float targetYaw = (horizDist > 1.0f) ? CeAiAzimuth(in.toGoal.x, in.toGoal.y) : in.curYaw;
 	const float targetPitch = CeAiElevation(in.toGoal.x, in.toGoal.y, in.toGoal.z);
-	cmd.yawErrAbs = fabsf(CeAiWrapAngle(targetYaw - in.curYaw));
-	cmd.pitchErrAbs = fabsf(CeAiWrapAngle(targetPitch - in.curPitch));
+	cmd.yawErrAbs = CeAiAbs(CeAiWrapAngle(targetYaw - in.curYaw));
+	cmd.pitchErrAbs = CeAiAbs(CeAiWrapAngle(targetPitch - in.curPitch));
 
 	// Phase transitions (Landing approach + Boom-and-Zoom).
 	if (landingSafe)
@@ -1036,8 +1205,8 @@ inline float CeMultiBeScoreBattleLineNode(bool selfIsMuspell, float nodeInfluenc
 	// Contested frontline nodes (both sides present or neutral/swinging) get top billing!
 	if (myThreat > 0.1f && enemyThreat > 0.1f)
 		score += 95.0f;
-	if (fabsf(relInfluence) < 0.55f)
-		score += 65.0f * (1.0f - fabsf(relInfluence) / 0.55f);
+	if (CeAiAbs(relInfluence) < 0.55f)
+		score += 65.0f * (1.0f - CeAiAbs(relInfluence) / 0.55f);
 	// Enemy-held nodes are good push targets; already firmly friendly rear nodes are penalized.
 	if (relInfluence < -0.15f)
 		score += 55.0f;

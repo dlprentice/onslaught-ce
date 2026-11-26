@@ -65,6 +65,7 @@ class CeEntityHandleTableBase {
         uintptr_t ptr;
         uint64_t stamp;
         uint32_t gen;
+        uint32_t spawnSeq;
         uint16_t hashNext;
         uint16_t freeNext;
         uint8_t live;
@@ -75,6 +76,7 @@ class CeEntityHandleTableBase {
     uint32_t highWater_;
     uint32_t liveCount_;
     uint32_t worldEpoch_;
+    uint32_t nextSpawnSeq_;
     uint64_t totalSpawns_;
     uint64_t worldSpawns_;
     uint16_t freeHead_;
@@ -140,6 +142,7 @@ public:
         highWater_ = 0u;
         liveCount_ = 0u;
         worldEpoch_ = 1u;
+        nextSpawnSeq_ = 0u;
         totalSpawns_ = 0u;
         worldSpawns_ = 0u;
         freeHead_ = 0u;
@@ -176,6 +179,7 @@ public:
         s.ptr = ptr;
         s.stamp = stamp;
         s.gen = NextGeneration(s.gen);
+        s.spawnSeq = ++nextSpawnSeq_;
         s.live = 1u;
         s.hashNext = 0u;
         s.freeNext = 0u;
@@ -205,6 +209,7 @@ public:
         s.live = 0u;
         s.ptr = 0u;
         s.stamp = 0u;
+        s.spawnSeq = 0u;
         s.freeNext = 0u;
         if (freeTail_ != 0u) slots_[freeTail_].freeNext = idx;
         else freeHead_ = idx;
@@ -227,6 +232,7 @@ public:
         s.live = 0u;
         s.ptr = 0u;
         s.stamp = 0u;
+        s.spawnSeq = 0u;
         s.freeNext = 0u;
         if (freeTail_ != 0u) slots_[freeTail_].freeNext = static_cast<uint16_t>(idx);
         else freeHead_ = static_cast<uint16_t>(idx);
@@ -240,6 +246,22 @@ public:
         const uint16_t idx = FindSlotByPtr(ptr);
         if (idx == 0u) return kCeEntityHandleInvalid;
         return CeEntityHandlePack(idx, slots_[idx].gen);
+    }
+
+    // O(1) read-only match-local spawn sequence (resets to 0 on ResetWorld; invariant across peer worldEpoch histories).
+    uint32_t SpawnSeqOf(uintptr_t ptr) const {
+        const uint16_t idx = FindSlotByPtr(ptr);
+        if (idx == 0u) return 0u;
+        return slots_[idx].spawnSeq;
+    }
+
+    uint32_t SpawnSeqOfHandle(CeEntityHandle handle) const {
+        if (!CeEntityHandleIsValid(handle)) return 0u;
+        const uint32_t idx = CeEntityHandleSlot(handle);
+        if (idx == 0u || idx > MaxSlots) return 0u;
+        const Slot& s = slots_[idx];
+        if (!s.live || s.gen != CeEntityHandleGeneration(handle)) return 0u;
+        return s.spawnSeq;
     }
 
     // O(1) identity stamp read for a currently live handle (0 if stale/invalid).
@@ -278,12 +300,14 @@ public:
             s.live = 0u;
             s.ptr = 0u;
             s.stamp = 0u;
+            s.spawnSeq = 0u;
             s.hashNext = 0u;
             s.freeNext = 0u;
         }
         memset(buckets_, 0, sizeof(buckets_));
         highWater_ = 0u;
         liveCount_ = 0u;
+        nextSpawnSeq_ = 0u;
         worldSpawns_ = 0u;
         freeHead_ = 0u;
         freeTail_ = 0u;
@@ -307,6 +331,7 @@ class CInitThing;
 
 CeEntityHandle CeEntityHandleFor(const CThing* thing);
 CeEntityHandle CeEntityHandleLookup(const CThing* thing);
+uint32_t CeEntitySpawnSeqLookup(const CThing* thing);
 CThing* CeEntityHandleResolve(CeEntityHandle handle);
 CUnit* CeEntityHandleResolveUnit(CeEntityHandle handle);
 CSquad* CeEntityHandleResolveSquad(CeEntityHandle handle);

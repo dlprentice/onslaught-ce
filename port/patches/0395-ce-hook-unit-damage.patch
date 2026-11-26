@@ -1,0 +1,37 @@
+--- a/Unit.cpp
++++ b/Unit.cpp
+@@ -799,6 +799,12 @@
+ 			if ((part) && (stricmp(part->mName, "weakpoint")))		// retail multiplies the hits elsewhere (004f9db2)
+ 				amount *= 5.0f;
+ 		}
++#ifdef CE_VERSION
++		{
++			CeUnitDamage ceDmg = {this, inByThis, amount, mesh_part_no, (inDamageShields ? CE_DMG_SHIELD_TARGET : 0u) | (mSegments ? CE_DMG_SEGMENT_HIT : 0u)};
++			ce_hook_unit_damage(&ceDmg);	// CE hook point (port/game/ce_hooks.h): before mSegments/shield subtraction
++		}
++#endif
+ 
+ 		if (mSegments)
+ 		{
+--- a/BattleEngine.cpp
++++ b/BattleEngine.cpp
+@@ -2226,6 +2226,9 @@
+ }
+ 
+ //******************************************************************************************
++#ifdef CE_VERSION
++#include "ce_hooks.h"	// Port: the CE hook points (port/game/ce_hooks.h)
++#endif
+ void	CBattleEngine::Damage(	// FUNCTION: 0x0040a890
+ 	float		inAmount,
+ 	CThing		*inByThis,
+@@ -2243,4 +2246,9 @@
+ 		if (mLife>=0.0f)
+ 		{
++#ifdef CE_VERSION
++			const float ceRawAmount = inAmount;
++			CeUnitDamage ceDmg = {this, inByThis, ceRawAmount, mesh_part_no, CE_DMG_BATTLE_ENGINE | (inDamageShields ? CE_DMG_SHIELD_TARGET : 0u)};
++			ce_hook_unit_damage(&ceDmg);	// CE hook point (port/game/ce_hooks.h): pre-shield Battle Engine damage
++#endif
+ 			if (mShields>=inAmount)
+ 			{

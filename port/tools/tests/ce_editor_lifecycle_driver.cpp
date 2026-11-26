@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Exact editor lifecycle functions on authored engine boundaries. These are not native scene tests.
 #include "ce_editor.h"
+#include "ce_modes.h"
 #include "ce_editor_ui.h"
 #include "ce_editor_storage.h"
 #include "ce_project.h"

@@ -28,6 +28,7 @@
 
 #include "ce_entity_handles.h"
 #include "ce_flagship_duel.h"
+#include "ce_modes.h"
 #include "ce_photo.h"
 
 #include <cmath>
@@ -486,7 +487,14 @@ bool BeginModeCommon(CeFlagshipDuelMode mode) {
 		}
 	}
 
+	if (CeModeBegin(CE_MODE_FLAGSHIP_DUEL) != CE_MODE_BEGUN) {
+		PortCeFlagshipDuelDropWorld();
+		gArmed = false;
+		SetRefusal("Close other special modes before starting Flagship Duel.");
+		return false;
+	}
 	CaptureCareerSnapshot();
+	CeCareerSnapshotAcquire(CE_MODE_FLAGSHIP_DUEL, gCareerSnapshot, sizeof(CCareer));
 	gArmed = true;
 	gWaveSerial = 0u;
 	CeFlagshipDuelConfig cfg{};
@@ -615,6 +623,7 @@ extern "C" void PortCeFlagshipDuelCancel(void) {
 	gPendingReturn = false;
 	gP0StasisApplied = false;
 	ClearCareerSnapshot();
+	CeModeEnd(CE_MODE_FLAGSHIP_DUEL);
 	gDirector.Reset(CeFlagshipDuelConfig{});
 	PortCeFlagshipDuelDropWorld();
 }

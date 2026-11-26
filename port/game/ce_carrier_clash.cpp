@@ -21,6 +21,7 @@
 #include "player.h"
 #include "ce_carrier_clash.h"
 #include "ce_entity_handles.h"
+#include "ce_modes.h"
 #include "ce_photo.h"
 #include "../platform/common/portlog.h"
 
@@ -508,10 +509,17 @@ extern "C" bool PortCeCarrierClashBegin(void) {
 		PortSessionLog(PORT_SESSION_GAME, false, "carrier clash refused: another mode or fence active");
 		return false;
 	}
+	if (CeModeBegin(CE_MODE_CARRIER_CLASH) != CE_MODE_BEGUN) {
+		SetRefusal("Close other special modes before starting Carrier Clash.");
+		PortSessionLog(PORT_SESSION_GAME, false, "carrier clash refused: mode conflict");
+		return false;
+	}
 	if (!PortCeCarrierClashPreflightAndBuildWorld()) {
+		CeModeEnd(CE_MODE_CARRIER_CLASH);
 		return false;
 	}
 	CaptureCareerSnapshot();
+	CeCareerSnapshotAcquire(CE_MODE_CARRIER_CLASH, gCareerSnapshot, sizeof(CCareer));
 	gArmed = true;
 	gP0StasisApplied = false;
 	gOutcomeShieldApplied = false;
@@ -529,6 +537,7 @@ extern "C" void PortCeCarrierClashCancel(void) {
 	gP0StasisApplied = false;
 	gOutcomeShieldApplied = false;
 	ClearCareerSnapshot();
+	CeModeEnd(CE_MODE_CARRIER_CLASH);
 	gDirector.Reset();
 	PortCeCarrierClashDropWorld();
 }

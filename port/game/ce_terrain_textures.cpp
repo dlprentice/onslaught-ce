@@ -21,7 +21,7 @@ extern CTweakSLONG LANDSCAPE_LOWRES;
 extern "C" bool PortCeWorldViewCaptureSuspended();
 
 namespace {
-static const int kMaxViews = 2;
+static const int kMaxViews = 4;
 static const int kMaxTiles = kCeTerrainMapTiles * kCeTerrainMapTiles;
 
 struct LevelAtlas {

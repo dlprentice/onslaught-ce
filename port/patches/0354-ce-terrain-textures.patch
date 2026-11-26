@@ -16,12 +16,14 @@
 +#endif
  
  	if (mViews)
-@@ -440,4 +446,10 @@
+@@ -440,4 +446,12 @@
  		SHADOWS.mShadows = true;
  	}
 +#ifdef CE_VERSION
 +	{
-+		SINT ceViewLevels[2] = { mViews[0].mNumLevels, mNumViews > 1 ? mViews[1].mNumLevels : 0 };
++		SINT ceViewLevels[4] = {};
++		for (SINT ceV = 0; ceV < mNumViews && ceV < 4; ceV++)
++			ceViewLevels[ceV] = mViews[ceV].mNumLevels;
 +		CeTerrainTexturesInit(mNumViews, ceViewLevels);
 +	}
 +#endif

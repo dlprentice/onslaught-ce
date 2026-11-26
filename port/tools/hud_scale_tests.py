@@ -49,10 +49,11 @@ MARKER_SCOPE = "CeHudScope scope(portHudEligible, mViewportWidth, mViewportHeigh
 ANCHOR = "CeHudSetAnchor(screen.X, screen.Y);"
 BACKDROPS = (("MessageLog.cpp", "void\tCMessageLog::Render("), ("LevelBriefingLog.cpp", "void\tCLevelBriefingLog::Render("))
 # The HUD's test in each build's text: one viewpoint and not multiplayer (patch 0089), or with the network compiled in also a co-op
-# game of the network release (patch 0157). The world markers' scope takes it as portHudEligible and the speaker marker's scope
-# spells it out, once in each arm of patch 0190's CE_NETWORK_OFF conditional.
+# game of the network release (patch 0157). The world markers' scope takes it as portHudEligible; patch 0190's speaker marker
+# routes through network-neutral CePolicyHudScaleEligible() (zero CE_NETWORK_OFF leak in patch 0190).
 VIEWPOINT_TEST = "!CE_SPLIT_HUD() && ENGINE.GetNumViewpoints() == 1"
 COOP_TEST = "(CE_LockstepRequested() || (" + VIEWPOINT_TEST + "))"
+SPEAKER_POLICY = "CePolicyHudScaleEligible()"
 SPEAKER = "CeHudScope scope(%s, mViewportWidth, mViewportHeight, screen.X, screen.Y);\t// Port (patch 0190)"
 # The text each build compiles (build.network_view): the default public build's, CE_NETWORK_OFF defined (build.resolve_network_off
 # gives the compiler that text), and the network build's; with the HUD's test of each.
@@ -103,8 +104,8 @@ def marker_problems(hud, test):
     args = arguments(scope.group(1)) if scope else []
     if args[1:] != ["mViewportWidth", "mViewportHeight", "screen.X", "screen.Y"]:
         problems.append("the speaker marker does not scale about its projected point")
-    elif args[0] != test:
-        problems.append("the speaker marker's scope does not take the HUD's test (split screen would scale, or co-op would not)")
+    elif args[0] != SPEAKER_POLICY:
+        problems.append("the speaker marker's scope does not take CePolicyHudScaleEligible()")
     return problems
 
 
@@ -138,20 +139,15 @@ def corner(line):
 
 
 # Weakenings of patch 0190's text, in the patched files before either build's view is taken, that the structure checks above must
-# catch in one build's text or the other's: (name, file, old, new); old is replaced once (the speaker's arms each occur once).
-DEFAULT_SPEAKER, NETWORK_SPEAKER = SPEAKER % VIEWPOINT_TEST, SPEAKER % COOP_TEST
+# catch in one build's text or the other's: (name, file, old, new); old is replaced once.
+POLICY_SPEAKER = SPEAKER % SPEAKER_POLICY
 STRUCTURE_MUTANTS = (
     ("a marker loop loses its anchor", "Hud.cpp", "\t" + ANCHOR, ""),
     ("the markers are drawn after their scope ends", "Hud.cpp", "\t\tRenderWorldTargets();\n\t}\n", "\t}\n\tRenderWorldTargets();\n"),
     ("the markers' scope ignores the viewpoint test (split screen would scale)", "Hud.cpp", MARKER_SCOPE, MARKER_SCOPE.replace("portHudEligible", "1")),
-    ("the default build's speaker scope ignores the viewpoint test (split screen would scale)", "Hud.cpp", DEFAULT_SPEAKER, SPEAKER % "1"),
-    ("the default build's speaker marker loses its scope (the game's pixels)", "Hud.cpp", DEFAULT_SPEAKER, ""),
-    ("the default build's speaker marker scales about the screen's corner", "Hud.cpp", DEFAULT_SPEAKER, corner(DEFAULT_SPEAKER)),
-    ("the network build's speaker scope ignores the co-op and viewpoint test", "Hud.cpp", NETWORK_SPEAKER, SPEAKER % "1"),
-    ("the network build's speaker scope drops the co-op test (a co-op game's marker keeps the game's pixels)", "Hud.cpp",
-     NETWORK_SPEAKER, DEFAULT_SPEAKER),
-    ("the network build's speaker marker loses its scope (the game's pixels)", "Hud.cpp", NETWORK_SPEAKER, ""),
-    ("the network build's speaker marker scales about the screen's corner", "Hud.cpp", NETWORK_SPEAKER, corner(NETWORK_SPEAKER)),
+    ("the speaker scope ignores CePolicyHudScaleEligible (split screen would scale)", "Hud.cpp", POLICY_SPEAKER, SPEAKER % "1"),
+    ("the speaker marker loses its scope (the game's pixels)", "Hud.cpp", POLICY_SPEAKER, ""),
+    ("the speaker marker scales about the screen's corner", "Hud.cpp", POLICY_SPEAKER, corner(POLICY_SPEAKER)),
     ("the message log keeps the 4:3 backdrop", "MessageLog.cpp", "PortUiLeft() / PortUiScale()", "0.f"),
     ("the briefing stretches to the box only", "LevelBriefingLog.cpp", "(float)LT.GetWindowWidth() / (640.f * PortUiScale())", "1.f"),
 )
@@ -211,8 +207,8 @@ def main():
         end = hud.index("\n\t\tvp.MinZ = 0;", start)
         (out / "target_viewport.inc").write_text(hud[start:end] + "\n")
         originals = {name: (ROOT / "src" / name).read_bytes().decode("latin-1") for name, _ in BACKDROPS}
-        if texts["Hud.cpp"].count(DEFAULT_SPEAKER) != 1 or texts["Hud.cpp"].count(NETWORK_SPEAKER) != 1:
-            raise RuntimeError("the speaker marker's scope is not in the patched Hud.cpp once in each arm")
+        if texts["Hud.cpp"].count(POLICY_SPEAKER) != 1:
+            raise RuntimeError("the speaker marker's network-neutral CePolicyHudScaleEligible() scope is not in patched Hud.cpp once")
         problems = structure_problems(texts, originals)
         if problems:
             raise RuntimeError("; ".join(problems))

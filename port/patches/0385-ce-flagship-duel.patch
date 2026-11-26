@@ -1,62 +1,3 @@
---- a/ResourceAccumulator.cpp
-+++ b/ResourceAccumulator.cpp
-@@ -32,6 +32,8 @@
- extern "C" void PortCeCarrierClashInstallArena(void);
- extern "C" bool PortCeLivingSandboxActive(void);
- extern "C" void PortCeLivingSandboxInstallArena(void);
-+extern "C" bool PortCeFlagshipDuelActive(void);
-+extern "C" const char *PortCeFlagshipDuelDonorArchivePath(void);
- #endif
- 
- // an interesting constant.
-@@ -777,6 +779,12 @@
- 	// get the name of the resource file.
- 	char *filename = new( MEMTYPE_SCRATCHPAD ) char[256];
- 	GetFileName(filename, level, TARGET);
-+#ifdef CE_VERSION
-+	if ((level >= 0) && PortCeFlagshipDuelActive())
-+	{
-+		strcpy(filename, PortCeFlagshipDuelDonorArchivePath());
-+	}
-+#endif
- 
- #if TARGET == XBOX
- 	if (filename[0] == 'Z')
---- a/world.cpp
-+++ b/world.cpp
-@@ -9,6 +9,8 @@
- extern "C" int PortCeCarrierClashReadWorld(const char *, const void **, unsigned *);
- extern "C" bool PortCeLivingSandboxActive(void);
- extern "C" int PortCeLivingSandboxReadWorld(const char *, const void **, unsigned *);
-+extern "C" bool PortCeFlagshipDuelActive(void);
-+extern "C" int PortCeFlagshipDuelReadWorld(const char *, const void **, unsigned *);
- #endif
- // world.cpp: reconstructed from world.obj (0050a750..0050d86f); Stuart's release has no copy. The allocations'
- // __LINE__ values are the retail ones; the #line directives place them, because the retail file's layout is unknown.
-@@ -382,6 +384,7 @@
-         PortCeMuseumVisitActive() ||
-         PortCeCarrierClashActive() ||
-         PortCeLivingSandboxActive() ||
-+        PortCeFlagshipDuelActive() ||
- #endif
-         PortModHas(name);
- 
-@@ -443,9 +446,15 @@
-     const int ceSbBody = (ceMuseumBody == 0 && ceCcBody == 0) ? PortCeLivingSandboxReadWorld(name, &ceSbBytes, &ceSbLength) : 0;
-     if (ceSbBody < 0)
-         return FALSE;
-+    const void *ceFdBytes = NULL;
-+    unsigned ceFdLength = 0;
-+    const int ceFdBody = (ceMuseumBody == 0 && ceCcBody == 0 && ceSbBody == 0) ? PortCeFlagshipDuelReadWorld(name, &ceFdBytes, &ceFdLength) : 0;
-+    if (ceFdBody < 0)
-+        return FALSE;
-     if (!(ceMuseumBody > 0 ? mem.InitOwnedRead(ceMuseumBytes, ceMuseumLength) :
-           ceCcBody > 0 ? mem.InitOwnedRead(ceCcBytes, ceCcLength) :
-           ceSbBody > 0 ? mem.InitOwnedRead(ceSbBytes, ceSbLength) :
-+          ceFdBody > 0 ? mem.InitOwnedRead(ceFdBytes, ceFdLength) :
-           mem.InitFromFile(name, MEMTYPE_MEMBUFFER, TRUE, start)))
- #else
-     if (!mem.InitFromFile(name, MEMTYPE_MEMBUFFER, TRUE, start))
 --- a/game.cpp
 +++ b/game.cpp
 @@ -93,6 +93,9 @@
@@ -147,24 +88,6 @@
  	case 800:
  		return TEXT_DB.GetString(FETX_LEVEL_NAME_800);
  
---- a/ltshell.cpp
-+++ b/ltshell.cpp
-@@ -732,6 +732,7 @@
- extern "C" void PortCeMuseumVisitCancel(void) __attribute__((weak));
- extern "C" void PortCeLivingSandboxCancel(void) __attribute__((weak));
- extern "C" void PortCeCarrierClashCancel(void) __attribute__((weak));
-+extern "C" void PortCeFlagshipDuelCancel(void) __attribute__((weak));
- #endif
- //-----------------------------------------------------------------------------
- int PCLTShell::MainLoop()
-@@ -753,6 +754,7 @@
- 		PortCeEditorCancel();
- 		if (PortCeLivingSandboxCancel) PortCeLivingSandboxCancel();
- 		if (PortCeCarrierClashCancel) PortCeCarrierClashCancel();
-+		if (PortCeFlagshipDuelCancel) PortCeFlagshipDuelCancel();
- #endif
- 		SYSTEM.Shutdown();
- 		Cleanup3DEnvironment();
 --- a/BattleEngine.cpp
 +++ b/BattleEngine.cpp
 @@ -1369,6 +1369,7 @@

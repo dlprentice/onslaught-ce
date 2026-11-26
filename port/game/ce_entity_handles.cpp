@@ -80,6 +80,11 @@ CeEntityHandle CeEntityHandleLookup(const CThing* thing) {
     return gEntityHandles.Lookup(reinterpret_cast<uintptr_t>(thing));
 }
 
+uint32_t CeEntitySpawnSeqLookup(const CThing* thing) {
+    if (!thing) return 0u;
+    return gEntityHandles.SpawnSeqOf(reinterpret_cast<uintptr_t>(thing));
+}
+
 CThing* CeEntityHandleResolve(CeEntityHandle handle) {
     const uintptr_t addr = gEntityHandles.Resolve(handle);
     if (addr == 0u) return nullptr;
@@ -173,6 +178,7 @@ extern "C" void PortCeEntityHandlesLevelEnd(int, int) {
 
 CeEntityHandle CeEntityHandleFor(const CThing*) { return kCeEntityHandleInvalid; }
 CeEntityHandle CeEntityHandleLookup(const CThing*) { return kCeEntityHandleInvalid; }
+uint32_t CeEntitySpawnSeqLookup(const CThing*) { return 0u; }
 CThing* CeEntityHandleResolve(CeEntityHandle) { return nullptr; }
 CUnit* CeEntityHandleResolveUnit(CeEntityHandle) { return nullptr; }
 CSquad* CeEntityHandleResolveSquad(CeEntityHandle) { return nullptr; }

@@ -147,7 +147,7 @@ def main() -> int:
                    '-DCE_MUSEUM_VISIT_HOST_FIXTURE=1',
                    '-I' + str(headers), '-I' + str(ROOT / 'port/game'),
                    *(['-DCE_VERSION="museum-test"'] if version else []),
-                   str(driver), str(provider_path), str(engine_path), str(hash_object), '-lz', '-o', str(binary)]
+                   str(driver), str(provider_path), str(engine_path), str(ROOT / 'port/game/ce_modes.cpp'), str(hash_object), '-lz', '-o', str(binary)]
         assert run(folder.name + '-compile', command)
         return binary
 

@@ -1,0 +1,114 @@
+--- a/ResourceAccumulator.cpp
++++ b/ResourceAccumulator.cpp
+@@ -4,6 +4,10 @@
+ 
+ #include "common.h"
+ 
++#ifdef CE_VERSION
++#include "ce_hooks.h"	// Port: the CE hook points (port/game/ce_hooks.h)
++#include "ce_world_provider.h"
++#endif
+ #include "resourceaccumulator.h"
+ #include "membuffer.h"
+ #include "chunker.h"
+@@ -770,6 +774,14 @@
+ 	// get the name of the resource file.
+ 	char *filename = new( MEMTYPE_SCRATCHPAD ) char[256];
+ 	GetFileName(filename, level, TARGET);
++#ifdef CE_VERSION
++	if (level >= 0)
++	{
++		CeWorldSourceReq ceReq = {CE_WORLD_SRC_DONOR_ARCHIVE, level, 0u, NULL, NULL, CE_CHUNK_RETAIL, NULL, 0, NULL, 0u};
++		if (ce_hook_world_source(&ceReq) && ceReq.archive_path && ceReq.archive_path[0])	// CE hook point (port/game/ce_hooks.h)
++			strcpy(filename, ceReq.archive_path);
++	}
++#endif
+ 
+ #if TARGET == XBOX
+ 	if (filename[0] == 'Z')
+@@ -957,6 +970,17 @@
+ 		}
+ 		else if (tag==MKID("ERES"))
+ 		{
++#ifdef CE_VERSION
++			CeWorldSourceReq ceReq = {CE_WORLD_SRC_CHUNK_POLICY, level, (uint32_t)tag, NULL, NULL, CE_CHUNK_RETAIL, NULL, 0, NULL, 0u};
++			if (ce_hook_world_source(&ceReq))	// CE hook point (port/game/ce_hooks.h)
++			{
++				if (ceReq.chunk_policy == CE_CHUNK_SKIP_AND_INSTALL) { c.Skip(); if (ceReq.post_eres) ceReq.post_eres(); }
++				else if (ceReq.chunk_policy == CE_CHUNK_DESERIALIZE_AND_INSTALL) { ENGINE.Deserialize(&c); if (ceReq.post_eres) ceReq.post_eres(); }
++				else if (ceReq.chunk_policy == CE_CHUNK_SKIP) { c.Skip(); }
++				else ENGINE.Deserialize(&c);
++			}
++			else
++#endif
+ 			ENGINE.Deserialize(&c);
+ 		}
+ 		else if (tag==MKID("WRES"))
+@@ -995,10 +1019,22 @@
+ 		}
+ 		else if (tag==MKID("SURF"))
+ 		{
++#ifdef CE_VERSION
++			CeWorldSourceReq ceReq = {CE_WORLD_SRC_CHUNK_POLICY, level, (uint32_t)tag, NULL, NULL, CE_CHUNK_RETAIL, NULL, 0, NULL, 0u};
++			if (ce_hook_world_source(&ceReq) && ceReq.chunk_policy == CE_CHUNK_SKIP)	// CE hook point (port/game/ce_hooks.h)
++				c.Skip();
++			else
++#endif
+ 			SURF.Deserialize(&c);
+ 		}
+ 		else if (tag==MKID("SSHD"))
+ 		{
++#ifdef CE_VERSION
++			CeWorldSourceReq ceReq = {CE_WORLD_SRC_CHUNK_POLICY, level, (uint32_t)tag, NULL, NULL, CE_CHUNK_RETAIL, NULL, 0, NULL, 0u};
++			if (ce_hook_world_source(&ceReq) && ceReq.chunk_policy == CE_CHUNK_SKIP)	// CE hook point (port/game/ce_hooks.h)
++				c.Skip();
++			else
++#endif
+ 			STATICSHADOWS.DeserializeAll(&c);
+ 		}
+ 		else if(tag==MKID("PMIB"))
+@@ -1011,6 +1047,13 @@
+ 		}
+ 		else if(tag==MKID("DMKR"))
+ 		{
++#ifdef CE_VERSION
++			extern bool PortCeDamageIsLoaded(const class CDamage *);
++			CeWorldSourceReq ceReq = {CE_WORLD_SRC_CHUNK_POLICY, level, (uint32_t)tag, NULL, NULL, CE_CHUNK_RETAIL, NULL, 0, NULL, 0u};
++			if (ce_hook_world_source(&ceReq) && (ceReq.chunk_policy == CE_CHUNK_SKIP || (ceReq.chunk_policy == CE_CHUNK_SKIP_IF_DAMAGE_LOADED && PortCeDamageIsLoaded(ENGINE.GetLandscape()->GetDamage()))))	// CE hook point (port/game/ce_hooks.h)
++				c.Skip();
++			else
++#endif
+ 			ENGINE.GetLandscape()->GetDamage()->DeserializeAll(&c);
+ 		}
+ 		else if(tag==MKID("GDIE"))
+--- a/world.cpp
++++ b/world.cpp
+@@ -6,6 +6,9 @@
+ #include "common.h"
+ #define WORLD_CPP
+ #include "MissionScript/vm.h"		// before world.h: the script entries' deletes use its virtual destructors
++#ifdef CE_VERSION
++#include "ce_hooks.h"	// Port: the CE hook points (port/game/ce_hooks.h)
++#endif
+ #include "world.h"
+ #include "thing.h"
+ #include "DebugLog.h"
+@@ -395,7 +398,18 @@
+ 		mWorldLevel = level;
+ 
+ 	CDXMemBuffer	mem;
++#ifdef CE_VERSION
++	char	ceWrdName[200];
++	sprintf(ceWrdName, "%sworld%03d.wrd", path, level);
++	CeWorldSourceReq ceReq = {CE_WORLD_SRC_READ_BYTES, level, 0u, ceWrdName, NULL, 0, NULL, 0, NULL, 0u};
++	ce_hook_world_source(&ceReq);	// CE hook point (port/game/ce_hooks.h): custom world provider bytes
++	if (ceReq.read_status < 0)
++		return FALSE;
++	if (!(ceReq.read_status > 0 ? mem.InitOwnedRead(ceReq.bytes, ceReq.length) :
++	      mem.InitFromFile(name, MEMTYPE_MEMBUFFER, TRUE, start)))
++#else
+ 	if (!mem.InitFromFile(name, MEMTYPE_MEMBUFFER, TRUE, start))
++#endif
+ 	{
+ 		mem.Close();
+ 		return FALSE;

@@ -797,19 +797,20 @@ def main():
           not re.search(r"\b(prototype|experimental|ce\.ini|wave\s*[a-z]|agent|claude|anthropic|opus|sonnet)\b",
                         cit_h + "\n" + cit_cpp, re.I))
 
-    # 3. Patch 0379 scope, CE_VERSION guard, independence from 0256/0265/0355/0366, and faithful neutrality.
+    # 3. Patch 0379 + 0394 scope, CE_VERSION guard, independence, and faithful neutrality.
+    patch_0394_txt = (PORT / "patches/0394-ce-hook-projectile-intercept.patch").read_text(encoding="latin-1")
     files = re.findall(r"^--- a/(.+)$", patch_txt, re.M)
-    check("patch 0379 touches only Round.cpp and DXEngine.cpp",
-          files == ["Round.cpp", "DXEngine.cpp"], f"got {files}")
+    check("patch 0379 touches only DXEngine.cpp (Round.cpp retired into 0394-ce-hook-projectile-intercept)",
+          files == ["DXEngine.cpp"], f"got {files}")
     check("patch 0379 has zero CE_NETWORK_OFF or ce_hook_* calls",
           "CE_NETWORK_OFF" not in patch_txt and "ce_hook_" not in patch_txt)
-    check("patch 0379 disarms 4001/4000/DeclareOnGround (StartDieProcess BEFORE mUnknown120), clamps beam [mBeamStart, mPos+mVelocity], and clears Cinema backbuffer",
-          patch_txt.count("+\t\t\tStartDieProcess();\n+\t\t\tmUnknown120 = TRUE;\n+\t\t\tmVelocity = FVector(0, 0, 0);\n+\t\t\treturn;") == 3
-          and "!(PortCeSanctuaryActive() && (mFlags & TF_DYING))" in patch_txt
-          and "void CRound::DeclareOnGround()" in patch_txt
-          and "FVector ceBeamSeg = (mPos + mVelocity) - mBeamStart;" in patch_txt
-          and "PortCeSanctuaryClampBeam(mBeamStart.X, mBeamStart.Y, mBeamStart.Z, &ceBeamSeg.X, &ceBeamSeg.Y, &ceBeamSeg.Z)" in patch_txt
-          and "mVelocity = (mBeamStart + ceBeamSeg) - mPos;" in patch_txt
+    check("patch 0394 disarms 4001/4000/DeclareOnGround (StartDieProcess BEFORE mUnknown120), clamps beam [mBeamStart, mPos+mVelocity], and 0379 clears Cinema backbuffer",
+          patch_0394_txt.count("+\t\t\tStartDieProcess();\n+\t\t\tmUnknown120 = TRUE;\n+\t\t\tmVelocity = FVector(0, 0, 0);\n+\t\t\treturn;") == 3
+          and "!ceFlakEv.intercepted" in patch_0394_txt
+          and "void CRound::DeclareOnGround()" in patch_0394_txt
+          and "FVector ceBeamSeg = (mPos + mVelocity) - mBeamStart;" in patch_0394_txt
+          and "CE_PROJ_BEAM_CLAMP" in patch_0394_txt
+          and "PortCeSanctuaryProjectileIntercept(" in cit_cpp
           and "LT.D3D_Clear(0, NULL, D3DCLEAR_TARGET, 0x000a0c12, 1.0f, 0L);" in patch_txt)
     check("citadel splits South balustrade & retaining skirt around SE ramp, keeps South Cinema portal open, guards SkipOutdoorWorld & keys, and renders 3P player in Cinema",
           "EmitBalustradeX(354.5f,  75.0f, 119.5f" in cit_cpp

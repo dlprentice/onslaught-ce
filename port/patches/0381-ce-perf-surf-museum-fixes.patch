@@ -10,27 +10,6 @@
  	if (mStrips)
  	{
  		delete [] mStrips;
---- a/ResourceAccumulator.cpp
-+++ b/ResourceAccumulator.cpp
-@@ -1015,7 +1015,7 @@
- 		else if (tag==MKID("SURF"))
- 		{
- #ifdef CE_VERSION
--			if (PortCeCarrierClashActive() || PortCeLivingSandboxActive()) { c.Skip(); }
-+			if (PortCeMuseumAuthoredSource() || PortCeCarrierClashActive() || PortCeLivingSandboxActive()) { c.Skip(); }
- 			else
- #endif
- 			SURF.Deserialize(&c);
-@@ -1039,7 +1039,8 @@
- 		else if(tag==MKID("DMKR"))
- 		{
- #ifdef CE_VERSION
--			if (PortCeMuseumAuthoredSource() || PortCeCarrierClashActive() || PortCeLivingSandboxActive()) { c.Skip(); }
-+			extern bool PortCeDamageIsLoaded(const class CDamage *);
-+			if ((PortCeMuseumAuthoredSource() || PortCeCarrierClashActive() || PortCeLivingSandboxActive()) && PortCeDamageIsLoaded(ENGINE.GetLandscape()->GetDamage())) { c.Skip(); }
- 			else
- #endif
- 			ENGINE.GetLandscape()->GetDamage()->DeserializeAll(&c);
 --- a/damage.cpp
 +++ b/damage.cpp
 @@ -24,6 +24,9 @@
@@ -372,27 +351,22 @@
  	}
 --- a/ltshell.cpp
 +++ b/ltshell.cpp
-@@ -728,6 +728,11 @@
+@@ -728,6 +728,9 @@
  {
  	LT.ShowGFXCardInfo();
  }
 +#ifdef CE_VERSION
-+extern "C" void PortCeMuseumVisitCancel(void) __attribute__((weak));
-+extern "C" void PortCeLivingSandboxCancel(void) __attribute__((weak));
-+extern "C" void PortCeCarrierClashCancel(void) __attribute__((weak));
++extern "C" void CeWorldProviderCancelAll(void);
 +#endif
  //-----------------------------------------------------------------------------
  int PCLTShell::MainLoop()
  {
-@@ -743,6 +748,12 @@
+@@ -743,6 +746,9 @@
  		//if(mJoypads!=0) // We can't do this because it causes the modelviewer to exit!
  			SYSTEM.Run();
  
 +#ifdef CE_VERSION
-+		if (PortCeMuseumVisitCancel) PortCeMuseumVisitCancel();
-+		PortCeEditorCancel();
-+		if (PortCeLivingSandboxCancel) PortCeLivingSandboxCancel();
-+		if (PortCeCarrierClashCancel) PortCeCarrierClashCancel();
++		CeWorldProviderCancelAll();	// strictly BEFORE SYSTEM.Shutdown() and Cleanup3DEnvironment()
 +#endif
  		SYSTEM.Shutdown();
  		Cleanup3DEnvironment();

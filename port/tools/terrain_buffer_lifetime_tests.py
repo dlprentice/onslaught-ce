@@ -63,6 +63,9 @@ constexpr float CAMERA_LAG=.03f;
 static SINT sPatchLevel[9]={-1,-1,0,0,1,1,1,1,2};
 struct { bool freeCamera=false; bool IsFreeCameraOn(int){return freeCamera;} bool IsMultiplayer(){return true;} } GAME;
 int PortCeCameraSplitAspect() { return GAME.IsMultiplayer() ? 1 : 0; }
+bool CePolicyUseHalfHeightAspect() { return PortCeCameraSplitAspect() != 0; }
+bool CePolicyIsSplitViewport() { return GAME.IsMultiplayer(); }
+int CePolicyLandscapeViewCount() { return GAME.IsMultiplayer() ? 2 : 1; }
 struct IDirect3DIndexBuffer9 {
     static int nextID;
     int id=++nextID;
@@ -329,7 +332,7 @@ def terrain_driver(sources, *, quality_policy=False):
     draw_end = terrain.index("\n\tif (LANDSCAPE_METHOD.GetMethod() >= 2)", draw_start)
     consumer = terrain[draw_start:draw_end]
     engine = definition(sources["DXEngine.cpp"], "HRESULT CDXEngine::Render(int viewpoint)")
-    gate_marker = "\tif (PortCeCameraSplitAspect())" if "\tif (PortCeCameraSplitAspect())" in engine else "\tif (GAME.IsMultiplayer())"
+    gate_marker = "\tif (CePolicyUseHalfHeightAspect())" if "\tif (CePolicyUseHalfHeightAspect())" in engine else ("\tif (PortCeCameraSplitAspect())" if "\tif (PortCeCameraSplitAspect())" in engine else "\tif (GAME.IsMultiplayer())")
     gate = engine[engine.index(gate_marker):engine.index("\n\t// And then start doing drawing.")]
     declaration = re.search(r"^\s*virtual HRESULT\s+InvalidateDeviceObjects\(\);[^\n]*", sources["landscape.h"], re.MULTILINE)
     quality = "" if quality_policy else NEUTRAL_TERRAIN_QUALITY

@@ -37,6 +37,10 @@
 //   spawner_trigger SIM     FILTER             SpawnerThng.cpp CSpawner::DoSpawn and CSpawnerThing::Unknown4e3370, before spawning a wave or unit
 //   weapon_fire     SIM     BROADCAST          weapon.cpp CWeapon::SpawnRound, after round->Init(&init)
 //   render_pass     RENDER  BROADCAST          DXEngine.cpp CDXEngine::Render, pre-world (after SetViewport) and post-world (after draw_fairly_late_stuff)
+//   world_source    SIM     FIRST_MATCH        world.cpp CWorld::Load & ResourceAccumulator.cpp CResourceAccumulator::ReadResources
+//   projectile_intercept SIM FILTER            Round.cpp CRound::Move, CRound::HandleEvent, CRound::DeclareOnGround
+//   unit_damage     SIM     BROADCAST          Unit.cpp CUnit::Damage (after weakpoint, before mSegments) & BattleEngine.cpp CBattleEngine::Damage (saved rawAmount)
+//   player_act      SIM     BROADCAST          game.cpp CGame::Update (unpaused GAME_STATE_PLAYING, after human flush, before EVENT_MANAGER.Flush)
 //
 // A handler row also names a gate (CE_GATE_VERSION: whenever CE_VERSION is compiled in; CE_GATE_LAYER: only while
 // PortCeLayer() is true, so never in a replay, a recording or a probe run) and a mode (ce_modes.h: CE_MODE_NONE runs
@@ -49,13 +53,15 @@
 #ifndef PORT_CE_HOOKS_H
 #define PORT_CE_HOOKS_H
 
+#include <stdint.h>
+
 // Hook API version contract: major bumps on breaking signature, enum, or dispatch changes; minor bumps on
 // backwards-compatible additions (new hook points or appended enum values). Checked at compile time in ce_hooks.cpp
 // and verified by port/tools/ce_hooks_tests.py.
-#define CE_HOOKS_API_VERSION_MAJOR 2u
+#define CE_HOOKS_API_VERSION_MAJOR 3u
 #define CE_HOOKS_API_VERSION_MINOR 0u
 #define CE_HOOKS_API_VERSION ((CE_HOOKS_API_VERSION_MAJOR << 8) | CE_HOOKS_API_VERSION_MINOR)
-#define CE_HOOKS_POINT_COUNT 21u
+#define CE_HOOKS_POINT_COUNT 25u
 
 class CPlayer;
 class CController;
@@ -65,6 +71,7 @@ class CPauseMenu;
 class CMenuOptionsList;
 class CCamera;
 class CBattleEngine;
+class CThing;
 class CUnit;
 class CInitThing;
 class CSpawner;
@@ -116,13 +123,10 @@ void			ce_hook_draw_hud(CPlayer *player, int viewpoint);
 void			ce_hook_draw_overlay();
 void			ce_hook_menu_rows(CeMenuEvent event, CeMenuPage *page);
 // save_gate: `career` is the live career at CE_SAVE_CAREER (dest holds its copy, `size` bytes) and NULL at
-// CE_SAVE_OPTIONS_FILE (dest is the whole file about to be written). Built-in career snapshot handlers guard against
-// NULL pointers and undersized buffers (`size < (int)sizeof(CCareer)`). Handlers run in table order and each sees the
-// previous handler's output in `dest`. Incremental in-place edits compose freely; whole-copy replacements require
-// mutual exclusion. Today's three career filters (editor, bonus level, museum visit) each replace the whole copy, so
-// ce_modes.cpp makes CE_MODE_EDITOR, CE_MODE_BONUS_LEVEL and CE_MODE_MUSEUM_VISIT pairwise incompatible; calling two
-// raw filters concurrently would let the later snapshot win (port/tools/ce_hooks_tests.py keeps that raw-handler hazard
-// pinned as an expected failure until one owner holds the career snapshot).
+// CE_SAVE_OPTIONS_FILE (dest is the whole file about to be written). Slot 10 (`career_snapshot_save`) enforces
+// CeHookSaveCareerValid (non-NULL pointers and `size >= (int)sizeof(CCareer)`) and dispatches exclusively to the
+// single active CeCareerSnapshotOwner() (ce_modes.h), eliminating multi-filter whole-copy overwrite hazards.
+// Higher slots (>= 20) are reserved for incremental field filters that compose freely in table order.
 void			ce_hook_save_gate(CeHookSaveTarget target, CCareer *career, char *dest, int size);
 void			ce_hook_audio_clock(CeHookAudioEvent event, unsigned bytes);
 // render_camera (provisional contract): a handler returns the camera this viewpoint draws from, or the camera it was
@@ -172,5 +176,74 @@ void			ce_hook_spawner_trigger(CeSpawnerTrigger *trigger);
 // weapon_fire: SIM BROADCAST in CWeapon::SpawnRound immediately after round->Init(&init).
 void			ce_hook_weapon_fire(CWeapon *weapon, CUnit *owner, CRound *round);
 void			ce_hook_render_pass(const CeRenderPass *pass);
+
+// world_source (v3.0): SIM FIRST_MATCH in ResourceAccumulator.cpp & world.cpp for donor archives, chunk policies,
+// and custom world byte streams (retiring per-mode cascade patches).
+enum CeWorldSourceStage
+{
+	CE_WORLD_SRC_DONOR_ARCHIVE = 0,
+	CE_WORLD_SRC_CHUNK_POLICY  = 1,
+	CE_WORLD_SRC_READ_BYTES    = 2
+};
+struct CeWorldSourceReq
+{
+	CeWorldSourceStage	stage;
+	int					level;			// CE_WORLD_SRC_DONOR_ARCHIVE
+	uint32_t			fourcc;			// CE_WORLD_SRC_CHUNK_POLICY
+	const char			*wrd_name;		// CE_WORLD_SRC_READ_BYTES
+	const char			*archive_path;	// out: CE_WORLD_SRC_DONOR_ARCHIVE
+	int					chunk_policy;	// out: CeWorldChunkPolicy value
+	void				(*post_eres)();	// out: optional post-ERES installer
+	int					read_status;	// out: <0 fail, 0 retail, >0 owned
+	const void			*bytes;			// out: CE_WORLD_SRC_READ_BYTES
+	unsigned			length;			// out: CE_WORLD_SRC_READ_BYTES
+};
+
+// projectile_intercept (v3.0): SIM FILTER in Round.cpp CRound::Move, HandleEvent (4000), and DeclareOnGround.
+enum CeProjectileInterceptStage
+{
+	CE_PROJ_PRE_MOVE   = 0,
+	CE_PROJ_POST_MOVE  = 1,
+	CE_PROJ_FLAK_CHECK = 2,
+	CE_PROJ_BEAM_CLAMP = 3,
+	CE_PROJ_ON_GROUND  = 4
+};
+struct CeProjectileIntercept
+{
+	CeProjectileInterceptStage	stage;
+	CRound						*round;
+	float						prev_x, prev_y, prev_z;
+	float						cur_x, cur_y, cur_z;
+	float						hit_x, hit_y, hit_z;
+	float						vel_x, vel_y, vel_z;
+	bool						dying;
+	bool						intercepted;
+};
+
+// unit_damage (v3.0): SIM ORDERED_BROADCAST in CUnit::Damage (after weakpoint mult, before mSegments)
+// and CBattleEngine::Damage (with pre-shield rawAmount). CRocket::Damage does not call CUnit::Damage and is excluded.
+enum CeUnitDamageFlags : uint32_t
+{
+	CE_DMG_NONE          = 0u,
+	CE_DMG_SHIELD_TARGET = 1u << 0,
+	CE_DMG_SEGMENT_HIT   = 1u << 1,
+	CE_DMG_BATTLE_ENGINE = 1u << 2
+};
+struct CeUnitDamage
+{
+	CUnit		*victim;		// always non-NULL
+	CThing		*source;		// nullable (CRound*, CExplosion*, CUnit*, etc.)
+	float		rawAmount;		// positive pre-shield damage (after weakpoint mult)
+	int			meshPart;		// mesh_part_no (-1 if none)
+	uint32_t	flags;			// CeUnitDamageFlags
+};
+
+bool			ce_hook_world_source(CeWorldSourceReq *req);
+void			ce_hook_projectile_intercept(CeProjectileIntercept *ev);
+void			ce_hook_unit_damage(const CeUnitDamage *ev);
+// Monotonic gameplay simulation tick counter (reset on level_begin/level_end; incremented only when unpaused GAME_STATE_PLAYING).
+uint32_t		CeHooksStepGameplayTick(void);
+// player_act (v3.0): SIM ORDERED_BROADCAST inside unpaused GAME_STATE_PLAYING after human controller flush and before EVENT_MANAGER.Flush.
+void			ce_hook_player_act(uint32_t sim_tick);
 
 #endif

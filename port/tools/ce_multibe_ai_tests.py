@@ -741,8 +741,8 @@ class MultiBeAiBrainTests(unittest.TestCase):
                 "out.strafeValue = (dir < 0) ? -0.96f : 0.96f;",
             ),
             "13_jet_azimuth_sign_inverted": (
-                "return -atan2f(dx, dy);",
-                "return atan2f(dx, dy);",
+                "return -CeAiAtan2(dx, dy);",
+                "return CeAiAtan2(dx, dy);",
             ),
             "14_jet_pullup_dives_into_ground": (
                 "desiredPitch = -0.44f;\t// strong nose UP (-Z climb!)",
@@ -769,8 +769,8 @@ class MultiBeAiBrainTests(unittest.TestCase):
                 "if (c.distToMe <= 105.0f)\n\t\tscore += 0.0f;",
             ),
             "20_angle_wrap_returns_unwrapped": (
-                "const float r = remainderf(a, 6.283185307179586f);",
-                "const float r = a;",
+                "double r = static_cast<double>(a) - static_cast<double>(k) * kTwoPiD;",
+                "double r = static_cast<double>(a);",
             ),
             "21_high_altitude_jet_to_walker_allowed": (
                 "if (alt > 8.0f || !in.aheadGroundIsDry)\n\t\t\treturn false;",

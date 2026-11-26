@@ -82,7 +82,7 @@ def patched(out, names, skip=()):
             continue
         # A tree with patches left out also leaves out the CE hook point site patches (0300-0319, port/game/ce_hooks.h): their
         # include hunks rest on the whole queue's lines, and with no handler registered they change nothing a suite compares.
-        if skip and re.match(r"03[01][0-9]-ce-hook-", patch.name):
+        if skip and re.match(r"03\d\d-ce-hook-", patch.name):
             continue
         parts = sections(patch.read_text(encoding="latin1"))
         for name in names:

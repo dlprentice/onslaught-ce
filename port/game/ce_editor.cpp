@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "ce_editor.h"
+#include "ce_modes.h"
 #include <cmath>
 #include <cstring>
 
@@ -2346,11 +2347,17 @@ extern "C" bool PortCeEditorBegin(int installedLevel) {
         return false;
     }
     memcpy(gEditorCareer, &CAREER, sizeof(CCareer));
+    if (CeModeBegin(CE_MODE_EDITOR) != CE_MODE_BEGUN) {
+        EditorNote("The editor cannot open while a recording, a network game or another tool is running.");
+        return false;
+    }
     ++gEditorSessionToken;
     if (!gEditorSessionToken) {
+        CeModeEnd(CE_MODE_EDITOR);
         EditorNote("Restart Onslaught CE to use the editor again.");
         return false;
     }
+    CeCareerSnapshotAcquire(CE_MODE_EDITOR, gEditorCareer, sizeof(CCareer));
     gEditorState.Reset();
     gEditorSourceCount = 0;
     gEditorPhase = Authoring;
@@ -2829,9 +2836,13 @@ void PortCeEditorLevelEnd() {
     PortCeDrawHooks(PortCePhotoOn() || PortCeCmdSuppressFlightHud());
 }
 extern "C" void PortCeEditorCancel(void) {
-    if (!gEditorRequested) return;
+    if (!gEditorRequested) {
+        CeModeEnd(CE_MODE_EDITOR);
+        return;
+    }
     PortCeEditorLevelEnd();
     EditorRestoreCareer();
+    CeModeEnd(CE_MODE_EDITOR);
     PortCeProjectDocumentDelete(gEditorDocument);
     gEditorDocument = nullptr;
     PortCeProjectDocumentDelete(gEditorPlayDocument);

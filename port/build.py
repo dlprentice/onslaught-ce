@@ -652,6 +652,9 @@ def port_sources(target):
     out += [(s, 'pcxx' if s.name in HOST_BUFFER_GAME_MODULES else 'qcxx', host_extra.get(s.name, game_extra.get(s.name, "")))
             for s in sorted((PORT / "game").glob("*.cpp"))
             if WITH_NATIVE_SIGNALING or s.name not in ONLINE_SIGNALING_GAME_MODULES]
+    if (PORT / "game/ai").is_dir():
+        out += [(s, 'pcxx' if s.name in HOST_BUFFER_GAME_MODULES else 'qcxx', host_extra.get(s.name, f"-I{cc_path(PORT / 'game')}"))
+                for s in sorted((PORT / "game/ai").glob("*.cpp"))]
     # The test kit's own files (any port file named *testkit*) are compiled only by --test-kit. Every other object is the same
     # compile as the candidate's: the kit reaches the game through testhooks.h and the features' plain accessors, so no
     # production file is compiled differently (the object receipt, write_object_receipt, shows it).
@@ -753,7 +756,8 @@ GAME_ALLOCATOR = {"_Znwj": "bea_game_new", "_Znaj": "bea_game_new_array", "_ZdlP
 # rule. Only plain records and callbacks cross between them, and ce_museum_visit.h asserts their layout under both rules.
 HOST_BUFFER_GAME_MODULES = frozenset(("ce_network_boot_authority.cpp", "ce_network_invitation.cpp", "ce_project.cpp",
                                       "ce_museum_visit.cpp", "ce_museum_visit_generate.cpp", "ce_asset_catalog.cpp", "ce_catalogue_menu.cpp", "ce_catalogue_sounds.cpp",
-                                      "ce_online_match.cpp", "ce_online_service.cpp", "ce_online_ui_bridge.cpp"))
+                                      "ce_online_match.cpp", "ce_online_service.cpp", "ce_online_ui_bridge.cpp",
+                                      "ce_ai_strategist_l3.cpp"))
 
 
 def network_compiled_in():

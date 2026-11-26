@@ -29,6 +29,7 @@
 #include "ce_sandbox_director.h"
 #include "ce_sandbox_telemetry.h"
 #include "ce_entity_handles.h"
+#include "ce_modes.h"
 #include "ce_photo.h"
 #include "../platform/common/portlog.h"
 
@@ -732,10 +733,17 @@ extern "C" bool PortCeLivingSandboxBegin(void) {
 		PortSessionLog(PORT_SESSION_GAME, false, "living sandbox refused: another mode or fence active");
 		return false;
 	}
+	if (CeModeBegin(CE_MODE_LIVING_SANDBOX) != CE_MODE_BEGUN) {
+		SetRefusal("Close other special modes before starting Living Sandbox.");
+		PortSessionLog(PORT_SESSION_GAME, false, "living sandbox refused: mode conflict");
+		return false;
+	}
 	if (!PortCeLivingSandboxPreflightAndBuildWorld()) {
+		CeModeEnd(CE_MODE_LIVING_SANDBOX);
 		return false;
 	}
 	CaptureCareerSnapshot();
+	CeCareerSnapshotAcquire(CE_MODE_LIVING_SANDBOX, gCareerSnapshot, sizeof(CCareer));
 	gArmed = true;
 	gP0StasisApplied = false;
 	gLastRecallEventTime = -1000.0f;
@@ -762,6 +770,7 @@ extern "C" void PortCeLivingSandboxCancel(void) {
 	CeSanctuaryCitadel::RuntimeShutdown();
 #endif
 	ClearCareerSnapshot();
+	CeModeEnd(CE_MODE_LIVING_SANDBOX);
 	gDirector.Reset();
 	gPlatoons.Clear();
 	ResetStripClocks();

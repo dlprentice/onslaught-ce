@@ -1,0 +1,13 @@
+--- a/game.cpp
++++ b/game.cpp
+@@ -1981,6 +1981,10 @@
+ 			UpdateMouseCentre(false);
+ 		LT.ClearKeyWasUp();
+ 
++#ifdef CE_VERSION
++		if (mGameState == GAME_STATE_PLAYING)
++			ce_hook_player_act(CeHooksStepGameplayTick());	// CE hook point (port/game/ce_hooks.h): unpaused gameplay tick after human controller flush, before EVENT_MANAGER.Flush
++#endif
+ 		EVENT_MANAGER.Flush() ;
+ 		PROFILE_END(TotalEventManager) ;
+ 		CAtmospherics::ProcessAll();

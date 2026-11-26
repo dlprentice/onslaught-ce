@@ -20,6 +20,7 @@
 #include "ce_asset_catalog.h"
 #include "ce_photo.h"
 #include "ce_sanctuary_citadel.h"
+#include "ce_hooks.h"
 #include "ce_archive_pedestal.h"
 #include "ce_museum_textures.h"
 #include "ce_museum_tour.h"
@@ -2736,6 +2737,32 @@ extern "C" bool PortCeSanctuaryClampBeam(float startX, float startY, float start
     return true;
 }
 
+extern "C" void PortCeSanctuaryProjectileIntercept(CeProjectileIntercept *ev) {
+    if (!ev || ev->intercepted || !PortCeSanctuaryActive())
+        return;
+    switch (ev->stage) {
+    case CE_PROJ_PRE_MOVE:
+    case CE_PROJ_POST_MOVE:
+    case CE_PROJ_ON_GROUND:
+        if (PortCeSanctuaryInterceptRound(ev->prev_x, ev->prev_y, ev->prev_z,
+                                          ev->cur_x, ev->cur_y, ev->cur_z,
+                                          &ev->hit_x, &ev->hit_y, &ev->hit_z)) {
+            ev->intercepted = true;
+        }
+        break;
+    case CE_PROJ_FLAK_CHECK:
+        if (ev->dying)
+            ev->intercepted = true;
+        break;
+    case CE_PROJ_BEAM_CLAMP:
+        if (PortCeSanctuaryClampBeam(ev->prev_x, ev->prev_y, ev->prev_z,
+                                     &ev->vel_x, &ev->vel_y, &ev->vel_z)) {
+            ev->intercepted = true;
+        }
+        break;
+    }
+}
+
 extern "C" void PortCeSanctuaryDrawWorld(void) {
     CeSanctuaryCitadel::RuntimeDrawWorld();
     CeSanctuaryCitadel::RuntimeDrawDomeFx();
@@ -2784,6 +2811,7 @@ void PortCeSanctuaryCitadelDeleteDeviceObjects(void) {
 }
 #else
 #include "ce_sanctuary_citadel.h"
+#include "ce_hooks.h"
 namespace CeSanctuaryCitadel {
 void RuntimeInit(float) {}
 void RuntimeShutdown() {}
@@ -2802,6 +2830,7 @@ bool PortCeSanctuaryActive(void) { return false; }
 bool PortCeSanctuarySkipOutdoorWorld(void) { return false; }
 bool PortCeSanctuaryInterceptRound(float, float, float, float, float, float, float *, float *, float *) { return false; }
 bool PortCeSanctuaryClampBeam(float, float, float, float *, float *, float *) { return false; }
+void PortCeSanctuaryProjectileIntercept(CeProjectileIntercept *) {}
 void PortCeSanctuaryDrawWorld(void) {}
 bool PortCeSanctuaryFire(bool, float) { return false; }
 void PortCeSanctuaryRenderCinemaPlayer(int) {}

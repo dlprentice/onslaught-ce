@@ -169,7 +169,7 @@ def main():
         binary = folder / 'lifecycle-check'
         command = [compiler, '-std=c++14', '-Wall', '-Wextra', '-Werror', '-Wno-unused-variable', '-Wno-unused-function',
                    *(['-DDRIVER_CE_SNIPPET'] if snippet_ce else []),
-                   '-I' + str(folder), '-I' + str(ROOT / 'port/game'), str(driver), str(source_path), str(project_source), '-o', str(binary)]
+                   '-I' + str(folder), '-I' + str(ROOT / 'port/game'), str(driver), str(source_path), str(project_source), str(ROOT / 'port/game/ce_modes.cpp'), '-o', str(binary)]
         built = subprocess.run(command, capture_output=True, timeout=90, check=False)
         (folder / 'compile.stdout').write_bytes(built.stdout)
         (folder / 'compile.stderr').write_bytes(built.stderr)

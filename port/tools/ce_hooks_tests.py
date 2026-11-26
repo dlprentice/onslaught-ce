@@ -47,7 +47,8 @@ POINTS = {  # point: tag (the header's table)
     "boot": "SIM", "exit": "SIM", "level_begin": "SIM", "level_end": "SIM", "tick_pre": "SIM", "tick_post": "SIM",
     "input_actions": "SIM", "key_capture": "RENDER", "draw_world": "RENDER", "draw_hud": "RENDER", "draw_overlay": "RENDER",
     "menu_rows": "RENDER", "save_gate": "SIM", "audio_clock": "RENDER", "render_camera": "SIM", "hud_focus": "RENDER",
-    "unit_spawn": "SIM", "unit_destroyed": "SIM", "spawner_trigger": "SIM", "weapon_fire": "SIM", "render_pass": "RENDER"}
+    "unit_spawn": "SIM", "unit_destroyed": "SIM", "spawner_trigger": "SIM", "weapon_fire": "SIM", "render_pass": "RENDER",
+    "world_source": "SIM", "projectile_intercept": "SIM", "unit_damage": "SIM", "player_act": "SIM"}
 # point: (patch, [(file, function, calls)])
 SITES = {
     "boot": ("0301-ce-hook-boot", [("ltshell.cpp", "WinMain", 1)]),
@@ -71,6 +72,10 @@ SITES = {
     "spawner_trigger": ("0363-ce-hook-spawner-trigger", [("SpawnerThng.cpp", "CSpawnerThing::Unknown4e3370", 1), ("SpawnerThng.cpp", "CSpawner::DoSpawn", 1)]),
     "weapon_fire": ("0364-ce-hook-weapon-fire", [("weapon.cpp", "CWeapon::SpawnRound", 1)]),
     "render_pass": ("0365-ce-hook-render-pass", [("DXEngine.cpp", "CDXEngine::Render", 2)]),
+    "world_source": ("0393-ce-hook-world-source", [("ResourceAccumulator.cpp", "CResourceAccumulator::ReadResources", 5), ("world.cpp", "CWorld::Load", 1)]),
+    "projectile_intercept": ("0394-ce-hook-projectile-intercept", [("Round.cpp", "CRound::Move", 2), ("Round.cpp", "CRound::HandleEvent", 2), ("Round.cpp", "CRound::DeclareOnGround", 1)]),
+    "unit_damage": ("0395-ce-hook-unit-damage", [("Unit.cpp", "CUnit::Damage", 1), ("BattleEngine.cpp", "CBattleEngine::Damage", 1)]),
+    "player_act": ("0396-ce-hook-player-act", [("game.cpp", "CGame::Update", 1)]),
 }
 DISPATCH = {
     "boot": "ORDERED_BROADCAST", "exit": "ORDERED_BROADCAST", "level_begin": "ORDERED_BROADCAST", "level_end": "ORDERED_BROADCAST",
@@ -78,7 +83,8 @@ DISPATCH = {
     "draw_world": "ORDERED_BROADCAST", "draw_hud": "ORDERED_BROADCAST", "draw_overlay": "ORDERED_BROADCAST",
     "menu_rows": "POSITIONAL_INSERT", "save_gate": "FILTER", "audio_clock": "ORDERED_BROADCAST", "render_camera": "OVERRIDE_CHAIN",
     "hud_focus": "OVERRIDE_CHAIN", "unit_spawn": "ORDERED_BROADCAST", "unit_destroyed": "ORDERED_BROADCAST",
-    "spawner_trigger": "FILTER", "weapon_fire": "ORDERED_BROADCAST", "render_pass": "ORDERED_BROADCAST"}
+    "spawner_trigger": "FILTER", "weapon_fire": "ORDERED_BROADCAST", "render_pass": "ORDERED_BROADCAST",
+    "world_source": "FIRST_MATCH", "projectile_intercept": "FILTER", "unit_damage": "ORDERED_BROADCAST", "player_act": "ORDERED_BROADCAST"}
 DEPENDS = {("0314-ce-hook-audio-clock", "0062-music-finished-poll"), ("0313-ce-hook-save-gate", "0052-ce-god-not-saved-Career"),
            ("0387-ce-single-viewport-mp", "0235-ce-commander-one-screen"),
            ("0389-ce-frontend-widescreen-transition", "0042-widescreen-virtual-ui")}
@@ -189,6 +195,10 @@ MUTANT_FN = (
     "static void CeHookMutantWeapon(CWeapon *, CUnit *, CRound *) {}\n"
     "static void CeHookMutantRenderPass(const CeRenderPass *) {}\n"
     "static CBattleEngine *CeHookMutantFocus(CBattleEngine *be, CPlayer *) { return be; }\n"
+    "static bool CeHookMutantWorldSource(CeWorldSourceReq *) { return false; }\n"
+    "static void CeHookMutantProjectile(CeProjectileIntercept *) {}\n"
+    "static void CeHookMutantDamage(const CeUnitDamage *) {}\n"
+    "static void CeHookMutantPlayerAct(uint32_t) {}\n"
 )
 
 
@@ -212,6 +222,10 @@ TABLE_MUTANTS = {  # name: (point, rows, the problem text expected)
     "a RENDER handler on weapon_fire": ("weapon_fire", '\t{90, "a", CE_HOOK_RENDER, CE_GATE_VERSION, CE_MODE_NONE, CeHookMutantWeapon},', "is RENDER on a SIM point"),
     "a SIM handler on render_pass": ("render_pass", '\t{90, "a", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookMutantRenderPass},', "is SIM on a RENDER point"),
     "a SIM handler on hud_focus": ("hud_focus", '\t{90, "a", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookMutantFocus},', "is SIM on a RENDER point"),
+    "a RENDER handler on world_source": ("world_source", '\t{90, "a", CE_HOOK_RENDER, CE_GATE_VERSION, CE_MODE_NONE, CeHookMutantWorldSource},', "is RENDER on a SIM point"),
+    "a RENDER handler on projectile_intercept": ("projectile_intercept", '\t{90, "a", CE_HOOK_RENDER, CE_GATE_VERSION, CE_MODE_NONE, CeHookMutantProjectile},', "is RENDER on a SIM point"),
+    "a RENDER handler on unit_damage": ("unit_damage", '\t{90, "a", CE_HOOK_RENDER, CE_GATE_VERSION, CE_MODE_NONE, CeHookMutantDamage},', "is RENDER on a SIM point"),
+    "a RENDER handler on player_act": ("player_act", '\t{90, "a", CE_HOOK_RENDER, CE_GATE_VERSION, CE_MODE_NONE, CeHookMutantPlayerAct},', "is RENDER on a SIM point"),
 }
 
 
@@ -313,9 +327,22 @@ int main() {
     CCamera *camera = reinterpret_cast<CCamera *>(&page); if (ce_hook_render_camera(0, camera, nullptr) != camera) return 4;
     CBattleEngine *be = reinterpret_cast<CBattleEngine *>(buffer); if (ce_hook_hud_focus(nullptr, be) != be) return 5;
 #ifdef CE_VERSION
-    static_assert(CE_HOOKS_API_VERSION == 0x0200u, "version 2.0");
-    static_assert(CE_HOOKS_POINT_COUNT == 21u, "21 points");
-    if (gCalls != "palette_end;console_end;photo_end;cmd_end;gamepad;playunit_world;editor_overlay;editor_save;bonus_save;museum_save;photo_key;pal_sup;pal_open;cmd_key;cmd_cam;playunit_cam;") return 10;
+    static_assert(CE_HOOKS_API_VERSION == 0x0300u, "version 3.0");
+    static_assert(CE_HOOKS_POINT_COUNT == 25u, "25 points");
+    ce_hook_player_act(1u);
+    if (gCalls != "palette_end;console_end;photo_end;cmd_end;gamepad;playunit_world;editor_overlay;photo_key;pal_sup;pal_open;cmd_key;cmd_cam;playunit_cam;") return 10;
+    // Single-owner save_gate: only the active career snapshot owner is dispatched.
+    gCalls.clear();
+    if (CeModeBegin(CE_MODE_EDITOR) != CE_MODE_BEGUN || !CeCareerSnapshotAcquire(CE_MODE_EDITOR, buffer, 8)) return 13;
+    ce_hook_save_gate(CE_SAVE_CAREER, fakeCareer, buffer, 8);
+    CeModeEnd(CE_MODE_EDITOR);
+    if (CeModeBegin(CE_MODE_BONUS_LEVEL) != CE_MODE_BEGUN || !CeCareerSnapshotAcquire(CE_MODE_BONUS_LEVEL, buffer, 8)) return 14;
+    ce_hook_save_gate(CE_SAVE_CAREER, fakeCareer, buffer, 8);
+    CeModeEnd(CE_MODE_BONUS_LEVEL);
+    if (CeModeBegin(CE_MODE_MUSEUM_VISIT) != CE_MODE_BEGUN || !CeCareerSnapshotAcquire(CE_MODE_MUSEUM_VISIT, buffer, 8)) return 15;
+    ce_hook_save_gate(CE_SAVE_CAREER, fakeCareer, buffer, 8);
+    CeModeEnd(CE_MODE_MUSEUM_VISIT);
+    if (gCalls != "editor_save;bonus_save;museum_save;") return 16;
     gCalls.clear(); gConsumeKey = 2;
     if (!ce_hook_key_capture(2, false) || gCalls != "photo_key;pal_sup;") return 11;
     if (!ce_hook_command_push(command)) return 6;
@@ -384,7 +411,7 @@ class SiteTests(unittest.TestCase):
         rows = table(HOOKS.read_text())
         self.order("Career.cpp", "PortCeCareerSaving(this)", "memcpy(dest, this, sizeof(CCareer));", "ce_hook_save_gate(CE_SAVE_CAREER",
                    "SetIsGod(0, portGod0);")
-        self.assertEqual([h[1] for h in rows["save_gate"][2]], ["editor_save", "bonus_save", "museum_visit_save", "carrier_clash_save", "living_sandbox_save", "flagship_duel_save"])
+        self.assertEqual([h[1] for h in rows["save_gate"][2]], ["career_snapshot_save"])
         self.order("ltshell.cpp", "PortCeEditorKey(key", "ce_hook_key_capture(", "mCurrentKeytrap(key,KEY_EVENT_DOWN)")
         self.assertEqual([h[1] for h in rows["key_capture"][2]], ["photo_key", "palette_suppress_down", "palette_open", "commander_key", "living_sandbox_key"])
         self.assertEqual([h[1] for h in rows["draw_world"][2]], ["playunit_draw_world", "living_sandbox_draw_world"])
@@ -602,6 +629,26 @@ int main() {
     Check(CeModeBegin(CE_MODE_PLAY_UNIT) == CE_MODE_CONFLICT, "play-unit during commander is refused");
     Check(CeModeBegin(CE_MODE_NONE) == CE_MODE_INVALID && CeModeBegin(CE_MODE_COUNT) == CE_MODE_INVALID, "invalid modes");
     Check(CeModesCompatible(CE_MODE_PROJECT, CE_MODE_EDITOR) && !CeModesCompatible(CE_MODE_BONUS_LEVEL, CE_MODE_MUSEUM_VISIT), "symmetric pairs");
+    // Additive v3 modes 7..10 and compatibility with COMMANDER / PLAY_UNIT.
+    Check(CeModeEnd(CE_MODE_COMMANDER), "commander ends");
+    Check(CE_MODE_CARRIER_CLASH == 7 && CE_MODE_LIVING_SANDBOX == 8 && CE_MODE_FLAGSHIP_DUEL == 9 && CE_MODE_ONLINE_MATCH == 10 && CE_MODE_COUNT == 11, "additive numeric stability");
+    const CeMode worldOwners[7] = {CE_MODE_EDITOR, CE_MODE_MUSEUM_VISIT, CE_MODE_BONUS_LEVEL, CE_MODE_CARRIER_CLASH, CE_MODE_LIVING_SANDBOX, CE_MODE_FLAGSHIP_DUEL, CE_MODE_ONLINE_MATCH};
+    for (int i = 0; i < 7; ++i) {
+        Check(CeModeIsCareerFenced(worldOwners[i]), "world owner is career-fenced");
+        for (int j = i + 1; j < 7; ++j)
+            Check(!CeModesCompatible(worldOwners[i], worldOwners[j]), "world owners pairwise incompatible");
+    }
+    Check(CeModesCompatible(CE_MODE_CARRIER_CLASH, CE_MODE_COMMANDER) && CeModesCompatible(CE_MODE_CARRIER_CLASH, CE_MODE_PLAY_UNIT), "carrier clash allows tactical");
+    Check(CeModesCompatible(CE_MODE_LIVING_SANDBOX, CE_MODE_COMMANDER) && CeModesCompatible(CE_MODE_LIVING_SANDBOX, CE_MODE_PLAY_UNIT), "sandbox allows tactical");
+    Check(CeModesCompatible(CE_MODE_FLAGSHIP_DUEL, CE_MODE_COMMANDER) && CeModesCompatible(CE_MODE_FLAGSHIP_DUEL, CE_MODE_PLAY_UNIT), "flagship duel allows tactical");
+    Check(!CeModesCompatible(CE_MODE_ONLINE_MATCH, CE_MODE_COMMANDER) && !CeModesCompatible(CE_MODE_ONLINE_MATCH, CE_MODE_PLAY_UNIT), "online match refuses tactical");
+    Check(CeModeBegin(CE_MODE_CARRIER_CLASH) == CE_MODE_BEGUN && CeModeBegin(CE_MODE_COMMANDER) == CE_MODE_BEGUN, "carrier clash + commander coexist");
+    Check(CeModeBegin(CE_MODE_PLAY_UNIT) == CE_MODE_CONFLICT, "play-unit still conflicts with commander");
+    unsigned char snapIn[16] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16}, snapOut[16] = {};
+    Check(CeCareerSnapshotAcquire(CE_MODE_CARRIER_CLASH, snapIn, 16) && CeCareerSnapshotOwner() == CE_MODE_CARRIER_CLASH, "snapshot acquire");
+    Check(!CeCareerSnapshotAcquire(CE_MODE_EDITOR, snapIn, 16), "inactive mode cannot steal snapshot");
+    Check(CeCareerSnapshotRead(snapOut, 16) && snapOut[0] == 1 && snapOut[15] == 16, "snapshot read");
+    Check(CeModeEnd(CE_MODE_COMMANDER) && CeModeEnd(CE_MODE_CARRIER_CLASH) && !CeCareerSnapshotHasOwner(), "mode end releases snapshot");
     if (!failures) std::puts("modes ok");
     return failures != 0;
 }
@@ -639,48 +686,74 @@ HAZARD_FILTERS = (("editor", "port/game/ce_editor.cpp", "void PortCeEditorFilter
 
 
 class SaveHazardTests(unittest.TestCase):
-    """CCareer::Save runs three filters in a row (patches 0222, 0181, 0279); each writes ITS OWN whole snapshot over the
-    copy, so if two were active at once the later one's snapshot would be written and the earlier one's lost. Whether two
-    can be active together is not shown; one owner of the career snapshot is the later change. Kept order: the hook point
-    runs after all three."""
+    """Single-owner career snapshot save_gate (slot 10: career_snapshot_save) eliminates the legacy multi-filter
+    overwrite hazard: all 7 career-fenced world-owner modes are pairwise incompatible in ce_modes.cpp, only the active
+    owner can acquire CeCareerSnapshotOwner, and CeHookCareerSnapshotSave dispatches exclusively to that one owner."""
 
-    def test_each_filter_replaces_the_whole_copy_in_todays_order(self):
+    def test_single_owner_save_gate_replaces_competing_whole_copy_rows(self):
         for _, path, start, write in HAZARD_FILTERS:
             body = (ROOT / path).read_text()
             body = body[body.index(start):]
             body = body[:body.index("\n}\n")]
-            self.assertIn(write, body, f"{path}: the filter no longer writes a whole snapshot (re-read the hazard)")
+            self.assertIn(write, body, f"{path}: standalone filter helper changed")
         text = build.patched_text(["Career.cpp"])["Career.cpp"]
         self.assertLess(text.index("memcpy(dest, this, sizeof(CCareer));"), text.index("ce_hook_save_gate(CE_SAVE_CAREER, this, dest, sizeof(CCareer));"))
         self.assertLess(text.index("ce_hook_save_gate(CE_SAVE_CAREER, this, dest, sizeof(CCareer));"), text.index("SetIsGod(0, portGod0);"))
         rows = table(HOOKS.read_text())["save_gate"][2]
-        self.assertEqual([h[5] for h in rows], ["CeHookEditorSave", "CeHookBonusSave", "CeHookMuseumVisitSave", "CeHookCarrierClashSave", "CeHookLivingSandboxSave", "CeHookFlagshipDuelSave"])
+        self.assertEqual([h[5] for h in rows], ["CeHookCareerSnapshotSave"])
+        self.assertEqual([h[0] for h in rows], [10])
 
-    @unittest.expectedFailure
-    def test_two_active_filters_keep_both_snapshots(self):
-        # EXPECTED FAILURE (the save-filter order hazard; a later change gives the career snapshot one owner). The model
-        # follows the three filters: each, when active, replaces the copy with its snapshot (the live options aside).
-        live = {"progress": "live"}
-        snapshots = {"editor": {"progress": "editor's start"}, "bonus level": {"progress": "bonus entry"},
-                     "museum visit": {"progress": "museum entry"}}
-        order = [name for name, _, _, _ in HAZARD_FILTERS]
-        for i, first in enumerate(order):
-            for second in order[i + 1:]:
-                copy = dict(live)
-                for name in order:
-                    if name in (first, second):
-                        copy = dict(snapshots[name])
-                with self.subTest(active=(first, second)):
-                    self.assertIn(copy["progress"], (snapshots[first]["progress"],), f"{first}'s snapshot lost to {second}'s")
+    def test_single_owner_snapshot_prevents_concurrent_filter_clobber(self):
+        driver = r'''
+#include "ce_modes.h"
+#include <cstdio>
+#include <cstring>
+int main() {
+    const CeMode modes[7] = {
+        CE_MODE_EDITOR, CE_MODE_BONUS_LEVEL, CE_MODE_MUSEUM_VISIT,
+        CE_MODE_CARRIER_CLASH, CE_MODE_LIVING_SANDBOX, CE_MODE_FLAGSHIP_DUEL, CE_MODE_ONLINE_MATCH
+    };
+    unsigned char snapA[64], snapB[64], out[64];
+    for (int i = 0; i < 7; ++i) {
+        std::memset(snapA, 0x10 + i, sizeof(snapA));
+        if (CeModeBegin(modes[i]) != CE_MODE_BEGUN) return 1;
+        if (!CeCareerSnapshotAcquire(modes[i], snapA, sizeof(snapA))) return 2;
+        for (int j = 0; j < 7; ++j) {
+            if (i == j) continue;
+            std::memset(snapB, 0x80 + j, sizeof(snapB));
+            if (CeModeBegin(modes[j]) != CE_MODE_CONFLICT) return 3;
+            if (CeCareerSnapshotAcquire(modes[j], snapB, sizeof(snapB))) return 4;
+            if (CeCareerSnapshotOwner() != modes[i]) return 5;
+            std::memset(out, 0, sizeof(out));
+            if (!CeCareerSnapshotRead(out, sizeof(out)) || std::memcmp(out, snapA, sizeof(out)) != 0) return 6;
+        }
+        if (!CeModeEnd(modes[i])) return 7;
+        if (CeCareerSnapshotHasOwner()) return 8;
+    }
+    std::puts("single-owner-snapshot-ok");
+    return 0;
+}
+'''
+        base = Path(tempfile.mkdtemp(prefix="save-single-owner-", dir=SCRATCH))
+        try:
+            rc, log = compile_host(base, [MODES], (), driver)
+            self.assertEqual(rc, 0, log)
+            run = subprocess.run([str(base / "driver")], capture_output=True, text=True)
+            self.assertEqual((run.returncode, run.stdout.strip()), (0, "single-owner-snapshot-ok"))
+        finally:
+            shutil.rmtree(base, ignore_errors=True)
 
     def test_mode_registry_prevents_concurrent_save_hazard_modes(self):
         driver = r'''
 #include "ce_modes.h"
 #include <cstdio>
 int main() {
-    const CeMode modes[3] = {CE_MODE_EDITOR, CE_MODE_BONUS_LEVEL, CE_MODE_MUSEUM_VISIT};
-    for (int i = 0; i < 3; i++) {
-        for (int j = i + 1; j < 3; j++) {
+    const CeMode modes[7] = {
+        CE_MODE_EDITOR, CE_MODE_BONUS_LEVEL, CE_MODE_MUSEUM_VISIT,
+        CE_MODE_CARRIER_CLASH, CE_MODE_LIVING_SANDBOX, CE_MODE_FLAGSHIP_DUEL, CE_MODE_ONLINE_MATCH
+    };
+    for (int i = 0; i < 7; i++) {
+        for (int j = i + 1; j < 7; j++) {
             if (CeModesCompatible(modes[i], modes[j]) || CeModesCompatible(modes[j], modes[i])) return 1;
             if (CeModeBegin(modes[i]) != CE_MODE_BEGUN) return 2;
             if (CeModeBegin(modes[j]) != CE_MODE_CONFLICT) return 3;
@@ -758,7 +831,7 @@ class ApiVersionAndNewPointTests(unittest.TestCase):
         major = int(re.search(r"#define\s+CE_HOOKS_API_VERSION_MAJOR\s+(\d+)u", header)[1])
         minor = int(re.search(r"#define\s+CE_HOOKS_API_VERSION_MINOR\s+(\d+)u", header)[1])
         count = int(re.search(r"#define\s+CE_HOOKS_POINT_COUNT\s+(\d+)u", header)[1])
-        self.assertEqual((major, minor), (2, 0))
+        self.assertEqual((major, minor), (3, 0))
         self.assertEqual(count, len(POINTS))
 
     def test_new_points_dispatch_and_render_write_fence(self):
@@ -961,7 +1034,9 @@ int main() {
     CCareer career{};
     char dest[sizeof(CCareer) + 16]{};
 
-    // 1. save_gate rejects NULL career, NULL dest, non-career targets, and undersized buffers (< sizeof(CCareer)).
+    // 1. save_gate rejects NULL career, NULL dest, non-career targets, and undersized buffers (< sizeof(CCareer)),
+    // even when a snapshot owner is active.
+    if (CeModeBegin(CE_MODE_EDITOR) != CE_MODE_BEGUN || !CeCareerSnapshotAcquire(CE_MODE_EDITOR, &career, sizeof(CCareer))) return 10;
     ce_hook_save_gate(CE_SAVE_CAREER, nullptr, dest, (int)sizeof(CCareer));
     ce_hook_save_gate(CE_SAVE_CAREER, &career, nullptr, (int)sizeof(CCareer));
     ce_hook_save_gate(CE_SAVE_CAREER, &career, dest, 0);
@@ -970,12 +1045,29 @@ int main() {
     ce_hook_save_gate(CE_SAVE_OPTIONS_FILE, &career, dest, (int)sizeof(CCareer));
     if (!gSaveLog.empty()) { std::printf("FAIL unexpected save calls: %s\n", gSaveLog.c_str()); return 1; }
 
-    // Exact sizeof(CCareer) and larger buffers invoke all three career filters in order.
+    // Exact sizeof(CCareer) and larger buffers invoke ONLY the single active snapshot owner.
     ce_hook_save_gate(CE_SAVE_CAREER, &career, dest, (int)sizeof(CCareer));
-    if (gSaveLog != "editor;bonus;museum;") { std::printf("FAIL exact size: %s\n", gSaveLog.c_str()); return 2; }
+    if (gSaveLog != "editor;") { std::printf("FAIL exact size editor: %s\n", gSaveLog.c_str()); return 2; }
+    CeModeEnd(CE_MODE_EDITOR);
     gSaveLog.clear();
+    if (CeModeBegin(CE_MODE_BONUS_LEVEL) != CE_MODE_BEGUN || !CeCareerSnapshotAcquire(CE_MODE_BONUS_LEVEL, &career, sizeof(CCareer))) return 11;
     ce_hook_save_gate(CE_SAVE_CAREER, &career, dest, (int)sizeof(CCareer) + 16);
-    if (gSaveLog != "editor;bonus;museum;") { std::printf("FAIL larger size: %s\n", gSaveLog.c_str()); return 3; }
+    if (gSaveLog != "bonus;") { std::printf("FAIL larger size bonus: %s\n", gSaveLog.c_str()); return 3; }
+    CeModeEnd(CE_MODE_BONUS_LEVEL);
+    gSaveLog.clear();
+    if (CeModeBegin(CE_MODE_MUSEUM_VISIT) != CE_MODE_BEGUN || !CeCareerSnapshotAcquire(CE_MODE_MUSEUM_VISIT, &career, sizeof(CCareer))) return 12;
+    ce_hook_save_gate(CE_SAVE_CAREER, &career, dest, (int)sizeof(CCareer));
+    if (gSaveLog != "museum;") { std::printf("FAIL museum owner: %s\n", gSaveLog.c_str()); return 13; }
+    CeModeEnd(CE_MODE_MUSEUM_VISIT);
+    gSaveLog.clear();
+    // Online match writes snapshot bytes directly via CeCareerSnapshotRead without invoking legacy filters.
+    CCareer onlineSnap{};
+    std::memset(onlineSnap.bytes, 0x3c, sizeof(onlineSnap.bytes));
+    std::memset(dest, 0, sizeof(dest));
+    if (CeModeBegin(CE_MODE_ONLINE_MATCH) != CE_MODE_BEGUN || !CeCareerSnapshotAcquire(CE_MODE_ONLINE_MATCH, &onlineSnap, sizeof(CCareer))) return 14;
+    ce_hook_save_gate(CE_SAVE_CAREER, &career, dest, (int)sizeof(CCareer));
+    if (!gSaveLog.empty() || std::memcmp(dest, onlineSnap.bytes, sizeof(CCareer)) != 0) { std::puts("FAIL online snapshot save"); return 15; }
+    CeModeEnd(CE_MODE_ONLINE_MATCH);
 
     // 2. hud_focus: valid target accepted, NULL suppression preserved, headless target falls back to incoming be (or NULL).
     CPlayer p1{1}, p2{2};

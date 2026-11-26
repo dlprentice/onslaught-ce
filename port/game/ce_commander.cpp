@@ -76,6 +76,8 @@
 #include "eventmanager.h"
 #include "InfluenceMap.h"
 #include "ce_commander.h"
+#include "ce_entity_handles.h"
+#include "ce_policy.h"
 #include "ce_cmdorders.h"
 #include "ce_cmdproduction.h"
 
@@ -343,6 +345,11 @@ void Scan()
 			r->reassert = true;
 			r->guard = true;
 			r->born = gTick;
+			CeEntityHandleRegister(squad);
+		}
+		else if (CeEntityHandleLookup(squad) == kCeEntityHandleInvalid)
+		{
+			CeEntityHandleRegister(squad);
 		}
 		r->alive = true;
 		r->seen = true;
@@ -407,9 +414,8 @@ int PlayerAllegiance();		// below
 // A Fall back's home (ce_cmdrules.h's CeCmdFallbackPick and CeCmdFallbackRally): of the commander's side's live buildings and the battle-line nodes it
 // holds, the nearest building on land (else node), and the rally 24 units out from it towards the other side's buildings (or towards the squad, where
 // the other side has none), or nearer it where that is water. Kept inside the occupied cells. Reads only; false when the side holds no place on land.
-bool Home(float sx, float sy, FVector *home, FVector *rally)
+bool HomeForSide(int side, float sx, float sy, FVector *home, FVector *rally)
 {
-	const int side = PlayerAllegiance();
 	if (side != 0 && side != 1) return false;
 	const int kMax = 192;
 	CeCmdPlace places[kMax];
@@ -464,6 +470,11 @@ bool Home(float sx, float sy, FVector *home, FVector *rally)
 	*home = Ground(places[pick].x, places[pick].y);
 	*rally = Ground(rx, ry);
 	return true;
+}
+
+bool Home(float sx, float sy, FVector *home, FVector *rally)
+{
+	return HomeForSide(PlayerAllegiance(), sx, sy, home, rally);
 }
 
 // Whether the unit's own AI would fire now: the fire step runs for AI_ONF always and for AI_ON while the unit is active (CUnitAI::HandleEvent),
@@ -1535,6 +1546,138 @@ void CeCmdCountLiveUnits(int pilotAlleg, int *outFriendly, int *outTotal) {
     }
     if (outFriendly) *outFriendly = liveFriendly;
     if (outTotal) *outTotal = liveTotal;
+}
+
+unsigned CeCmdSquadHandle(int ordinal)
+{
+	Rec *r = ByOrdinal(ordinal);
+	if (!r || !r->squad) return 0u;
+	return (unsigned)CeEntityHandleLookup(r->squad);
+}
+
+int CeCmdListForTeam(int allegiance, CeCmdSquad *out, int max)
+{
+	if (!out || max <= 0) return 0;
+	if (!PortCeLayer()) return 0;
+	if (!(CePolicyActiveToggles() & CE_TOGGLE_COMMANDER) && !CeCmdMapOn()) return 0;
+	Scan();
+	int count = 0;
+	for (int i = 0; i < gNRecs && count < max; ++i)
+	{
+		if (!gRecs[i].alive || !gRecs[i].squad) continue;
+		CeCmdSquad s;
+		Describe(i, gRecs[i], allegiance, s);
+		if (s.members > 0) out[count++] = s;
+	}
+	return count;
+}
+
+bool CeCmdIssueForSlot(unsigned char slot, int allegiance, unsigned squadHandle, int verb, float x, float y, int *outWhy, const char **whyText)
+{
+	(void)slot;
+	ExplicitUnitReplacement replacingUnits;
+	int localWhy = CE_WHY_NONE;
+	const char *localText = NULL;
+	if (!outWhy) outWhy = &localWhy;
+	if (!whyText) whyText = &localText;
+	*outWhy = CE_WHY_NONE;
+	*whyText = NULL;
+
+	if (!PortCeLayer() || !(CePolicyActiveToggles() & CE_TOGGLE_COMMANDER))
+	{
+		*whyText = "Commander toggle is off.";
+		return false;
+	}
+	switch (verb) {
+	case CE_CMD_MOVE:
+	case CE_CMD_ADVANCE:
+		if (!isfinite(x) || !isfinite(y)) { *whyText = "Point at the ground."; return false; }
+		break;
+	case CE_CMD_HOLD:
+	case CE_CMD_FALLBACK:
+	case CE_CMD_RELEASE:
+		break;
+	default:
+		*whyText = "That is not an order.";
+		return false;
+	}
+
+	Scan();
+	CSquad *resolved = CeEntityHandleResolveSquad((CeEntityHandle)squadHandle);
+	Rec *r = resolved ? ByPointer(resolved) : NULL;
+	if (!r || !r->alive)
+	{
+		*whyText = "That squad is lost.";
+		return false;
+	}
+	const int ordinal = int(r - gRecs);
+	CeCmdSquad s;
+	Describe(ordinal, *r, allegiance, s);
+	if (!s.friendly)
+	{
+		*outWhy = CE_WHY_ENEMY;
+		*whyText = "Enemy squad.";
+		return false;
+	}
+	if (!s.commandable)
+	{
+		*outWhy = s.why;
+		*whyText = "That squad takes no orders.";
+		return false;
+	}
+	if (s.deploys && verb != CE_CMD_HOLD && verb != CE_CMD_RELEASE)
+	{
+		*whyText = "Artillery can only hold.";
+		return false;
+	}
+	if (verb == CE_CMD_RELEASE && !r->ordered)
+	{
+		*whyText = "Already on its own orders.";
+		return false;
+	}
+	if ((verb == CE_CMD_MOVE || verb == CE_CMD_ADVANCE) && !s.crossesWater && !CeCmdMarchLand(x, y))
+	{
+		*whyText = "Choose land for ground units.";
+		return false;
+	}
+	switch (verb)
+	{
+	case CE_CMD_MOVE: Hold(*r, V_MOVE, Ground(x, y), NULL); break;
+	case CE_CMD_ADVANCE: Hold(*r, V_ADVANCE, Ground(x, y), NULL); break;
+	case CE_CMD_HOLD: Hold(*r, V_HOLD, Ground(s.x, s.y), NULL); break;
+	case CE_CMD_RELEASE:
+		ReleaseMemberOrders(*r);
+		if (r->kept)
+		{
+			if (r->normal)
+			{
+				CNormalSquad *n = AsNormal(*r);
+				if (r->ownGoal.X != 0.f || r->ownGoal.Y != 0.f) n->GoToPoint(r->ownGoal, FALSE);
+				n->SetAIState(r->ownState);
+			}
+			else SetMembers(*r, r->ownState, false);
+		}
+		r->ordered = false;
+		r->fromMap = false;
+		r->verb = V_NONE;
+		r->arrived = false;
+		r->outcome = CE_OUT_NONE;
+		break;
+	case CE_CMD_FALLBACK:
+	{
+		FVector home(0, 0, 0), point(0, 0, 0);
+		const bool homed = HomeForSide(allegiance, s.x, s.y, &home, &point);
+		if (isfinite(x) && isfinite(y) && (x != 0.f || y != 0.f) && Land(x, y)) point = Ground(x, y);
+		else if (!homed) { *whyText = "There is nowhere to fall back to."; return false; }
+		Hold(*r, V_FALLBACK, point, NULL);
+		break;
+	}
+	default:
+		*whyText = "That is not an order.";
+		return false;
+	}
+	if (verb != CE_CMD_RELEASE) r->fromMap = true;
+	return true;
 }
 
 #endif

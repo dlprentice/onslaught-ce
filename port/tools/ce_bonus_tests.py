@@ -382,7 +382,8 @@ class BonusSettingsTests(unittest.TestCase):
     def build(cls, label, source):
         binary = cls.out / label
         result = subprocess.run([os.environ.get("CXX", "g++"), "-std=c++14", "-Wall", "-Wextra", "-Werror",
-                                 '-DCE_VERSION="test"', "-I", str(cls.out), str(source),
+                                 '-DCE_VERSION="test"', "-I", str(cls.out), "-I", str(ROOT / "port/game"),
+                                 str(source), str(ROOT / "port/game/ce_modes.cpp"),
                                  str(cls.out / "ce_bonus_driver.cpp"), "-o", str(binary)],
                                 capture_output=True, text=True, timeout=60)
         if result.returncode:

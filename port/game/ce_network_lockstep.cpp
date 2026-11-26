@@ -70,6 +70,10 @@ extern "C" int PortCeNetRingCapturing(void) __attribute__((weak));
 #include "player.h"
 #include "eventmanager.h"
 #include "Listener.h"
+#ifdef PORT_H
+#include "Career.h"
+#include "ce_modes.h"
+#endif
 #include <typeinfo>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1114,6 +1118,10 @@ int CE_LockstepConfigureLevel(uint32_t level) {
 		fprintf(stderr, "onslaught-ce: online multi-BE lockstep, level %u, slot %u/%u (%s), input delay %u ticks, hash every %u ticks\n",
 			level, L.online_local_slot, L.online_slot_count, L.host ? "host" : "guest", L.delay, L.hash_every);
 		if (admitted) CE_SessionGameWaitFrame(CE_WAIT_PREPARE);
+#ifdef PORT_H
+		if (!CeModeActive(CE_MODE_ONLINE_MATCH)) (void)CeModeBegin(CE_MODE_ONLINE_MATCH);
+		(void)CeCareerSnapshotAcquire(CE_MODE_ONLINE_MATCH, &CAREER, sizeof(CCareer));
+#endif
 		return 1;
 	}
 	// A session started from the lobby (the shipped route) comes with the process's admission: the roles, endpoint and secret in the BEA_NET_* variables the lobby's handoff set,
@@ -1195,6 +1203,10 @@ int CE_LockstepConfigureLevel(uint32_t level) {
 		L.opened_at = L.attempt_at = CE_NetNowMs();
 		if (!KeeperStart()) { (ChatRetire(), CE_NetDestroy(L.net)); L.net = NULL; L.opened_at = 0; }	// no thread: open after the load, as before
 	}
+#ifdef PORT_H
+	if (!CeModeActive(CE_MODE_ONLINE_MATCH)) (void)CeModeBegin(CE_MODE_ONLINE_MATCH);
+	(void)CeCareerSnapshotAcquire(CE_MODE_ONLINE_MATCH, &CAREER, sizeof(CCareer));
+#endif
     return 1;
 }
 int CE_LockstepAfterLoad(void) {
@@ -1649,6 +1661,9 @@ void CE_LockstepAfterWorldShutdown(void) {
 
     CE_BootCampaignClear();
     L.campaign = false;
+#ifdef PORT_H
+    CeModeEnd(CE_MODE_ONLINE_MATCH);
+#endif
 }
 const char *CE_LockstepNotice(void) { return L.notice; }
 const char *CE_LockstepError(void) { return last_error; }

@@ -250,13 +250,26 @@ struct CeMultiBeExtraSlotPrefs
 	}
 };
 
-// Pure O(1) angle wrapping to [-pi, pi].
+// Pure O(1) angle wrapping to [-pi, pi] (zero remainderf / libm, zero UB on huge floats).
 inline float CeMultiBeWrapAngle(float a)
 {
 	if (!isfinite(a))
 		return 0.0f;
-	const float r = remainderf(a, 6.283185307179586f);
-	return isfinite(r) ? r : 0.0f;
+	constexpr float kPiF = 3.14159265358979323846f;
+	if (a > -kPiF && a <= kPiF)
+		return a;
+	if (a >= 1.0e12f || a <= -1.0e12f)
+		return 0.0f;
+	constexpr double kPiD       = 3.1415926535897932384626433832795;
+	constexpr double kTwoPiD    = 6.2831853071795864769252867665590;
+	constexpr double kInvTwoPiD = 0.15915494309189533576888376337251;
+	const double scaled = static_cast<double>(a) * kInvTwoPiD;
+	const int64_t k = (scaled >= 0.0) ? static_cast<int64_t>(scaled + 0.5) : static_cast<int64_t>(scaled - 0.5);
+	double r = static_cast<double>(a) - static_cast<double>(k) * kTwoPiD;
+	if (r > kPiD)   r -= kTwoPiD;
+	if (r <= -kPiD) r += kTwoPiD;
+	const float rf = static_cast<float>(r);
+	return isfinite(rf) ? rf : 0.0f;
 }
 
 inline float CeMultiBeClamp(float v, float lo, float hi)
@@ -394,7 +407,8 @@ inline float CeMultiBeComputeWalkerPitchInput(float curPitch, float desiredPitch
 {
 	const float clampedDesired = CeMultiBeClamp(desiredPitch, -0.55f, 0.55f);
 	const float pitchErr = CeMultiBeWrapAngle(clampedDesired - curPitch);
-	if (fabsf(pitchErr) <= 0.04f)
+	const float absErr = (pitchErr < 0.0f) ? -pitchErr : pitchErr;
+	if (absErr <= 0.04f)
 		return 0.0f;
 	return CeMultiBeClamp(-pitchErr * 1.6f, -0.75f, 0.75f);
 }

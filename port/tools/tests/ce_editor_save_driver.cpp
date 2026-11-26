@@ -22,6 +22,9 @@ static void CloseEditor(const CCareer& progress, const CCareer& options) {
     ProbeSavedCareer(progress, options, false);
     ChangeCareer(4);
     const CCareer ordinary = CAREER;
+    CCareer direct = ordinary;
+    PortCeEditorFilterSave(&CAREER, &direct);
+    Check(SameFixtureProgress(direct, ordinary), "direct filter is inactive after exit");
     ProbeSavedCareer(ordinary, ordinary, false);
 }
 

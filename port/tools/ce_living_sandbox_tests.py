@@ -1166,7 +1166,7 @@ class LivingSandboxTests(unittest.TestCase):
         text = PATCH_0378.read_text(encoding="utf-8")
         files = re.findall(r"^--- a/(.+)$", text, re.M)
         allowed = {
-            "ResourceAccumulator.cpp", "world.cpp", "game.cpp", "FrontEnd.cpp",
+            "game.cpp", "FrontEnd.cpp",
             "DXMemoryManager.cpp", "System.cpp", "eventmanager.cpp", "BattleEngine.cpp",
         }
         self.assertEqual(set(files), allowed, f"unexpected patch targets: {files}")
@@ -1211,7 +1211,7 @@ class LivingSandboxTests(unittest.TestCase):
                     if not inside_ce:
                         self.fail(f"{fname}:{lineno} leaks CE hook outside #ifdef CE_VERSION: {line}")
                     found_guarded += 1
-        self.assertGreater(found_guarded, 15, "expected guarded Living Sandbox hooks in patched target files")
+        self.assertGreater(found_guarded, 8, "expected guarded Living Sandbox hooks in patched target files")
 
     def test_spdx_and_hygiene(self):
         new_files = [

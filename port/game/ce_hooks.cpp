@@ -10,11 +10,12 @@
 #endif
 #include "ce_hooks.h"
 #include "ce_hooks_dispatch.h"
+#include <cstring>
 
 #ifdef CE_VERSION
 
-static_assert(CE_HOOKS_API_VERSION == 0x0200u, "ce_hooks.cpp matches CE_HOOKS_API_VERSION 2.0");
-static_assert(CE_HOOKS_POINT_COUNT == 21u, "ce_hooks.cpp table count matches CE_HOOKS_POINT_COUNT");
+static_assert(CE_HOOKS_API_VERSION == 0x0300u, "ce_hooks.cpp matches CE_HOOKS_API_VERSION 3.0");
+static_assert(CE_HOOKS_POINT_COUNT == 25u, "ce_hooks.cpp table count matches CE_HOOKS_POINT_COUNT");
 
 typedef void (*CeHookVoidFn)();
 typedef void (*CeHookExitFn)(CeHookExitSite site);
@@ -34,6 +35,10 @@ typedef void (*CeHookUnitDestroyedFn)(CUnit *unit);
 typedef void (*CeHookSpawnerTriggerFn)(CeSpawnerTrigger *trigger);
 typedef void (*CeHookWeaponFireFn)(CWeapon *weapon, CUnit *owner, CRound *round);
 typedef void (*CeHookRenderPassFn)(const CeRenderPass *pass);
+typedef bool (*CeHookWorldSourceFn)(CeWorldSourceReq *req);
+typedef void (*CeHookProjectileInterceptFn)(CeProjectileIntercept *ev);
+typedef void (*CeHookUnitDamageFn)(const CeUnitDamage *ev);
+typedef void (*CeHookPlayerActFn)(uint32_t sim_tick);
 
 // Handlers owned by port/game/ce_*.cpp and dispatched from the table below.
 void			PortCeGamepadBeginCycle();									// ce_gamepad.cpp (tick_pre)
@@ -94,6 +99,9 @@ extern "C" void				PortCeFlagshipDuelUnitSpawn(CUnit *unit, CInitThing *init) __
 extern "C" void				PortCeFlagshipDuelUnitDestroyed(CUnit *unit) __attribute__((weak));
 extern "C" void				PortCeFlagshipDuelFilterSave(CCareer *career, void *dest) __attribute__((weak));
 extern "C" void				PortCeMuspellCockpitLevelEnd(void) __attribute__((weak));
+extern "C" bool				PortCeWorldProviderHandleSource(CeWorldSourceReq *req) __attribute__((weak));
+extern "C" void				PortCeSanctuaryProjectileIntercept(CeProjectileIntercept *ev) __attribute__((weak));
+extern "C" void				PortCePlayerHooksAct(uint32_t sim_tick) __attribute__((weak));
 
 static void CeHookGamepadBeginCycle() { PortCeGamepadBeginCycle(); }
 static void CeHookPaletteLevelEnd(int, int) { PortCePaletteClose(); }
@@ -143,20 +151,77 @@ static bool CeHookSaveCareerValid(CeHookSaveTarget target, CCareer *career, cons
 	return target == CE_SAVE_CAREER && career != nullptr && dest != nullptr && size > 0 && size >= minSize;
 }
 
-static void CeHookEditorSave(CeHookSaveTarget target, CCareer *career, char *dest, int size)
+template <class T>
+static auto CeHookRestoreCareerOptionsImpl(T *filtered, const T *live, int)
+	-> decltype(live->GetMusicVolume(), filtered->SetMusicVolume(0.f), void())
 {
-	if (CeHookSaveCareerValid(target, career, dest, size))
+	filtered->SetMusicVolume(live->GetMusicVolume());
+	filtered->SetSoundVolume(live->GetSoundVolume());
+	for (int player = 0; player < 2; ++player)
+	{
+		filtered->SetInvertYAxis(player, live->GetInvertYAxis(player));
+		filtered->SetInvertJetYAxis(player, live->GetInvertJetYAxis(player));
+		filtered->SetIsGod(player, live->GetIsGod(player));
+		filtered->SetVibration(player, live->GetVibration(player));
+		filtered->SetControllerConfigurationNum(player, live->GetControllerConfigurationNum(player));
+	}
+	filtered->SetScreenPosX(live->GetScreenPosX());
+	filtered->SetScreenPosY(live->GetScreenPosY());
+}
+template <class T>
+static void CeHookRestoreCareerOptionsImpl(T *, const T *, ...) {}
+
+template <class T, decltype(sizeof(T)) = sizeof(T)>
+static void CeHookApplyOnlineSnapshotImpl(T *career, char *dest, int size, int)
+{
+	if (size < (int)sizeof(T))
+		return;
+	T filtered;
+	if (!CeCareerSnapshotRead(&filtered, (unsigned)sizeof(T)))
+		return;
+	CeHookRestoreCareerOptionsImpl(&filtered, career, 0);
+	std::memcpy(dest, &filtered, sizeof(T));
+}
+template <class T>
+static void CeHookApplyOnlineSnapshotImpl(T *, char *dest, int size, ...)
+{
+	if (size > 0)
+		(void)CeCareerSnapshotRead(dest, (unsigned)size);
+}
+
+static void CeHookCareerSnapshotSave(CeHookSaveTarget target, CCareer *career, char *dest, int size)
+{
+	if (!CeHookSaveCareerValid(target, career, dest, size))
+		return;
+	switch (CeCareerSnapshotOwner())
+	{
+	case CE_MODE_EDITOR:
 		PortCeEditorFilterSave(career, dest);
-}
-static void CeHookBonusSave(CeHookSaveTarget target, CCareer *career, char *dest, int size)
-{
-	if (CeHookSaveCareerValid(target, career, dest, size))
+		break;
+	case CE_MODE_BONUS_LEVEL:
 		PortCeBonusFilterSave(career, dest);
-}
-static void CeHookMuseumVisitSave(CeHookSaveTarget target, CCareer *career, char *dest, int size)
-{
-	if (CeHookSaveCareerValid(target, career, dest, size))
+		break;
+	case CE_MODE_MUSEUM_VISIT:
 		PortCeMuseumVisitFilterSave(career, dest);
+		break;
+	case CE_MODE_CARRIER_CLASH:
+		if (PortCeCarrierClashFilterSave)
+			PortCeCarrierClashFilterSave(career, dest);
+		break;
+	case CE_MODE_LIVING_SANDBOX:
+		if (PortCeLivingSandboxFilterSave)
+			PortCeLivingSandboxFilterSave(career, dest);
+		break;
+	case CE_MODE_FLAGSHIP_DUEL:
+		if (PortCeFlagshipDuelFilterSave)
+			PortCeFlagshipDuelFilterSave(career, dest);
+		break;
+	case CE_MODE_ONLINE_MATCH:
+		CeHookApplyOnlineSnapshotImpl<CCareer>(career, dest, size, 0);
+		break;
+	default:
+		break;
+	}
 }
 static CCamera *CeHookCmdRenderCamera(CCamera *camera, int, CPlayer *player) { return PortCeCmdRenderCamera(camera, player); }
 static CCamera *CeHookPlayUnitRenderCamera(CCamera *camera, int, CPlayer *player) { return PortCePlayUnitRenderCamera(camera, player); }
@@ -246,11 +311,6 @@ static void CeHookCarrierClashUnitDestroyed(CUnit *unit)
 	if (PortCeCarrierClashUnitDestroyed)
 		PortCeCarrierClashUnitDestroyed(unit);
 }
-static void CeHookCarrierClashSave(CeHookSaveTarget target, CCareer *career, char *dest, int size)
-{
-	if (PortCeCarrierClashFilterSave && CeHookSaveCareerValid(target, career, dest, size))
-		PortCeCarrierClashFilterSave(career, dest);
-}
 static void CeHookLivingSandboxLevelBegin(int level)
 {
 	if (PortCeLivingSandboxLevelBegin)
@@ -290,11 +350,6 @@ static void CeHookLivingSandboxUnitDestroyed(CUnit *unit)
 	if (PortCeLivingSandboxUnitDestroyed)
 		PortCeLivingSandboxUnitDestroyed(unit);
 }
-static void CeHookLivingSandboxSave(CeHookSaveTarget target, CCareer *career, char *dest, int size)
-{
-	if (PortCeLivingSandboxFilterSave && CeHookSaveCareerValid(target, career, dest, size))
-		PortCeLivingSandboxFilterSave(career, dest);
-}
 static void CeHookFlagshipDuelLevelBegin(int level)
 {
 	if (PortCeFlagshipDuelLevelBegin)
@@ -330,15 +385,24 @@ static void CeHookFlagshipDuelUnitDestroyed(CUnit *unit)
 	if (PortCeFlagshipDuelUnitDestroyed)
 		PortCeFlagshipDuelUnitDestroyed(unit);
 }
-static void CeHookFlagshipDuelSave(CeHookSaveTarget target, CCareer *career, char *dest, int size)
-{
-	if (PortCeFlagshipDuelFilterSave && CeHookSaveCareerValid(target, career, dest, size))
-		PortCeFlagshipDuelFilterSave(career, dest);
-}
 static void CeHookMuspellCockpitLevelEnd(int, int)
 {
 	if (PortCeMuspellCockpitLevelEnd)
 		PortCeMuspellCockpitLevelEnd();
+}
+static bool CeHookWorldProviderSource(CeWorldSourceReq *req)
+{
+	return PortCeWorldProviderHandleSource ? PortCeWorldProviderHandleSource(req) : false;
+}
+static void CeHookSanctuaryProjectileIntercept(CeProjectileIntercept *ev)
+{
+	if (PortCeSanctuaryProjectileIntercept)
+		PortCeSanctuaryProjectileIntercept(ev);
+}
+static void CeHookPlayerHooksAct(uint32_t sim_tick)
+{
+	if (PortCePlayerHooksAct)
+		PortCePlayerHooksAct(sim_tick);
 }
 
 // ---- the table: per point, its handlers in the order they run ----
@@ -428,16 +492,10 @@ static constexpr CeHookRow<CeHookMenuFn> kMenuRows[] = {
 	CE_HOOK_END
 };
 CE_HOOK_CHECK(kMenuRows, CE_HOOK_RENDER, CE_DISPATCH_POSITIONAL_INSERT, "menu_rows");
-// save_gate: editor, bonus level, museum visit, in the order their career filters ran in CCareer::Save.
-// Rows stay CE_MODE_NONE until the feature modules wire CeModeBegin/CeModeEnd (ce_modes.h); each handler still
-// enforces CeHookSaveCareerValid (career/dest non-NULL and size >= sizeof(CCareer)) plus its module's active flag.
+// save_gate: slot 10 is the sole whole-copy career snapshot owner (CeCareerSnapshotOwner in ce_modes.h/.cpp).
+// Higher slots (>= 20) are reserved for incremental field filters that compose freely over the snapshot copy.
 static constexpr CeHookRow<CeHookSaveFn> kSaveGate[] = {
-	{10, "editor_save", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookEditorSave},
-	{20, "bonus_save", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookBonusSave},
-	{30, "museum_visit_save", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookMuseumVisitSave},
-	{40, "carrier_clash_save", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookCarrierClashSave},
-	{50, "living_sandbox_save", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookLivingSandboxSave},
-	{60, "flagship_duel_save", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookFlagshipDuelSave},
+	{10, "career_snapshot_save", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookCareerSnapshotSave},
 	CE_HOOK_END
 };
 CE_HOOK_CHECK(kSaveGate, CE_HOOK_SIM, CE_DISPATCH_FILTER, "save_gate");
@@ -493,14 +551,36 @@ static constexpr CeHookRow<CeHookRenderPassFn> kRenderPass[] = {
 	CE_HOOK_END
 };
 CE_HOOK_CHECK(kRenderPass, CE_HOOK_RENDER, CE_DISPATCH_ORDERED_BROADCAST, "render_pass");
+static constexpr CeHookRow<CeHookWorldSourceFn> kWorldSource[] = {
+	{10, "world_provider_source", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookWorldProviderSource},
+	CE_HOOK_END
+};
+CE_HOOK_CHECK(kWorldSource, CE_HOOK_SIM, CE_DISPATCH_FIRST_MATCH, "world_source");
+static constexpr CeHookRow<CeHookProjectileInterceptFn> kProjectileIntercept[] = {
+	{10, "sanctuary_projectile_intercept", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookSanctuaryProjectileIntercept},
+	CE_HOOK_END
+};
+CE_HOOK_CHECK(kProjectileIntercept, CE_HOOK_SIM, CE_DISPATCH_FILTER, "projectile_intercept");
+static constexpr CeHookRow<CeHookUnitDamageFn> kUnitDamage[] = {
+	CE_HOOK_END
+};
+CE_HOOK_CHECK(kUnitDamage, CE_HOOK_SIM, CE_DISPATCH_ORDERED_BROADCAST, "unit_damage");
+static constexpr CeHookRow<CeHookPlayerActFn> kPlayerAct[] = {
+	{10, "player_hooks_act", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookPlayerHooksAct},
+	CE_HOOK_END
+};
+CE_HOOK_CHECK(kPlayerAct, CE_HOOK_SIM, CE_DISPATCH_ORDERED_BROADCAST, "player_act");
 // ---- end of the table ----
 
 static CeHookCommandQueue gCommands;
+static uint32_t gCeGameplaySimTick = 0u;
+
+uint32_t CeHooksStepGameplayTick(void) { return ++gCeGameplaySimTick; }
 
 void ce_hook_boot() { CeHookBroadcast("boot", kBoot); }
 void ce_hook_exit(CeHookExitSite site) { CeHookBroadcast("exit", kExit, site); }
-void ce_hook_level_begin(int level) { CeHookBroadcast("level_begin", kLevelBegin, level); }
-void ce_hook_level_end(int level, int quit) { CeHookBroadcast("level_end", kLevelEnd, level, quit); }
+void ce_hook_level_begin(int level) { gCeGameplaySimTick = 0u; CeHookBroadcast("level_begin", kLevelBegin, level); }
+void ce_hook_level_end(int level, int quit) { gCeGameplaySimTick = 0u; CeHookBroadcast("level_end", kLevelEnd, level, quit); }
 void ce_hook_tick_pre() { CeHookBroadcast("tick_pre", kTickPre); }
 void ce_hook_tick_post() { CeHookApply("tick_post", kTickPost, &gCommands); }
 bool ce_hook_command_push(const CeHookCommand &command) { return gCommands.Push(command); }
@@ -531,6 +611,10 @@ void ce_hook_unit_destroyed(CUnit *unit) { CeHookBroadcast("unit_destroyed", kUn
 void ce_hook_spawner_trigger(CeSpawnerTrigger *trigger) { CeHookFilter("spawner_trigger", kSpawnerTrigger, trigger); }
 void ce_hook_weapon_fire(CWeapon *weapon, CUnit *owner, CRound *round) { CeHookBroadcast("weapon_fire", kWeaponFire, weapon, owner, round); }
 void ce_hook_render_pass(const CeRenderPass *pass) { CeHookBroadcast("render_pass", kRenderPass, pass); }
+bool ce_hook_world_source(CeWorldSourceReq *req) { return CeHookFirstMatch("world_source", kWorldSource, req); }
+void ce_hook_projectile_intercept(CeProjectileIntercept *ev) { CeHookFilter("projectile_intercept", kProjectileIntercept, ev); }
+void ce_hook_unit_damage(const CeUnitDamage *ev) { CeHookBroadcast("unit_damage", kUnitDamage, ev); }
+void ce_hook_player_act(uint32_t sim_tick) { CeHookBroadcast("player_act", kPlayerAct, sim_tick); }
 
 extern "C" {
 void PortCeCrispFontsDeleteDeviceObjects(void) __attribute__((weak));
@@ -585,5 +669,10 @@ void ce_hook_unit_destroyed(CUnit *) {}
 void ce_hook_spawner_trigger(CeSpawnerTrigger *) {}
 void ce_hook_weapon_fire(CWeapon *, CUnit *, CRound *) {}
 void ce_hook_render_pass(const CeRenderPass *) {}
+bool ce_hook_world_source(CeWorldSourceReq *) { return false; }
+void ce_hook_projectile_intercept(CeProjectileIntercept *) {}
+void ce_hook_unit_damage(const CeUnitDamage *) {}
+uint32_t CeHooksStepGameplayTick(void) { return 0u; }
+void ce_hook_player_act(uint32_t) {}
 
 #endif

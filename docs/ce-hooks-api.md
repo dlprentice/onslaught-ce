@@ -10,10 +10,10 @@ This document is the contributor reference for the Community Edition (CE) **comp
 `port/game/ce_hooks.h` exposes explicit compile-time version macros:
 
 ```cpp
-#define CE_HOOKS_API_VERSION_MAJOR 2u
+#define CE_HOOKS_API_VERSION_MAJOR 3u
 #define CE_HOOKS_API_VERSION_MINOR 0u
 #define CE_HOOKS_API_VERSION       ((CE_HOOKS_API_VERSION_MAJOR << 8) | CE_HOOKS_API_VERSION_MINOR)
-#define CE_HOOKS_POINT_COUNT       21u
+#define CE_HOOKS_POINT_COUNT       25u
 ```
 
 - **Major version (`CE_HOOKS_API_VERSION_MAJOR`)**: increments on breaking signature, struct layout, enum value, or dispatch-contract changes.
@@ -45,7 +45,7 @@ Each table row declares:
 - **Gate (`CeHookGate`)**:
   - `CE_GATE_VERSION`: active in every `CE_VERSION` build.
   - `CE_GATE_LAYER`: active only while `PortCeLayer()` is true — automatically disabled during faithful replays, recordings, probes, and determinism sweeps (`BEA_PORT_CLOCK`, `BEA_PORT_TAPE`, `BEA_PORT_PROBES`, `BEA_PORT_RECORD`). **Use `CE_GATE_LAYER` for all gameplay/feature/mod hooks that must never perturb faithful replay parity.**
-- **Mode (`CeMode`, `port/game/ce_modes.h`)**: `CE_MODE_NONE` (always open) or a specific exclusive mode (`CE_MODE_EDITOR`, `CE_MODE_BONUS_LEVEL`, `CE_MODE_MUSEUM_VISIT`, `CE_MODE_COMMANDER`, `CE_MODE_PLAY_UNIT`, `CE_MODE_PROJECT`).
+- **Mode (`CeMode`, `port/game/ce_modes.h`)**: `CE_MODE_NONE` (always open) or a specific exclusive mode (`CE_MODE_EDITOR`, `CE_MODE_MUSEUM_VISIT`, `CE_MODE_BONUS_LEVEL`, `CE_MODE_COMMANDER`, `CE_MODE_PLAY_UNIT`, `CE_MODE_PROJECT`, `CE_MODE_CARRIER_CLASH`, `CE_MODE_LIVING_SANDBOX`, `CE_MODE_FLAGSHIP_DUEL`, `CE_MODE_ONLINE_MATCH`).
 
 ### 2.3 Dispatch Modes (`port/game/ce_hooks_dispatch.h`)
 
@@ -58,7 +58,7 @@ Each table row declares:
 | `COMMAND_APPLY` | Drains `CeHookCommandQueue` (capacity 64, queued via `ce_hook_command_push`, `kind != 0`), oldest first, broadcasting each command to open rows and clearing the queue. |
 | `OVERRIDE_CHAIN` | Runs every open row in **ascending slot order**, passing each returned value into the next handler (`value = fn(value, ...)`). Returning the input argument is a clean passthrough; when multiple handlers override the value, **last-writer-wins** applies unless the later handler explicitly yields on prior overrides (for example, on `render_camera`, slot `30` `multibe_camera` runs after slot `20` `playunit_camera` and slot `10` `commander_camera` and passes through whenever an earlier camera override, Commander, Play-Any-Unit, or FreeCam owns the view). |
 
-## 3. Complete Hook Point Reference (21 Points)
+## 3. Complete Hook Point Reference (25 Points)
 
 | # | Point | Tag | Dispatch | Patch | Engine Site(s) | Signature |
 |---|---|---|---|---|---|---|
@@ -83,10 +83,14 @@ Each table row declares:
 | 19 | `spawner_trigger` | `SIM` | `FILTER` | `0363` | `SpawnerThng.cpp` `CSpawnerThing::Unknown4e3370` & `CSpawner::DoSpawn` (before spawn) | `void ce_hook_spawner_trigger(CeSpawnerTrigger *trigger)` |
 | 20 | `weapon_fire` | `SIM` | `ORDERED_BROADCAST` | `0364` | `weapon.cpp` `CWeapon::SpawnRound` (immediately after `round->Init(&init)`) | `void ce_hook_weapon_fire(CWeapon *weapon, CUnit *owner, CRound *round)` |
 | 21 | `render_pass` | `RENDER` | `ORDERED_BROADCAST` | `0365` | `DXEngine.cpp` `CDXEngine::Render` (`CE_RENDER_PASS_PRE_WORLD` after `SetViewport`; `CE_RENDER_PASS_POST_WORLD` after `draw_fairly_late_stuff`) | `void ce_hook_render_pass(const CeRenderPass *pass)` |
+| 22 | `world_source` | `SIM` | `FIRST_MATCH` | `0393` | `ResourceAccumulator.cpp` `CResourceAccumulator::ReadResources` & `world.cpp` `CWorld::Load` | `bool ce_hook_world_source(CeWorldSourceReq *req)` |
+| 23 | `projectile_intercept` | `SIM` | `FILTER` | `0394` | `Round.cpp` `CRound::Move` (x2), `CRound::HandleEvent` (x2), `CRound::DeclareOnGround` | `void ce_hook_projectile_intercept(CeProjectileIntercept *ev)` |
+| 24 | `unit_damage` | `SIM` | `ORDERED_BROADCAST` | `0395` | `Unit.cpp` `CUnit::Damage` (before `mSegments`) & `BattleEngine.cpp` `CBattleEngine::Damage` (pre-shield `rawAmount`) | `void ce_hook_unit_damage(const CeUnitDamage *ev)` |
+| 25 | `player_act` | `SIM` | `ORDERED_BROADCAST` | `0396` | `game.cpp` `CGame::Update` (unpaused `GAME_STATE_PLAYING`, after human controller flush, before `EVENT_MANAGER.Flush`) | `void ce_hook_player_act(uint32_t sim_tick)` |
 
-### 3.1 Registered Built-in Handlers (21 Hook Points)
+### 3.1 Registered Built-in Handlers (25 Hook Points)
 
-The compiled dispatch table in `port/game/ce_hooks.cpp` wires the following built-in CE handlers (55 rows across 14 active hook points; 7 points are currently open for extension):
+The compiled dispatch table in `port/game/ce_hooks.cpp` wires the following built-in CE handlers (53 rows across 17 active hook points; 8 points are currently open for extension):
 
 | Point | Slot | Handler Name | Tag | Gate | Mode | Owner Module |
 |---|---|---|---|---|---|---|
@@ -128,12 +132,7 @@ The compiled dispatch table in `port/game/ce_hooks.cpp` wires the following buil
 | `draw_overlay` | `20` | `carrier_clash_draw_overlay` | `RENDER` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_carrier_clash.cpp` |
 | `draw_overlay` | `30` | `flagship_duel_draw_overlay` | `RENDER` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_flagship_duel.cpp` |
 | `menu_rows` | `10` | `multibe_menu_rows` | `RENDER` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_multibe.cpp` |
-| `save_gate` | `10` | `editor_save` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_editor.cpp` |
-| `save_gate` | `20` | `bonus_save` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_bonus.cpp` |
-| `save_gate` | `30` | `museum_visit_save` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_museum_visit_engine.cpp` |
-| `save_gate` | `40` | `carrier_clash_save` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_carrier_clash.cpp` |
-| `save_gate` | `50` | `living_sandbox_save` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_sandbox_director.cpp` |
-| `save_gate` | `60` | `flagship_duel_save` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_flagship_duel.cpp` |
+| `save_gate` | `10` | `career_snapshot_save` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_modes.cpp` / `port/game/ce_hooks.cpp` |
 | `audio_clock` | — | *(open — worker-thread-safe rows only)* | `RENDER` | — | — | — |
 | `render_camera` | `10` | `commander_camera` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_cmdmap.cpp` |
 | `render_camera` | `20` | `playunit_camera` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_playunit.cpp` |
@@ -152,6 +151,10 @@ The compiled dispatch table in `port/game/ce_hooks.cpp` wires the following buil
 | `spawner_trigger` | — | *(open — no built-in rows)* | `SIM` | — | — | — |
 | `weapon_fire` | `10` | `multibe_weapon_fire` | `SIM` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_multibe.cpp` |
 | `render_pass` | — | *(open — no built-in rows)* | `RENDER` | — | — | — |
+| `world_source` | `10` | `world_provider_source` | `SIM` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_world_provider.cpp` |
+| `projectile_intercept` | `10` | `sanctuary_projectile_intercept` | `SIM` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_sanctuary_citadel.cpp` |
+| `unit_damage` | — | *(open — no built-in rows)* | `SIM` | — | — | — |
+| `player_act` | `10` | `player_hooks_act` | `SIM` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_player_hooks.cpp` |
 
 > **Why certain legacy CE call sites intentionally remain direct:** Some older CE seams sit at distinct render-stage, write-fence, or control-flow boundaries that do not match the 21 hook sites (for example: `PortCeEditorKey` in `ltshell.cpp` plays UI cues via `CFrontEnd::PlaySound` (`rand()`) and applies editor mutations such as `actor->MoveTo` / `GAME.SetQuit`, which intentionally mutate state and therefore cannot sit behind `key_capture`'s `CE_HOOK_RENDER` simulation-digest guard in `CE_TEST_BUILD`; `PortCeMuseumHallDraw` in `CDXEngine::Render` draws opaque hall geometry before `mWater->Render()` and `WORLD.Render()` rather than in `draw_world`; `PortCeMuseumViewCapture` / `PortCeWorldViewCapture` capture projection matrices after `RENDERINFO.SetProjection` rather than at `CE_RENDER_PASS_PRE_WORLD`; `PortCeMuseumLabelsRender` draws inside `CHud::RenderBattleline` while `0366` suppresses combat overlays before `draw_hud`; `CePlayUnitHudOverlay` executes in the `GetShowHUD() == FALSE` branch of `CHud::Render`; and `PortCeEditorLevelEnd` / `PortCeMuseumVisitLevelEnd` tear down mode state before `CE_SessionBeginTeardown`). Those sites are preserved directly to guarantee exact write-fence, Z-ordering, matrix restoration, and mode invariants.
 
@@ -207,8 +210,8 @@ struct CeRenderPass
 
 - **Incremental mutations** (modifying individual fields in `dest`) compose freely across multiple active handlers.
 - **Whole-copy snapshot replacements** (`memcpy(dest, &snapshot, sizeof(CCareer))`) overwrite prior handlers' changes; only one whole-copy owner may be active during a save.
-- Today's three built-in career filters (`editor_save`, `bonus_save`, `museum_visit_save`) each perform a whole-copy snapshot restore. Each wrapper in `port/game/ce_hooks.cpp` validates `target == CE_SAVE_CAREER`, `career != NULL`, `dest != NULL`, and `size >= (int)sizeof(CCareer)` before invoking its snapshot copy. Their mutual exclusion is enforced by `port/game/ce_modes.cpp`: `CeModesCompatible` returns `false` for every pair among `CE_MODE_EDITOR`, `CE_MODE_BONUS_LEVEL`, and `CE_MODE_MUSEUM_VISIT` (verified by `SaveHazardTests.test_mode_registry_prevents_concurrent_save_hazard_modes` in `port/tools/ce_hooks_tests.py`). The `kSaveGate` rows currently remain `CE_MODE_NONE` while each feature owns its own active flag until the feature modules wire `CeModeBegin`/`CeModeEnd` (`port/game/ce_modes.h`).
-- Until career snapshotting is unified under a single snapshot owner, `SaveHazardTests.test_two_active_filters_keep_both_snapshots` intentionally remains an expected failure documenting the raw-handler overwrite hazard if two whole-copy filters were ever invoked together. New `save_gate` handlers should prefer incremental field edits rather than whole-buffer copies.
+- **Single whole-copy owner (`kSaveGate` slot `10`, `career_snapshot_save`)**: `port/game/ce_modes.cpp` holds the single `CeCareerSnapshotOwner` slot (`CeCareerSnapshotAcquire` / `Read` / `Release`). Every career-fenced world-owner mode (`CE_MODE_EDITOR`, `CE_MODE_MUSEUM_VISIT`, `CE_MODE_BONUS_LEVEL`, `CE_MODE_CARRIER_CLASH`, `CE_MODE_LIVING_SANDBOX`, `CE_MODE_FLAGSHIP_DUEL`, `CE_MODE_ONLINE_MATCH`) is strictly pairwise incompatible in `CeModesCompatible`, acquires its snapshot only while active, and releases it automatically in `CeModeEnd`. Slot `10` validates `target == CE_SAVE_CAREER`, non-NULL `career`/`dest`, and `size >= (int)sizeof(CCareer)`, then dispatches exclusively to the single active owner (`SaveHazardTests` in `port/tools/ce_hooks_tests.py` verifies single-owner exclusivity).
+- Higher `kSaveGate` slots (`>= 20`) are strictly for incremental field filters; never register a second whole-copy replacement handler.
 
 ## 5. Practical Examples
 
