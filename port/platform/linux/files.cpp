@@ -274,6 +274,8 @@ static PortFind *FindStart(const char *spec)
 	if (strcmp(pattern, "*.*") == 0)
 		snprintf(pattern, sizeof(pattern), "*");
 	PortFind *f = (PortFind *)PortHandleNew(PORT_FIND, sizeof(PortFind));
+	if (!f)
+		return NULL;
 	char user[4096], game[4096];
 	// An ambiguous writable directory (savegames and SAVEGAMES) blocks the logical search, including its fallback.
 	if (PortResolvePath(dirpart, PORT_PATH_READ, game, sizeof(game)) != 0)
@@ -308,6 +310,11 @@ static void FillFindData(PortFind *f, int i, LPWIN32_FIND_DATAA data)
 extern "C" HANDLE WINAPI FindFirstFileA(LPCSTR spec, LPWIN32_FIND_DATAA data)
 {
 	PortFind *f = FindStart(spec);
+	if (!f)
+	{
+		PortSetLastError(ERROR_NOT_ENOUGH_MEMORY);
+		return INVALID_HANDLE_VALUE;
+	}
 	if (f->count == 0)
 	{
 		FindFree(f);
@@ -354,6 +361,11 @@ static void FillFindT(PortFind *f, int i, struct _finddata_t *d)
 extern "C" long _findfirst(const char *spec, struct _finddata_t *d)
 {
 	PortFind *f = FindStart(spec);
+	if (!f)
+	{
+		errno = ENOMEM;
+		return -1;
+	}
 	if (f->count == 0)
 	{
 		FindFree(f);
@@ -447,6 +459,12 @@ extern "C" HANDLE WINAPI CreateFileA(LPCSTR name, DWORD access, DWORD, LPSECURIT
 	}
 #endif
 	PortFile *f = (PortFile *)PortHandleNew(PORT_FILE, sizeof(PortFile));
+	if (!f)
+	{
+		close(fd);
+		PortSetLastError(ERROR_NOT_ENOUGH_MEMORY);
+		return INVALID_HANDLE_VALUE;
+	}
 	f->fd = fd;
 	return f;
 }

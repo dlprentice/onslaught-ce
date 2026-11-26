@@ -181,6 +181,31 @@ static int TestToggleOffRefusalsAndL2Dormancy() {
     if (pos.valid == 0u || pos.release != 0u || pos.unitHandle != obs.takeable[0].unitHandle) {
         std::puts("FAIL L2 did not take tank when Play-Unit ON"); return 23;
     }
+
+    // Defend posture must NOT starve squad 1 once squad 0 already holds (verb == 3).
+    obs.squadCount = 2u;
+    obs.squads[0].verb = 3; // already CE_CMD_HOLD
+    obs.squads[1].squadHandle = CeEntityHandlePack(6u, 1u);
+    obs.squads[1].ordinal = 1;
+    obs.squads[1].friendly = 1u;
+    obs.squads[1].commandable = 1u;
+    obs.squads[1].members = 4;
+    obs.squads[1].lifeRatio = 1.0f;
+    obs.squads[1].verb = 2; // currently advancing
+    obs.simTick = 45u;
+    CeStrategicPrior defPrior = {};
+    defPrior.posture = CE_STRAT_DEFEND;
+    CeAiTacticalL2Decide(&st, obs, &defPrior, &cmd, &pos);
+    if (cmd.valid == 0u || cmd.verb != 3 || cmd.squadHandle != obs.squads[1].squadHandle) {
+        std::puts("FAIL defendPosture starved squad 1 behind already-holding squad 0"); return 24;
+    }
+    // Once both squads hold, defendPosture must emit no redundant hold order.
+    obs.squads[1].verb = 3;
+    obs.simTick = 60u;
+    CeAiTacticalL2Decide(&st, obs, &defPrior, &cmd, &pos);
+    if (cmd.valid != 0u) {
+        std::puts("FAIL defendPosture re-issued redundant hold to already-holding squads"); return 25;
+    }
     return 0;
 }
 
@@ -360,6 +385,18 @@ class PlayerHooksTests(unittest.TestCase):
         self.assertIn("CeEntityHandleLookup(", pcpp)
         self.assertIn("CeEntitySpawnSeqLookup(", pcpp)
         self.assertRegex(pcpp, r"CePlayerObs\s+gSlotObs\[CE_PLAYER_MAX_SLOTS\]")
+        # Weapon range & live store telemetry + hostile building flag + possessedUnit reconciliation.
+        self.assertIn("obs.weaponMinRange", pcpp)
+        self.assertIn("obs.weaponMaxRange", pcpp)
+        self.assertIn("BeStoreOverheatTag", pcpp)
+        self.assertIn("e.isBaseBuilding = (u->IsA(THING_TYPE_BUILDING) != FALSE) ? 1u : 0u;", pcpp)
+        self.assertIn("gTacticalState[slot].possessedUnit = (toggles & CE_TOGGLE_PLAY_UNIT)", pcpp)
+
+        # Headless PlayUnit slots use per-unit PortCePlayUnitIsDriven and AI_ONF (armed).
+        pus_cpp = strip_comments((GAME / "ce_playunit_slots.cpp").read_text(encoding="utf-8"))
+        self.assertIn("PortCePlayUnitIsDriven", pus_cpp)
+        self.assertIn("AI_ONF", pus_cpp)
+        self.assertNotIn("CePlayUnitOwnsPilot(", pus_cpp)
 
         # R5: 0396-ce-hook-player-act MUST gate on mGameState == GAME_STATE_PLAYING.
         self.assertIn("if (mGameState == GAME_STATE_PLAYING)", patch_0396)

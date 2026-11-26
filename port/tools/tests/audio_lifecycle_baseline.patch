@@ -8,13 +8,13 @@
  #include <math.h>
  #include <new>
  #include <stdio.h>
-@@ -31,62 +30,22 @@
+@@ -31,60 +30,20 @@
  #include <stdarg.h>
  #include <stdint.h>
  #include <string.h>
 -#include <errno.h>
  #include "../platform/common/portlog.h"
- 
+-
 -#ifndef DSOUND_OBJECT_MALLOC
 -#define DSOUND_OBJECT_MALLOC malloc
 -#endif
@@ -24,7 +24,7 @@
 -#ifndef DSOUND_SCRATCH_MALLOC
 -#define DSOUND_SCRATCH_MALLOC malloc
 -#endif
--
+ 
  unsigned long long PortClockFrames();		// port/platform/common/clock.cpp
  bool PortClockVirtual();
  unsigned long long PortClockPeekNs();
@@ -52,8 +52,8 @@
 -		return;
  	p->~T();
  	free(p);
- }
- 
+-}
+-
 -bool Finite3D(float x) { return isfinite(x); }
 -bool FiniteVec3D(const D3DVECTOR &v) { return isfinite(v.x) && isfinite(v.y) && isfinite(v.z); }
 -
@@ -67,11 +67,9 @@
 -		return false;
 -	WORD frameBytes = (WORD)(w->nChannels * (w->wBitsPerSample / 8));
 -	return w->nBlockAlign == frameBytes;
--}
--
- bool SameGuid(REFIID a, const GUID &b) { return memcmp(&a, &b, sizeof(GUID)) == 0; }
+ }
  
- const int kRate = 44100;			// the mix's rate; voices are resampled to it
+ bool SameGuid(REFIID a, const GUID &b) { return memcmp(&a, &b, sizeof(GUID)) == 0; }
 @@ -95,7 +54,6 @@
  struct Buffer;
  struct Buffer3D;
@@ -137,10 +135,12 @@
  
  // ---- buffers
  
-@@ -228,16 +164,6 @@
+@@ -226,16 +162,6 @@
+ {
+ 	DS3DBUFFER now, pending;
  	bool dirty = false;
- };
- 
+-};
+-
 -struct NotifyIface final : public IDirectSoundNotify
 -{
 -	Buffer *owner;
@@ -149,11 +149,9 @@
 -	ULONG STDMETHODCALLTYPE AddRef() override;
 -	ULONG STDMETHODCALLTYPE Release() override;
 -	HRESULT STDMETHODCALLTYPE SetNotificationPositions(DWORD n, LPCDSBPOSITIONNOTIFY p) override;
--};
--
+ };
+ 
  struct Buffer final : public IDirectSoundBuffer8
- {
- 	LONG refs = 1;
 @@ -248,27 +174,14 @@
  	LONG pan = 0;
  	DWORD frequency;
@@ -203,13 +201,7 @@
 -				data->bytesPtr = rounded ? (unsigned char *)DSOUND_BACKING_CALLOC(1, rounded) : NULL;
 -				data->bytes = (rounded && !data->bytesPtr) ? 0 : rounded;
 -			}
-+			data = (Data *)malloc(sizeof(Data));
-+			data->refs = 1;
-+			// rounded up to whole frames, as Wine's DirectSound does (retail's log: a 242,509-byte voice locks as 242,510)
-+			data->bytes = (flags & DSBCAPS_PRIMARYBUFFER) ? 0
-+						  : (d->dwBufferBytes + Align() - 1) / Align() * Align();
-+			data->bytesPtr = data->bytes ? (unsigned char *)calloc(1, data->bytes) : NULL;
- 		}
+-		}
 -		if (gSessionAudio)
 -		{
 -			SDL_LockMutex(gMixer.lock);
@@ -258,6 +250,13 @@
 -		}
 -		*out = new (mem) Buffer(d, useData, adopt);
 -		return DS_OK;
++			data = (Data *)malloc(sizeof(Data));
++			data->refs = 1;
++			// rounded up to whole frames, as Wine's DirectSound does (retail's log: a 242,509-byte voice locks as 242,510)
++			data->bytes = (flags & DSBCAPS_PRIMARYBUFFER) ? 0
++						  : (d->dwBufferBytes + Align() - 1) / Align() * Align();
++			data->bytesPtr = data->bytes ? (unsigned char *)calloc(1, data->bytes) : NULL;
++		}
  	}
  	~Buffer();
  
@@ -393,8 +392,8 @@
 -				PortSessionObserveMax(PORT_OBS_MUSIC_VOICES_MAX, music);
 -				secondMusicVoice = music > 1;
 -			}
- 		}
- 		SDL_UnlockMutex(gMixer.lock);
+-		}
+-		SDL_UnlockMutex(gMixer.lock);
 -		MediaSnapshot(this, "play");
 -		if (secondMusicVoice)
 -		{
@@ -404,6 +403,8 @@
 -				PortSessionLog(PORT_SESSION_MUSIC, true, "a second music-tagged buffer started while another plays "
 -					"(see music_voices_max; not audible-content proof)");
 -		}
++		}
++		SDL_UnlockMutex(gMixer.lock);
  		return DS_OK;
  	}
  	HRESULT STDMETHODCALLTYPE SetCurrentPosition(DWORD p) override
@@ -427,14 +428,18 @@
  			Halt();
  		SDL_UnlockMutex(gMixer.lock);
 -		MediaSnapshot(this, "stop");
- 		return DS_OK;
- 	}
+-		return DS_OK;
+-	}
 -	HRESULT STDMETHODCALLTYPE Unlock(LPVOID p1, DWORD n1, LPVOID p2, DWORD n2) override
-+	HRESULT STDMETHODCALLTYPE Unlock(LPVOID, DWORD n1, LPVOID, DWORD n2) override
- 	{
- 		gMixer.CatchUp();
+-	{
+-		gMixer.CatchUp();
 -		if (gSessionAudio && mediaKind == PORT_SESSION_MUSIC)
 -			ObserveWrite(p1, n1, p2, n2);
++		return DS_OK;
++	}
++	HRESULT STDMETHODCALLTYPE Unlock(LPVOID, DWORD n1, LPVOID, DWORD n2) override
++	{
++		gMixer.CatchUp();
  		// DirectSound rejects an unlock larger than the buffer (the game unlocks its samples with twice their size and
  		// gets this error in retail too; the data is written either way)
  		HRESULT hr = (n1 > Bytes() || n2 > Bytes()) ? DSERR_INVALIDPARAM : DS_OK;
@@ -750,8 +755,7 @@
 +		right *= att * (pr > 1.0f ? 1.0f : pr);
  		// Doppler: the velocity components along the line from the listener to the source
 -		if (Finite3D(l.flDopplerFactor) && l.flDopplerFactor > 0 && Finite3D(rd) && rd > 1e-6f)
-+		if (l.flDopplerFactor > 0 && rd > 1e-6f)
- 		{
+-		{
 -			float df = (Finite3D(l.flDistanceFactor) && l.flDistanceFactor > 0) ? l.flDistanceFactor : 1.0f;
 -			float c = 343.0f / df;
 -			if (Finite3D(c) && c > 0.0f)
@@ -768,6 +772,8 @@
 -					freq *= (double)(c + vl) / (double)(c + vs);
 -				}
 -			}
++		if (l.flDopplerFactor > 0 && rd > 1e-6f)
++		{
 +			float c = 343.0f / (l.flDistanceFactor > 0 ? l.flDistanceFactor : 1.0f);
 +			float vs = Dot(ToVec(s.vVelocity), rel) / rd, vl = Dot(ToVec(l.vVelocity), rel) / rd;
 +			vs *= l.flDopplerFactor;
@@ -800,8 +806,7 @@
 -	if (frames <= 0)
 -		return;
 -	if (scratchFrames < frames || !scratch)
-+	if (scratchFrames < frames)
- 	{
+-	{
 -		size_t wantFloats = (size_t)frames <= SIZE_MAX / (2 * sizeof(float)) ? (size_t)frames * 2 : 0;
 -		float *grown = wantFloats ? (float *)DSOUND_SCRATCH_MALLOC(wantFloats * sizeof(float)) : NULL;
 -		if (!grown)
@@ -817,6 +822,8 @@
 -			mixed += (Uint64)frames;
 -			return;
 -		}
++	if (scratchFrames < frames)
++	{
  		free(scratch);
 -		scratch = grown;
 +		scratch = (float *)malloc(sizeof(float) * 2 * frames);
@@ -892,11 +899,6 @@
 -				float sl, sr;
 -				double frac = pos - (double)f0;
 -				if (step == 1.0 && frac == 0.0)
--				{
--					sl = b->Sample(f0, 0);
--					sr = ch > 1 ? b->Sample(f0, 1) : sl;
--				}
--				else
 +				sl = b->Sample(f0, 0);
 +				sr = ch > 1 ? b->Sample(f0, 1) : sl;
 +			}
@@ -906,6 +908,21 @@
 +				sl = sr = 0;
 +				for (int t = 0; t < kTaps; t++)
  				{
+-					sl = b->Sample(f0, 0);
+-					sr = ch > 1 ? b->Sample(f0, 1) : sl;
++					long f = (long)f0 + t - (kTaps / 2 - 1);
++					if (f < 0 || f >= (long)total)
++					{
++						if (!b->looping)
++							continue;
++						f = ((f % (long)total) + (long)total) % (long)total;
++					}
++					float l = b->Sample((DWORD)f, 0);
++					sl += k[t] * l;
++					sr += k[t] * (ch > 1 ? b->Sample((DWORD)f, 1) : l);
+ 				}
+-				else
+-				{
 -					int phase = isfinite(frac) ? (int)(frac * kPhases + 0.5) : 0;
 -					if (phase < 0)
 -						phase = 0;
@@ -914,9 +931,7 @@
 -					const float *k = gKernel[phase];
 -					sl = sr = 0;
 -					for (int t = 0; t < kTaps; t++)
-+					long f = (long)f0 + t - (kTaps / 2 - 1);
-+					if (f < 0 || f >= (long)total)
- 					{
+-					{
 -						long f = (long)f0 + t - (kTaps / 2 - 1);
 -						if (f < 0 || f >= (long)total)
 -						{
@@ -927,14 +942,8 @@
 -						float l = b->Sample((DWORD)f, 0);
 -						sl += k[t] * l;
 -						sr += k[t] * (ch > 1 ? b->Sample((DWORD)f, 1) : l);
-+						if (!b->looping)
-+							continue;
-+						f = ((f % (long)total) + (long)total) % (long)total;
- 					}
-+					float l = b->Sample((DWORD)f, 0);
-+					sl += k[t] * l;
-+					sr += k[t] * (ch > 1 ? b->Sample((DWORD)f, 1) : l);
- 				}
+-					}
+-				}
 -				scratch[2 * i] += sl * gl;
 -				scratch[2 * i + 1] += sr * gr;
  			}
@@ -955,7 +964,25 @@
  		if (pos >= total && b->looping)
  		{
  			pos = fmod(pos, (double)total);
-@@ -1346,13 +987,6 @@
+@@ -1338,30 +979,14 @@
+ 		else
+ 			b->cursor = pos;
+ 	}
+-	const bool ceSoftClip = (PortCeLayer && PortCeLayer());
+ 	for (int i = 0; i < 2 * frames; i++)
+ 	{
+ 		float s = scratch[i];
+-		if (ceSoftClip)
+-		{
+-			if (s > 0.85f)
+-				s = 0.85f + 0.15f * tanhf((s - 0.85f) * (1.0f / 0.15f));
+-			else if (s < -0.85f)
+-				s = -0.85f + 0.15f * tanhf((s + 0.85f) * (1.0f / 0.15f));
+-		}
+-		else
+-			s = s > 1.0f ? 1.0f : s < -1.0f ? -1.0f : s;
++		s = s > 1.0f ? 1.0f : s < -1.0f ? -1.0f : s;
+ 		out[i] = (Sint16)lrintf(s * 32767.0f);
  	}
  	Record(out, frames);
  	Monitor(out, frames);
@@ -969,7 +996,7 @@
  	mixed += frames;
  }
  
-@@ -1426,56 +1060,12 @@
+@@ -1435,55 +1060,11 @@
  	}
  	SDL_LockMutex(gMixer.lock);
  	gMixer.Mix(buf, frames);
@@ -998,7 +1025,7 @@
  	{
  		PortSessionCount(PORT_COUNT_AUDIO_PUT_FAILED);
  		PortSessionAudioError(SDL_GetError());
- 	}
+-	}
 -	if (observe)
 -	{
 -		// Only this callback's live stream, outside the mixer lock; no SDL-stream/mixer lock inversion.
@@ -1022,11 +1049,10 @@
 -			if (queued > gMixer.queueMaxBytes) gMixer.queueMaxBytes = queued;
 -		}
 -		SDL_UnlockMutex(gMixer.lock);
--	}
+ 	}
  	SDL_free(buf);
  }
- 
-@@ -1488,89 +1078,39 @@
+@@ -1497,89 +1078,39 @@
  {
  	if (!virt)
  		return;
@@ -1050,12 +1076,10 @@
  	Sint16 block[kVirtualBlock * 2];
  	while (mixed + kVirtualBlock <= target)
  		Mix(block, kVirtualBlock);
-+	SDL_UnlockMutex(lock);
- }
- 
+-}
+-
 -Uint32 SDLCALL TimerTick(void *, SDL_TimerID timerId, Uint32 interval)
-+Uint32 SDLCALL TimerTick(void *, SDL_TimerID, Uint32 interval)
- {
+-{
 -	// SDL_RemoveTimer cancels future dispatch; it does not join an already-dispatched callback. The timer's immutable
 -	// SDL ID is its generation. This permanent mutex and the process-lifetime mixer outlive every callback: no callback
 -	// userdata is allocated or freed. A retired callback must not read a reopened device's clock or other state.
@@ -1065,6 +1089,11 @@
 -		SDL_UnlockMutex(gMixer.lock);
 -		return 0;
 -	}
++	SDL_UnlockMutex(lock);
++}
++
++Uint32 SDLCALL TimerTick(void *, SDL_TimerID, Uint32 interval)
++{
  	if (gMixer.virt)
  	{
 -		gMixer.CatchUpLocked();
@@ -1100,10 +1129,7 @@
 -		gMixer.timerFrac = exact - (double)remaining;
 -	}
 -	while (remaining > 0)
-+	int n = (int)frames;
-+	gMixer.timerFrac = frames - n;
-+	if (n > 0)
- 	{
+-	{
 -		int chunk = remaining > kRate ? kRate : remaining;
 -		remaining -= chunk;
 -		if ((size_t)chunk > SIZE_MAX / 4u)
@@ -1120,23 +1146,27 @@
 -				PortSessionCount(PORT_COUNT_AUDIO_ALLOC_FAILED);
 -			break;
 -		}
+-	}
+-	SDL_UnlockMutex(gMixer.lock);
++	int n = (int)frames;
++	gMixer.timerFrac = frames - n;
++	if (n > 0)
++	{
 +		Sint16 *buf = (Sint16 *)SDL_malloc(n * 4);
 +		SDL_LockMutex(gMixer.lock);
 +		gMixer.Mix(buf, n);
 +		SDL_UnlockMutex(gMixer.lock);
 +		SDL_free(buf);
- 	}
--	SDL_UnlockMutex(gMixer.lock);
++	}
  	return interval;
  }
  
-@@ -1586,40 +1126,20 @@
+@@ -1595,40 +1126,20 @@
  		BuildKernel();
  	}
  	const char *rec = SDL_getenv("BEA_AUDIO_RECORD");
 -	if (rec && rec[0])
-+	if (rec && rec[0] && (wav = fopen(rec, "wb")) != NULL)
- 	{
+-	{
 -		if (wavStarted)
 -		{
 -			wav = fopen(rec, "r+b");
@@ -1154,6 +1184,8 @@
 -			wavBytes = wavHeaderAt = 0;
 -			wavStarted = true;
 -		}
++	if (rec && rec[0] && (wav = fopen(rec, "wb")) != NULL)
++	{
 +		Uint32 hdr[11] = {0x46464952, 36, 0x45564157, 0x20746d66, 16, 0x00020001, kRate, kRate * 4, 0x00100004,
 +						  0x61746164, 0};
 +		fwrite(hdr, 4, 11, wav);
@@ -1177,7 +1209,7 @@
  	bool timerOnly = virt || (clock && SDL_strcmp(clock, "timer") == 0);
  	if (!timerOnly)
  	{
-@@ -1629,36 +1149,8 @@
+@@ -1638,36 +1149,8 @@
  			stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, Feed, NULL);
  			if (stream)
  			{
@@ -1215,7 +1247,7 @@
  			}
  			else
  			{
-@@ -1688,13 +1180,9 @@
+@@ -1697,13 +1180,9 @@
  	}
  	if (!stream)
  	{
@@ -1229,7 +1261,7 @@
  		if (!timer) PortSessionLog(PORT_SESSION_AUDIO, true, "audio timer start failed: %.200s", SDL_GetError());
  	}
  	// so a run's log shows where the sound went (SDL's "dummy" driver and the timer clock are silent)
-@@ -1735,27 +1223,17 @@
+@@ -1744,26 +1223,16 @@
  {
  	if (--users)
  		return;
@@ -1253,16 +1285,15 @@
  		SDL_DestroyAudioStream(stream);
  		stream = NULL;
  		SDL_QuitSubSystem(SDL_INIT_AUDIO);
- 	}
++	}
 +	if (timer)
 +	{
 +		SDL_RemoveTimer(timer);
 +		timer = 0;
-+	}
+ 	}
  	SDL_LockMutex(lock);
  	if (monitor)
- 	{
-@@ -1772,7 +1250,6 @@
+@@ -1781,7 +1250,6 @@
  		trace = NULL;
  	}
  	SDL_UnlockMutex(lock);
@@ -1270,19 +1301,20 @@
  	PortSessionSummary();
  }
  
-@@ -1797,19 +1274,10 @@
+@@ -1806,19 +1274,10 @@
  			Destroy(this);
  		return (ULONG)r;
  	}
 -	HRESULT STDMETHODCALLTYPE CreateSoundBuffer(LPCDSBUFFERDESC d, LPDIRECTSOUNDBUFFER *out, IUnknown *unk) override
-+	HRESULT STDMETHODCALLTYPE CreateSoundBuffer(LPCDSBUFFERDESC d, LPDIRECTSOUNDBUFFER *out, IUnknown *) override
- 	{
+-	{
 -		if (out)
 -			*out = NULL;
 -		if (unk)
 -			return DSERR_NOAGGREGATION;
 -		if (!d || !out)
 -			return DSERR_INVALIDPARAM;
++	HRESULT STDMETHODCALLTYPE CreateSoundBuffer(LPCDSBUFFERDESC d, LPDIRECTSOUNDBUFFER *out, IUnknown *) override
++	{
  		const WAVEFORMATEX *w = d->lpwfxFormat;
 -		bool primary = (d->dwFlags & DSBCAPS_PRIMARYBUFFER) != 0;
 -		bool invalid = primary ? (d->dwBufferBytes != 0 || w != NULL)
@@ -1292,7 +1324,7 @@
  		{
  			CallLog("CreateSoundBuffer ds=%08lX flags=%lx bytes=%lu tag=%u ch=%u rate=%lu bits=%u alg3d=%08lx out=00000000 hr=%lx",
  					P(this), (unsigned long)d->dwFlags, (unsigned long)d->dwBufferBytes, w ? w->wFormatTag : 0, w ? w->nChannels : 0,
-@@ -1817,17 +1285,7 @@
+@@ -1826,17 +1285,7 @@
  					d->dwSize >= sizeof(DSBUFFERDESC) ? (unsigned long)d->guid3DAlgorithm.Data1 : 0UL, (unsigned long)DSERR_INVALIDPARAM);
  			return DSERR_INVALIDPARAM;
  		}
@@ -1311,7 +1343,7 @@
  		CallLog("CreateSoundBuffer ds=%08lX flags=%lx bytes=%lu tag=%u ch=%u rate=%lu bits=%u alg3d=%08lx out=%08lX hr=0", P(this),
  				(unsigned long)d->dwFlags, (unsigned long)d->dwBufferBytes, w ? w->wFormatTag : 0, w ? w->nChannels : 0,
  				w ? (unsigned long)w->nSamplesPerSec : 0UL, w ? w->wBitsPerSample : 0,
-@@ -1836,8 +1294,6 @@
+@@ -1845,8 +1294,6 @@
  	}
  	HRESULT STDMETHODCALLTYPE GetCaps(LPDSCAPS c) override
  	{
@@ -1320,7 +1352,7 @@
  		DWORD size = c->dwSize;
  		memset(c, 0, size);
  		c->dwSize = size;
-@@ -1846,28 +1302,11 @@
+@@ -1855,28 +1302,11 @@
  		c->dwMinSecondarySampleRate = DSBFREQUENCY_MIN;
  		c->dwMaxSecondarySampleRate = DSBFREQUENCY_MAX;
  		c->dwPrimaryBuffers = 1;
@@ -1349,7 +1381,7 @@
  		DSBUFFERDESC d;
  		memset(&d, 0, sizeof(d));
  		d.dwSize = sizeof(d);
-@@ -1875,11 +1314,7 @@
+@@ -1884,11 +1314,7 @@
  		d.dwBufferBytes = s->Bytes();
  		d.lpwfxFormat = &s->format;
  		// a duplicate shares its source's memory (DirectSound's rule) and starts stopped at position 0
@@ -1362,7 +1394,7 @@
  		CallLog("DuplicateSoundBuffer ds=%08lX src=%08lX new=%08lX hr=0", P(this), P(src), P(*out));
  		return DS_OK;
  	}
-@@ -1894,68 +1329,6 @@
+@@ -1903,68 +1329,6 @@
  	HRESULT STDMETHODCALLTYPE Initialize(const GUID *) override { return DSERR_ALREADYINITIALIZED; }
  	HRESULT STDMETHODCALLTYPE VerifyCertification(LPDWORD c) override { *c = 0; return DS_OK; }
  };
@@ -1431,7 +1463,7 @@
  } // namespace
  
  #ifdef CE_VERSION
-@@ -1969,114 +1342,15 @@
+@@ -1978,114 +1342,15 @@
  }
  #endif
  
@@ -1532,8 +1564,7 @@
  }
  
 -extern "C" HRESULT WINAPI DirectSoundCreate8(const GUID *g, LPDIRECTSOUND8 *out, IUnknown *unk)
-+extern "C" HRESULT WINAPI DirectSoundCreate8(const GUID *g, LPDIRECTSOUND8 *out, IUnknown *)
- {
+-{
 -	if (out)
 -		*out = NULL;
 -	if (unk)
@@ -1544,6 +1575,8 @@
 -	if (!s)
 -		return DSERR_OUTOFMEMORY;
 -	*out = s;
++extern "C" HRESULT WINAPI DirectSoundCreate8(const GUID *g, LPDIRECTSOUND8 *out, IUnknown *)
++{
 +	*out = Make<Sound>();
  	CallLog("DirectSoundCreate8 guid=%08lx out=%08lX hr=0", g ? (unsigned long)g->Data1 : 0UL, P(*out));
  	return DS_OK;

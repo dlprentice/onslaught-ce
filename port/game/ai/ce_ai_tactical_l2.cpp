@@ -93,8 +93,8 @@ void CeAiTacticalL2Decide(CeAiTacticalL2State *state,
 				}
 				continue;
 			}
-			// Idle or outdated march order advances toward target / strategic focus.
-			if (hasTarget && (sq.verb == 0 /* CE_CMD_NONE */ || defendPosture))
+			// Idle or outdated march order advances toward target / strategic focus, or holds in defend posture.
+			if (hasTarget && (defendPosture ? (sq.verb != 3 /* CE_CMD_HOLD */) : (sq.verb == 0 /* CE_CMD_NONE */)))
 			{
 				outCmd->valid = 1u;
 				outCmd->verb = defendPosture ? 3 /* CE_CMD_HOLD */ : 2 /* CE_CMD_ADVANCE */;

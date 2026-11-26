@@ -24,6 +24,7 @@
 
 #include "common.h"
 #include "game.h"
+#include "frontend.h"
 #include "world.h"
 #include "map.h"
 #include "player.h"
@@ -1305,6 +1306,33 @@ extern "C" void PortCeMultiBeTickPre()
 			return;
 	}
 
+#ifndef CE_NETWORK_OFF
+	// Synchronize online human -> AI disconnect backfill BEFORE SyncHumanPlayerEngines(), regardless of
+	// whether gEngines[i] is currently alive or mid-respawn, so every false -> true transition resets
+	// Layer-1 state with the match seed and snaps core player slots into FP view.
+	if (OnlineMatchActive())
+	{
+		const uint32_t matchSeed = PortCeOnlineMatchSeed ? PortCeOnlineMatchSeed() : 0u;
+		const int nPlayers = GAME.GetNPlayers();
+		for (int i = 0; i < gEngineCount && i < CE_MULTIBE_MAX; i++)
+		{
+			if (!gIsAiControlled[i] && !(PortCeOnlineMatchSlotIsHuman && PortCeOnlineMatchSlotIsHuman(i)))
+			{
+				gIsAiControlled[i] = true;
+				CBattleEngine *be = gEngines[i];
+				const bool liveBe = (be != NULL && UnitExistsInWorld(be) && !be->IsDying());
+				CeAiPilotL1Reset(i, liveBe ? be->GetLife() : 0.0f, matchSeed, true);
+				if (!gIsAux[i] && i < nPlayers && i < MAX_PLAYERS)
+				{
+					CPlayer *pl = GAME.GetPlayer(i);
+					if (pl && (!pl->GetIsInFPV() || !GAME.GetCurrentCamera(i)))
+						pl->GotoFPView();
+				}
+			}
+		}
+	}
+#endif
+
 	// Keep human and Solo Skirmish Player 2 pointers synchronized across retail deaths & respawns (never dangle!).
 	SyncHumanPlayerEngines();
 	if (gSoloSkirmish)
@@ -1333,7 +1361,7 @@ extern "C" void PortCeMultiBeTickPre()
 				RespawnAuxiliaryBattleEngine(i);
 	}
 
-	// Validate positions & sync AI slot control flags (AI pilot execution runs in 0396 player_act via ce_player_hooks.cpp).
+	// Validate positions & movement telemetry (AI pilot execution runs in 0396 player_act via ce_player_hooks.cpp).
 	for (int i = 0; i < gEngineCount; i++)
 	{
 		CBattleEngine *be = gEngines[i];
@@ -1348,10 +1376,6 @@ extern "C" void PortCeMultiBeTickPre()
 			if (i == 1)
 				gP2Moved = true;
 		}
-#ifndef CE_NETWORK_OFF
-		if (!gIsAiControlled[i] && OnlineMatchActive() && !(PortCeOnlineMatchSlotIsHuman && PortCeOnlineMatchSlotIsHuman(i)))
-			gIsAiControlled[i] = true;
-#endif
 	}
 
 	if (gSimTicks % 10 == 0)
@@ -1791,6 +1815,14 @@ extern "C" int PortCeMultiBeHandleDeath(void *battleEnginePtr)
 	return 0;
 }
 
+extern "C" int PortCeMultiBeIsAuxEngine(const void *battleEnginePtr)
+{
+	if (!gActive || !battleEnginePtr)
+		return 0;
+	const int idx = IndexOfEngine(static_cast<const CUnit *>(battleEnginePtr));
+	return (idx >= 0 && gIsAux[idx]) ? 1 : 0;
+}
+
 extern "C" int PortCeMultiBeActive(void)
 {
 	return gActive ? 1 : 0;
@@ -1835,7 +1867,21 @@ extern "C" int PortCeSoloSkirmishActive(void)
 		return 0;
 	if (gInLevel)
 		return gLatchedSoloSkirmish ? 1 : 0;
-	return (ReadSoloSkirmishSetting() == CE_SOLO_SKIRMISH_SOLO_AI) ? 1 : 0;
+	if (ReadSoloSkirmishSetting() != CE_SOLO_SKIRMISH_SOLO_AI)
+		return 0;
+	if (FRONTEND.IsRunning())
+	{
+		const EFrontEndPage cur = FRONTEND.GetCurrentPage();
+		const EFrontEndPage dst = FRONTEND.GetTransitionTo();
+		const EFrontEndPage src = FRONTEND.GetTransitionFrom();
+		const bool onMpPage =
+			cur == FEP_MULTIPLAYER || cur == FEP_MULTIPLAYER_START ||
+			(cur == FEP_TRANSITION && (dst == FEP_MULTIPLAYER || dst == FEP_MULTIPLAYER_START ||
+			                           src == FEP_MULTIPLAYER || src == FEP_MULTIPLAYER_START));
+		return onMpPage ? 1 : 0;
+	}
+	const int curLevel = GAME.GetCurrentLevel();
+	return (GAME.IsMultiplayer() && curLevel >= 850 && curLevel <= 899) ? 1 : 0;
 }
 
 extern "C" void PortCeMultiBeDrawMpStartStatus(float transition)
@@ -2004,6 +2050,7 @@ extern "C" int PortCeMultiBeCareerPrefGet(int, int) { return 0; }
 extern "C" void PortCeMultiBeCareerPrefSet(int, int, int) {}
 extern "C" void PortCeMultiBeOnConfirmedKill(void *, void *) {}
 extern "C" int PortCeMultiBeHandleDeath(void *) { return 0; }
+extern "C" int PortCeMultiBeIsAuxEngine(const void *) { return 0; }
 extern "C" int PortCeMultiBeActive(void) { return 0; }
 extern "C" int PortCeMultiBeIsAuxDeathCam(int) { return 0; }
 extern "C" int PortCeMultiBeWinningTeam(void) { return -1; }

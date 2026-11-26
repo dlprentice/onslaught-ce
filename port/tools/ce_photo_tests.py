@@ -51,7 +51,8 @@ BUILT_ON_PHOTO = ("0137-ce-save-failed-notice.patch", "0162-commander-map-hooks.
                   "0285-ce-playunit-hud.patch",  # its Hud.cpp hunk anchors on 0133's CePhotoDrawScope block
                   "0381-ce-perf-surf-museum-fixes.patch",  # its DXEngine.cpp hunk anchors on 0265
                   "0385-ce-flagship-duel.patch",  # its ltshell.cpp hunk anchors on 0162/0206
-                  "0387-ce-single-viewport-mp.patch")  # its Hud.cpp & game.cpp hunks anchor on 0235
+                  "0387-ce-single-viewport-mp.patch",  # its Hud.cpp & game.cpp hunks anchor on 0235
+                  "0397-ce-audio-pause-museum-shader-fixes.patch")  # its DXEngine.cpp & game.cpp hunks anchor on 0381
 PHOTO = ROOT / "port/game/ce_photo.cpp"
 PHOTO_H = ROOT / "port/game/ce_photo.h"
 OVERLAY_H = ROOT / "port/game/ce_overlay_box.h"

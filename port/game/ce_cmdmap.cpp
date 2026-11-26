@@ -5047,6 +5047,8 @@ void PortCeCmdFrame()
 #endif
 }
 
+void CeCommanderLevelEnd();
+
 // The level is ending (CGame::ShutdownRestartLoop): put back what opening changed.
 void PortCeCmdLevelEnd()
 {
@@ -5062,6 +5064,7 @@ void PortCeCmdLevelEnd()
     gActiveNoticeRectValid = false;
     gActiveHelpRectValid = false;
     CeCmdUnitOrdersWorldEnd();
+    CeCommanderLevelEnd();
     CePlayUnitLevelEnd();
     gStrategicOwner.Reset();
 	Close();

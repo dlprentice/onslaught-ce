@@ -164,9 +164,15 @@ struct CeHookCommandQueue
 };
 template <class Fn> inline void CeHookApply(const char *point, const CeHookRow<Fn> *rows, CeHookCommandQueue *queue)
 {
-	for (int i = 0; i < queue->count; i++)
-		CeHookBroadcast(point, rows, (const CeHookCommand *)&queue->items[i]);
+	if (!queue || queue->count <= 0)
+		return;
+	const int n = (queue->count > CE_HOOK_COMMANDS) ? CE_HOOK_COMMANDS : queue->count;
+	CeHookCommand snapshot[CE_HOOK_COMMANDS];
+	for (int i = 0; i < n; i++)
+		snapshot[i] = queue->items[i];
 	queue->count = 0;
+	for (int i = 0; i < n; i++)
+		CeHookBroadcast(point, rows, (const CeHookCommand *)&snapshot[i]);
 }
 
 #endif

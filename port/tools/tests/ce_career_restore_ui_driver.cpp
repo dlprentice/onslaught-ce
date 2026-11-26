@@ -592,13 +592,13 @@ static void uncertain() {
   look();
   EXPECT(gFlow.phase == CE_RESTORE_IDLE);
 }
-// Built with the Windows storage source and wording (host build only).
+// Built with the Windows host stand-in storage source (returns empty stamp / Unsupported on non-Windows host).
 static void unsupported() {
   EXPECT(openCard()); // the read-only preview still works
   look();
   EXPECT(gView.careers == 1);
-  EXPECT(gFlow.offer == CE_RESTORE_OFFER_WINDOWS);
-  EXPECT(std::strstr(gFlow.message, "unavailable on Windows") != nullptr);
+  EXPECT(gFlow.offer == CE_RESTORE_OFFER_UNBOUND);
+  EXPECT(std::strstr(gFlow.message, "could not be held safely") != nullptr);
   EXPECT(!CeRestoreUiBegin(0, &kAuthority));
   frames(5);
   look();

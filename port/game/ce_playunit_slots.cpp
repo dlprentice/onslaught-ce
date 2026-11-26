@@ -19,11 +19,17 @@
 #include <string.h>
 
 extern bool PortCeLayer();
+extern "C" int PortCePlayUnitIsDriven(const void *unit) __attribute__((weak));
 
 namespace
 {
 
 CePlayUnitSlotsCore gSlots;
+
+bool IsHumanDrivenUnit(const CUnit *u)
+{
+	return u && PortCePlayUnitIsDriven && PortCePlayUnitIsDriven(u) != 0;
+}
 
 bool IsNormalSquad(CSquad *squad)
 {
@@ -69,7 +75,9 @@ void ReturnUnitToWorld(const CeUnitPossessionSlot &lease)
 		return;
 	if ((int)u->GetAllegiance() != lease.allegiance)
 		return;
-	if (u->GetAIState() != AI_OFF)
+	if (IsHumanDrivenUnit(u))
+		return;
+	if (u->GetAIState() != AI_ONF)
 		return;
 
 	u->GoToPoint(u->GetPos(), FALSE);
@@ -99,6 +107,7 @@ int CePlayUnitSlotsListTakeable(int allegiance, CePlayUnitSlotCandidate *out, in
 	for (CUnit *u = it.First(); u && count < max; u = it.Next())
 	{
 		if (u->IsA(THING_TYPE_BATTLE_ENGINE)) continue;
+		if (IsHumanDrivenUnit(u)) continue;
 		const CeEntityHandle h = CeEntityHandleLookup(u);
 		if (h == kCeEntityHandleInvalid) continue;
 		if (gSlots.IsUnitLeased(h)) continue;
@@ -134,25 +143,54 @@ bool CePlayUnitSlotTake(uint8_t slot, int allegiance, CeEntityHandle unitHandle,
 		if (outReason) *outReason = "unit unavailable";
 		return false;
 	}
+	// Never steal a unit actively driven by the human Play-Any-Unit pilot (per-unit check).
+	const bool humanOwns = IsHumanDrivenUnit(u);
+	const CeUnitPossessionSlot *curLease = gSlots.Get(slot);
+	const bool hadPrev = (curLease && curLease->active);
+	const CeUnitPossessionSlot prevLease = hadPrev ? *curLease : CeUnitPossessionSlot{};
+
+	// Re-taking the unit already leased by this slot keeps its saved squad/AI state intact.
+	if (hadPrev && prevLease.unitHandle == unitHandle)
+	{
+		if (!toggleOn)
+		{
+			if (outReason) *outReason = "play-unit toggle is off";
+			return false;
+		}
+		if (humanOwns)
+		{
+			CePlayUnitSlotRelease(slot);
+			if (outReason) *outReason = "unit owned by human pilot";
+			return false;
+		}
+		if (u->IsDying() || u->IsShuttingDown() || u->GetLife() <= 0.f || (int)u->GetAllegiance() != allegiance)
+		{
+			CePlayUnitSlotRelease(slot);
+			if (outReason) *outReason = "unit unavailable";
+			return false;
+		}
+		u->SetAIState(AI_ONF);
+		if (outReason) *outReason = nullptr;
+		return true;
+	}
+
 	CePlayUnitFacts facts;
 	FillFacts(u, allegiance, facts);
-	// Never steal a unit actively piloted by Player 0's human Play-Any-Unit driver.
-	const bool humanOwns = (slot != 0u && CePlayUnitOwnsPilot());
 	CSquad *sq = u->GetSquad();
 	const CeEntityHandle prevSqHandle = sq ? CeEntityHandleLookup(sq) : kCeEntityHandleInvalid;
 	const int prevAi = static_cast<int>(u->GetAIState());
 
-	// Release any previous lease owned by this slot first.
-	CeUnitPossessionSlot prevLease = {};
-	if (gSlots.Release(slot, &prevLease))
-		ReturnUnitToWorld(prevLease);
-
+	// Validate eligibility, contention, and human ownership BEFORE releasing any previous lease.
 	if (!gSlots.Take(slot, allegiance, unitHandle, prevSqHandle, prevAi, facts, toggleOn, humanOwns, outReason))
 		return false;
 
+	if (hadPrev && prevLease.unitHandle != unitHandle)
+		ReturnUnitToWorld(prevLease);
+
 	if (sq && IsNormalSquad(sq))
 		static_cast<CNormalSquad *>(sq)->Unknown4e6f70(u);
-	u->SetAIState(AI_OFF);
+	// Use AI_ONF (not AI_OFF) so AI-directed friendly units keep firing while executing GoToPoint().
+	u->SetAIState(AI_ONF);
 	return true;
 }
 
@@ -164,7 +202,8 @@ bool CePlayUnitSlotDrive(uint8_t slot, float goalX, float goalY, bool fire, floa
 	CeUnitPossessionSlot *s = gSlots.Mutable(slot);
 	if (!s || !s->active) return false;
 	CUnit *u = CeEntityHandleResolveUnit(s->unitHandle);
-	if (!u || u->IsDying() || u->IsShuttingDown() || u->GetLife() <= 0.f || (int)u->GetAllegiance() != s->allegiance)
+	if (!u || u->IsDying() || u->IsShuttingDown() || u->GetLife() <= 0.f ||
+	    (int)u->GetAllegiance() != s->allegiance || IsHumanDrivenUnit(u))
 	{
 		CePlayUnitSlotRelease(slot);
 		return false;
@@ -203,7 +242,8 @@ void CePlayUnitSlotsTick(uint32_t)
 		const CeUnitPossessionSlot *s = gSlots.Get(slot);
 		if (!s || !s->active) continue;
 		CUnit *u = CeEntityHandleResolveUnit(s->unitHandle);
-		if (!u || u->IsDying() || u->IsShuttingDown() || u->GetLife() <= 0.f || (int)u->GetAllegiance() != s->allegiance)
+		if (!u || u->IsDying() || u->IsShuttingDown() || u->GetLife() <= 0.f ||
+		    (int)u->GetAllegiance() != s->allegiance || IsHumanDrivenUnit(u))
 			CePlayUnitSlotRelease(slot);
 	}
 }

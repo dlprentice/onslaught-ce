@@ -53,7 +53,7 @@ PUBLIC_GUARDED_PATCHES = frozenset(("0190-ce-hud-4k.patch", "0085-public-device-
                                     "0235-ce-commander-one-screen.patch", "0262-ce-normal-quit-status.patch", "0278-ce-commander-unit-orders.patch",
                                     "0285-ce-playunit-hud.patch", "0303-ce-hook-level-begin.patch", "0338-surface-point-order.patch",
                                     "0369-ce-multibe-controller-slots.patch", "0381-ce-perf-surf-museum-fixes.patch",
-                                    "0387-ce-single-viewport-mp.patch"))
+                                    "0387-ce-single-viewport-mp.patch", "0397-ce-audio-pause-museum-shader-fixes.patch"))
 
 
 def strip(text):

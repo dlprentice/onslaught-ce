@@ -1265,6 +1265,105 @@ static void TestWireInputWhitelistAndHashOverdue() {
             Check(!host.Poll(100) && host.State() == CE_ONLINE_STATE_ERROR,
                   "host rejects forged guest BUTTON_PAUSE wire input");
         }
+
+        // Gamepad + centered mouse axis pair on same button (mirrors CE_WorldLockstepValidInput):
+        // {btn, MOUSE_AXIS, 0.f} immediately followed by {btn, BINDING, val in [-1, 1]} MUST be accepted
+        // and roundtrip losslessly, while triples, nonzero mouse pairs, reversed pairs, and out-of-order
+        // pairs MUST be rejected.
+        {
+            CE_WorldInput gpMouse = {};
+            gpMouse.count = 4u;
+            gpMouse.actions[0].button = 25u;
+            gpMouse.actions[0].source = CE_WORLD_ACTION_MOUSE_AXIS;
+            gpMouse.actions[0].value = 0.0f;
+            gpMouse.actions[1].button = 25u;
+            gpMouse.actions[1].source = CE_WORLD_ACTION_BINDING;
+            gpMouse.actions[1].value = 0.75f;
+            gpMouse.actions[2].button = 27u;
+            gpMouse.actions[2].source = CE_WORLD_ACTION_MOUSE_AXIS;
+            gpMouse.actions[2].value = 0.0f;
+            gpMouse.actions[3].button = 27u;
+            gpMouse.actions[3].source = CE_WORLD_ACTION_BINDING;
+            gpMouse.actions[3].value = -0.5f;
+
+            CeOnlineWireInput wire = {};
+            Check(CeOnlineWireInput::FromWorldInput(gpMouse, &wire), "accepts gamepad + centered mouse pair");
+            Check(wire.IsValid(), "gamepad + centered mouse wire input IsValid()");
+
+            uint8_t compactBuf[CeOnlineWireInput::kWireBytes] = {};
+            size_t compactLen = 0u;
+            Check(wire.EncodeCompactBE(compactBuf, sizeof(compactBuf), &compactLen) && compactLen > 0u,
+                  "compact encode gamepad + centered mouse pair");
+            CeOnlineWireInput decoded = {};
+            Check(decoded.DecodeCompactBE(compactBuf, compactLen),
+                  "compact decode gamepad + centered mouse pair");
+            CE_WorldInput roundtrip = {};
+            decoded.ToWorldInput(&roundtrip);
+            Check(WorldInputsBitEqual(gpMouse, roundtrip),
+                  "gamepad + centered mouse pair roundtrips bit-for-bit");
+
+            // Full fixed-width codec roundtrip
+            uint8_t fixedBuf[CeOnlineWireInput::kWireBytes] = {};
+            wire.EncodeBE(fixedBuf);
+            CeOnlineWireInput fixedDec = {};
+            fixedDec.DecodeBE(fixedBuf);
+            Check(fixedDec.IsValid(),
+                  "fixed-width decode gamepad + centered mouse pair");
+
+            // Negative 1: triple for same button rejected
+            CE_WorldInput triple = gpMouse;
+            triple.count = 3u;
+            triple.actions[2].button = 25u;
+            triple.actions[2].source = CE_WORLD_ACTION_BINDING;
+            triple.actions[2].value = 0.25f;
+            CeOnlineWireInput badWire = {};
+            Check(!CeOnlineWireInput::FromWorldInput(triple, &badWire), "rejects triple on same button");
+            badWire = wire;
+            badWire.count = 3u;
+            badWire.actions[2].button = 25u;
+            badWire.actions[2].source = CE_WORLD_ACTION_BINDING;
+            badWire.actions[2].value_bits = CeOnlineWireInput::FloatToBits(0.25f);
+            badWire.actions[3] = {};
+            Check(!badWire.IsValid(), "IsValid rejects triple on same button");
+
+            // Negative 2: nonzero mouse axis paired with binding rejected
+            CE_WorldInput nonzeroMouse = gpMouse;
+            nonzeroMouse.count = 2u;
+            nonzeroMouse.actions[0].value = 0.05f;
+            Check(!CeOnlineWireInput::FromWorldInput(nonzeroMouse, &badWire), "rejects nonzero mouse+binding pair");
+            badWire = wire;
+            badWire.count = 2u;
+            badWire.actions[0].value_bits = CeOnlineWireInput::FloatToBits(0.05f);
+            badWire.actions[2] = {};
+            badWire.actions[3] = {};
+            Check(!badWire.IsValid(), "IsValid rejects nonzero mouse+binding pair");
+
+            // Negative 3: reversed pair (BINDING then MOUSE_AXIS) rejected
+            CE_WorldInput reversed = {};
+            reversed.count = 2u;
+            reversed.actions[0].button = 25u;
+            reversed.actions[0].source = CE_WORLD_ACTION_BINDING;
+            reversed.actions[0].value = 0.5f;
+            reversed.actions[1].button = 25u;
+            reversed.actions[1].source = CE_WORLD_ACTION_MOUSE_AXIS;
+            reversed.actions[1].value = 0.0f;
+            Check(!CeOnlineWireInput::FromWorldInput(reversed, &badWire), "rejects reversed binding+mouse pair");
+
+            // Negative 4: out-of-order pair rejected (27 pair before 25 pair)
+            CE_WorldInput ooo = {};
+            ooo.count = 4u;
+            ooo.actions[0] = gpMouse.actions[2];
+            ooo.actions[1] = gpMouse.actions[3];
+            ooo.actions[2] = gpMouse.actions[0];
+            ooo.actions[3] = gpMouse.actions[1];
+            Check(!CeOnlineWireInput::FromWorldInput(ooo, &badWire), "rejects out-of-order pair");
+
+            // Negative 5: out-of-range binding value in second half of pair rejected
+            CE_WorldInput badVal = gpMouse;
+            badVal.count = 2u;
+            badVal.actions[1].value = 1.5f;
+            Check(!CeOnlineWireInput::FromWorldInput(badVal, &badWire), "rejects out-of-range binding value in pair");
+        }
     }
 
     // 2. L3-P1-7a: Mid-match disconnect clears dropped peer from prior pending HashFrame::expectedMask

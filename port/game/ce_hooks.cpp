@@ -102,6 +102,8 @@ extern "C" void				PortCeMuspellCockpitLevelEnd(void) __attribute__((weak));
 extern "C" bool				PortCeWorldProviderHandleSource(CeWorldSourceReq *req) __attribute__((weak));
 extern "C" void				PortCeSanctuaryProjectileIntercept(CeProjectileIntercept *ev) __attribute__((weak));
 extern "C" void				PortCePlayerHooksAct(uint32_t sim_tick) __attribute__((weak));
+extern "C" void				PortCePlayerHooksLevelReset(void) __attribute__((weak));
+extern "C" void				PortCeAiStrategistShutdown(void) __attribute__((weak));
 
 static void CeHookGamepadBeginCycle() { PortCeGamepadBeginCycle(); }
 static void CeHookPaletteLevelEnd(int, int) { PortCePaletteClose(); }
@@ -404,6 +406,16 @@ static void CeHookPlayerHooksAct(uint32_t sim_tick)
 	if (PortCePlayerHooksAct)
 		PortCePlayerHooksAct(sim_tick);
 }
+static void CeHookPlayerHooksLevelEnd(int, int)
+{
+	if (PortCePlayerHooksLevelReset)
+		PortCePlayerHooksLevelReset();
+}
+static void CeHookAiStrategistExit(CeHookExitSite)
+{
+	if (PortCeAiStrategistShutdown)
+		PortCeAiStrategistShutdown();
+}
 
 // ---- the table: per point, its handlers in the order they run ----
 // A row: {slot, "name", CE_HOOK_SIM or CE_HOOK_RENDER, CE_GATE_VERSION or CE_GATE_LAYER, CE_MODE_..., function},
@@ -413,6 +425,7 @@ static constexpr CeHookRow<CeHookVoidFn> kBoot[] = {
 };
 CE_HOOK_CHECK(kBoot, CE_HOOK_SIM, CE_DISPATCH_ORDERED_BROADCAST, "boot");
 static constexpr CeHookRow<CeHookExitFn> kExit[] = {
+	{10, "ai_strategist_shutdown", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookAiStrategistExit},
 	CE_HOOK_END
 };
 CE_HOOK_CHECK(kExit, CE_HOOK_SIM, CE_DISPATCH_ORDERED_BROADCAST, "exit");
@@ -434,6 +447,7 @@ static constexpr CeHookRow<CeHookLevelEndFn> kLevelEnd[] = {
 	{80, "living_sandbox_level_end", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookLivingSandboxLevelEnd},
 	{85, "flagship_duel_level_end", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookFlagshipDuelLevelEnd},
 	{90, "muspell_cockpit_level_end", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookMuspellCockpitLevelEnd},
+	{92, "player_hooks_level_end", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookPlayerHooksLevelEnd},
 	{95, "entity_handles_level_end", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookEntityHandlesLevelEnd},
 	CE_HOOK_END
 };
@@ -521,8 +535,8 @@ static constexpr CeHookRow<CeHookFocusFn> kHudFocus[] = {
 };
 CE_HOOK_CHECK(kHudFocus, CE_HOOK_RENDER, CE_DISPATCH_OVERRIDE_CHAIN, "hud_focus");
 static constexpr CeHookRow<CeHookUnitSpawnFn> kUnitSpawn[] = {
+	{5, "entity_handles_unit_spawn", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookEntityHandlesUnitSpawn},
 	{10, "multibe_unit_spawn", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookMultiBeUnitSpawn},
-	{20, "entity_handles_unit_spawn", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookEntityHandlesUnitSpawn},
 	{30, "carrier_clash_unit_spawn", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookCarrierClashUnitSpawn},
 	{40, "living_sandbox_unit_spawn", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookLivingSandboxUnitSpawn},
 	{50, "flagship_duel_unit_spawn", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookFlagshipDuelUnitSpawn},
@@ -579,8 +593,8 @@ uint32_t CeHooksStepGameplayTick(void) { return ++gCeGameplaySimTick; }
 
 void ce_hook_boot() { CeHookBroadcast("boot", kBoot); }
 void ce_hook_exit(CeHookExitSite site) { CeHookBroadcast("exit", kExit, site); }
-void ce_hook_level_begin(int level) { gCeGameplaySimTick = 0u; CeHookBroadcast("level_begin", kLevelBegin, level); }
-void ce_hook_level_end(int level, int quit) { gCeGameplaySimTick = 0u; CeHookBroadcast("level_end", kLevelEnd, level, quit); }
+void ce_hook_level_begin(int level) { gCommands.count = 0; gCeGameplaySimTick = 0u; CeHookBroadcast("level_begin", kLevelBegin, level); }
+void ce_hook_level_end(int level, int quit) { gCommands.count = 0; gCeGameplaySimTick = 0u; CeHookBroadcast("level_end", kLevelEnd, level, quit); }
 void ce_hook_tick_pre() { CeHookBroadcast("tick_pre", kTickPre); }
 void ce_hook_tick_post() { CeHookApply("tick_post", kTickPost, &gCommands); }
 bool ce_hook_command_push(const CeHookCommand &command) { return gCommands.Push(command); }
@@ -589,7 +603,7 @@ bool ce_hook_key_capture(unsigned char key, bool repeat) { return CeHookFirstMat
 void ce_hook_draw_world(CPlayer *player, int viewpoint) { CeHookBroadcast("draw_world", kDrawWorld, player, viewpoint); }
 void ce_hook_draw_hud(CPlayer *player, int viewpoint) { CeHookBroadcast("draw_hud", kDrawHud, player, viewpoint); }
 void ce_hook_draw_overlay() { CeHookBroadcast("draw_overlay", kDrawOverlay); }
-void ce_hook_menu_rows(CeMenuEvent event, CeMenuPage *page) { CeHookBroadcast("menu_rows", kMenuRows, event, page); }
+void ce_hook_menu_rows(CeMenuEvent event, CeMenuPage *page) { if (!page) return; CeHookBroadcast("menu_rows", kMenuRows, event, page); }
 void ce_hook_save_gate(CeHookSaveTarget target, CCareer *career, char *dest, int size) { CeHookFilter("save_gate", kSaveGate, target, career, dest, size); }
 void ce_hook_audio_clock(CeHookAudioEvent event, unsigned bytes)
 {
@@ -608,12 +622,12 @@ CBattleEngine *ce_hook_hud_focus(CPlayer *player, CBattleEngine *be)
 }
 void ce_hook_unit_spawn(CUnit *unit, CInitThing *init) { CeHookBroadcast("unit_spawn", kUnitSpawn, unit, init); }
 void ce_hook_unit_destroyed(CUnit *unit) { CeHookBroadcast("unit_destroyed", kUnitDestroyed, unit); }
-void ce_hook_spawner_trigger(CeSpawnerTrigger *trigger) { CeHookFilter("spawner_trigger", kSpawnerTrigger, trigger); }
+void ce_hook_spawner_trigger(CeSpawnerTrigger *trigger) { if (!trigger) return; CeHookFilter("spawner_trigger", kSpawnerTrigger, trigger); }
 void ce_hook_weapon_fire(CWeapon *weapon, CUnit *owner, CRound *round) { CeHookBroadcast("weapon_fire", kWeaponFire, weapon, owner, round); }
-void ce_hook_render_pass(const CeRenderPass *pass) { CeHookBroadcast("render_pass", kRenderPass, pass); }
-bool ce_hook_world_source(CeWorldSourceReq *req) { return CeHookFirstMatch("world_source", kWorldSource, req); }
-void ce_hook_projectile_intercept(CeProjectileIntercept *ev) { CeHookFilter("projectile_intercept", kProjectileIntercept, ev); }
-void ce_hook_unit_damage(const CeUnitDamage *ev) { CeHookBroadcast("unit_damage", kUnitDamage, ev); }
+void ce_hook_render_pass(const CeRenderPass *pass) { if (!pass) return; CeHookBroadcast("render_pass", kRenderPass, pass); }
+bool ce_hook_world_source(CeWorldSourceReq *req) { if (!req) return false; return CeHookFirstMatch("world_source", kWorldSource, req); }
+void ce_hook_projectile_intercept(CeProjectileIntercept *ev) { if (!ev) return; CeHookFilter("projectile_intercept", kProjectileIntercept, ev); }
+void ce_hook_unit_damage(const CeUnitDamage *ev) { if (!ev) return; CeHookBroadcast("unit_damage", kUnitDamage, ev); }
 void ce_hook_player_act(uint32_t sim_tick) { CeHookBroadcast("player_act", kPlayerAct, sim_tick); }
 
 extern "C" {

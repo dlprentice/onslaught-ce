@@ -65,7 +65,7 @@ if __name__=='__main__':
  hall=(ROOT/'port/game/ce_museum_hall.cpp').read_text()
  if 'HouseLightReset();' not in hall or 'StepHouseLight(gHouseLight, target, steps, GAME.IsPaused()' not in hall:
   raise SystemExit('FAIL: CeMuseumHallClear must reset house lights and HouseLight must hold while paused')
- if 'jambLo' not in cinema or 'headerLo = 5.06f' not in cinema or '(kBack - kFront) * 0.5f - 0.32f' not in cinema:
+ if 'jambLo' not in cinema or 'headerLo = 5.07f' not in cinema or '(kBack - kFront) * 0.5f - 0.32f' not in cinema:
   raise SystemExit('FAIL: Screening Room acoustic linings must trim cleanly outside Portal 6 jambs and proscenium wall')
  if 'g.current = kMatCinemaSconce;' not in cinema or 'g.current = kMatMuspellGlow;' in cinema:
   raise SystemExit('FAIL: Screening Room wall sconces must use kMatCinemaSconce so they dim during film playback')

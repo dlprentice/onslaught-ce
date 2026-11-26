@@ -1084,7 +1084,7 @@ void CeStarTransport::HandleAuthenticatedFrame(PeerSlot& slot, uint8_t channel,
     }
 
     case CeStarMsgType::Hash: {
-        if (channel != kChannelControl) { RejectPacket(); return; }
+        if (channel != kChannelInput) { RejectPacket(); return; }
         uint16_t from_slot = 0;
         uint32_t tick = 0;
         uint64_t h = 0;
@@ -1733,7 +1733,7 @@ bool CeStarTransport::SendHash(uint32_t tick, uint64_t state_hash) {
     PutU32(body, tick);
     PutU64(body, state_hash);
     if (config_.role == CeStarRole::Guest) {
-        const bool ok = SendFrameToSlot(slots_[0], kChannelControl, CeStarMsgType::Hash,
+        const bool ok = SendFrameToSlot(slots_[0], kChannelInput, CeStarMsgType::Hash,
                                         body.data(), body.size(), true);
         if (ok) enet_host_flush(host_);
         return ok;
@@ -1741,7 +1741,7 @@ bool CeStarTransport::SendHash(uint32_t tick, uint64_t state_hash) {
     bool any_ok = false;
     for (uint16_t s = 1; s <= config_.max_guests; ++s) {
         if (!slots_[s].authenticated) continue;
-        if (SendFrameToSlot(slots_[s], kChannelControl, CeStarMsgType::Hash,
+        if (SendFrameToSlot(slots_[s], kChannelInput, CeStarMsgType::Hash,
                             body.data(), body.size(), true)) {
             any_ok = true;
         } else if (slots_[s].peer) {

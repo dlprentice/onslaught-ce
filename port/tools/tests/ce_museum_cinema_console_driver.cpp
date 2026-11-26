@@ -746,32 +746,43 @@ void TestPlayAndStopCarryTheChosenIndex() {
     RigStep(&r, false);
     CHECK(r.out.prompt == Controls::kPromptStop && r.out.playing == 2);
 
-    // Choosing another film leaves the one on the screen alone.
+    // Stepping Next/Previous while a film plays immediately switches and plays the newly chosen film.
     RigClick(&r, Controls::kRegionPrevious);
-    CHECK(r.out.selected == 1 && r.playing == 2 && r.opens == 1u && r.stops == 0u);
+    CHECK(r.out.command == Controls::kCommandPlay && r.out.index == 1 && r.out.selected == 1);
+    CHECK(r.action.play && r.action.hasIndex && r.action.index == 1u && !r.action.select);
+    CHECK(r.opened == 1 && r.opens == 2u && r.playing == 1 && r.stops == 0u);
     RigAim(&r, Controls::kRegionPlay);
     RigStep(&r, false);
-    CHECK(r.out.prompt == Controls::kPromptPlay);
+    CHECK(r.out.prompt == Controls::kPromptStop && r.out.playing == 1);
 
-    // Play then opens the chosen one, not the one that was running.
-    RigClick(&r, Controls::kRegionPlay);
-    CHECK(r.out.command == Controls::kCommandPlay && r.out.index == 1);
-    CHECK(r.opened == 1 && r.opens == 2u && r.playing == 1);
+    // Next while playing auto-switches forward to film 2.
+    RigClick(&r, Controls::kRegionNext);
+    CHECK(r.out.command == Controls::kCommandPlay && r.out.index == 2 && r.out.selected == 2);
+    CHECK(r.opened == 2 && r.opens == 3u && r.playing == 2 && r.stops == 0u);
 
-    // The same control now stops it.
+    // The Play/Stop control stops the active film.
     RigClick(&r, Controls::kRegionPlay);
     CHECK(r.out.command == Controls::kCommandStop && r.out.playing == -1);
     CHECK(r.action.stop && !r.action.play && !r.action.hasIndex);
     CHECK(r.decoder == Controls::kDecoderStopped && r.playing == -1 && r.stops == 1u);
 
-    // A film that ran to its end is played again from the same control.
+    // Stepping while stopped selects without starting playback.
+    RigClick(&r, Controls::kRegionPrevious);
+    CHECK(r.out.command == Controls::kCommandSelect && r.out.index == 1 && r.out.selected == 1);
+    CHECK(r.opens == 3u && r.decoder == Controls::kDecoderStopped);
+
+    // A film that ran to its end is played again from Play, and Next/Previous while ended only selects.
     RigClick(&r, Controls::kRegionPlay);
-    CHECK(r.opened == 1 && r.opens == 3u);
+    CHECK(r.opened == 1 && r.opens == 4u);
     r.decoder = Controls::kDecoderEnded;
     RigStep(&r, false);
     CHECK(r.out.prompt == Controls::kPromptPlay && r.out.playing == 1);
+    RigClick(&r, Controls::kRegionNext);
+    CHECK(r.out.command == Controls::kCommandSelect && r.out.index == 2 && r.opens == 4u && r.playing == 1);
+    RigClick(&r, Controls::kRegionPrevious);
+    CHECK(r.out.command == Controls::kCommandSelect && r.out.index == 1 && r.opens == 4u && r.playing == 1);
     RigClick(&r, Controls::kRegionPlay);
-    CHECK(r.action.play && r.action.index == 1u && r.opens == 4u);
+    CHECK(r.action.play && r.action.index == 1u && r.opens == 5u);
     CHECK(r.decoder == Controls::kDecoderPlaying);
 }
 
@@ -1265,9 +1276,13 @@ void TestPanelNamesTheChosenAndTheShownFilm() {
     CHECK(display.showStop && display.lamp == Console::kLampPlaying);
     CHECK(display.focus == Controls::kRegionPlay && display.usable && display.multipleFilms);
 
-    // Another film is chosen while that one runs: both are named, apart.
+    // Stepping Next while playing auto-switches playback to the new film immediately.
     RigClick(&r, Controls::kRegionNext);
     RigClick(&r, Controls::kRegionNext);
+    CHECK(r.out.selected == 3 && r.playing == 3);
+
+    // If the host reports another film still on screen than the chosen one, both are named apart.
+    r.playing = 1;
     RigAim(&r, Controls::kRegionPlay);
     RigStep(&r, false);
     CHECK(r.out.selected == 3 && r.playing == 1);

@@ -1,0 +1,287 @@
+--- a/pcsoundmanager.cpp
++++ b/pcsoundmanager.cpp
+@@ -228,7 +228,13 @@
+ 
+ 		SETUP_HISTORY.AddMessage("Sound using %d voices", mNumChannels);
+ 
++#ifdef CE_VERSION
++		extern bool PortCeLayer();
++		extern bool PortRecording();
++		sPitchVarianceEnabled = (PortCeLayer() && !PortRecording()) ? true : (CLIPARAMS.mHWSound != 0);
++#else
+ 		sPitchVarianceEnabled = (CLIPARAMS.mHWSound != 0);
++#endif
+ 	}
+ 
+     // Create the primary buffer
+@@ -847,6 +853,12 @@
+ 
+ float CPCSoundManager::GetSampleLength(CSample *sample)	// FUNCTION: 0x00517c60
+ {
++#ifdef CE_VERSION
++	extern bool PortCeLayer();
++	extern bool PortRecording();
++	if (PortCeLayer() && !PortRecording())
++		return(((float) ((CPCSample *) sample)->mWavSize)/(44100.0f*2.0f));
++#endif
+ 	return(((float) ((CPCSample *) sample)->mWavSize)/(GetSampleRate()*2.0f));
+ }
+ 
+--- a/game.cpp
++++ b/game.cpp
+@@ -1907,7 +1907,7 @@
+ 
+ #ifdef CE_VERSION
+ 	CeWaterReflectionBeginFrame();
+-	if (!IsMultiplayer() && !PortCeMuseumAuthoredMap() && !PortCeSanctuarySkipOutdoorWorld() &&
++	if (CePolicyFullDetailShading() && !PortCeMuseumAuthoredMap() && !PortCeSanctuarySkipOutdoorWorld() &&
+ 		EXTRA_GEFORCE_FX_FEATURES.mValue && ENGINE.GetLandscape() &&
+ 		ENGINE.GetLandscape()->mMirrorTexture && ENGINE.GetLandscape()->mDepthSurface && !gMirrorPass)
+ 	{
+@@ -2661,6 +2661,25 @@
+ #endif
+ 
+ 
++#ifdef CE_VERSION
++		extern bool PortCeLayer();
++		extern bool PortRecording();
++		if (num_renders > 0 && mPause && !mFreeCameraOn[0] && mQuit == QT_NONE &&
++			PortCeLayer() && !PortRecording()
++#ifndef CE_NETWORK_OFF
++			&& !CE_LockstepActive()
++#endif
++			)
++		{
++			ResetMouseTransientState();
++			EQuitType ceQt = PLATFORM.Process();
++			if (ceQt != QT_NONE)
++			{
++				SetQuit(ceQt);
++				break;
++			}
++		}
++#endif
+ 		if (mQuit == QT_NONE)
+ 		{
+ 			GAME.Render( num_renders );
+--- a/DXEngine.cpp
++++ b/DXEngine.cpp
+@@ -750,6 +750,10 @@
+ 		return S_OK;
+ #endif
+ 	SetNearZ(DEFAULT_Z_NEAR);	// retail PC: every viewpoint starts from the default near plane (0053e307)
++#ifdef CE_VERSION
++	if (PortCeMuseumAuthoredMap())
++		SetNearZ(0.25f);
++#endif
+ 
+ 	if (!mCamera[viewpoint])
+ 		return S_OK;  //! JCL - er..!!
+@@ -865,6 +869,10 @@
+ 		// finish setting up the fog
+ 		RENDERINFO.SetFogColour(MAP.GetFog());
+ 		RENDERINFO.SetFogDensity(MapFogDensity(MAP));	// STAND-IN (spelling), see MapFogDensity
++#ifdef CE_VERSION
++		if (PortCeMuseumAuthoredMap())
++			RENDERINFO.SetFogEnabled(false);
++#endif
+ 
+ 		//********************************************************
+ 		//** SKY
+@@ -1055,9 +1063,12 @@
+ 			}
+ 
+ 			{
++#ifdef CE_VERSION
++				if (!PortCeMuseumAuthoredMap())
++#endif
+ 				RENDERINFO.SetFogEnabled(true);
+ #ifdef CE_VERSION
+-				if (!PortCeSanctuarySkipOutdoorWorld())
++				if (!PortCeSanctuarySkipOutdoorWorld() && !PortCeMuseumAuthoredMap())
+ 				{
+ #endif
+ 				PARTICLE_MANAGER.RenderMeshes();	// needs to be here to share the lighting model..
+@@ -1072,7 +1083,7 @@
+ // Render effects
+ 
+ #ifdef CE_VERSION
+-	if (!PortCeSanctuarySkipOutdoorWorld())
++	if (!PortCeSanctuarySkipOutdoorWorld() && !PortCeMuseumAuthoredMap())
+ 	{
+ #endif
+ 	CAtmospherics::RenderAll();
+--- a/DXLandscape.cpp
++++ b/DXLandscape.cpp
+@@ -230,7 +230,7 @@
+ 
+ void CeLandscapeSyncWaterReflection(CDXLandscape *land)
+ {
+-	if (!land || !land->mMirrorTexture || !land->mDepthSurface || GAME.IsMultiplayer() || !EXTRA_GEFORCE_FX_FEATURES.mValue)
++	if (!land || !land->mMirrorTexture || !land->mDepthSurface || !CePolicyFullDetailShading() || !EXTRA_GEFORCE_FX_FEATURES.mValue)
+ 		return;
+ 	CeRenderTargetQualitySetHardwareCaps(LT.m_d3dCaps.MaxTextureWidth, LT.m_d3dCaps.MaxTextureHeight);
+ 	if (!CeWaterReflectionNeedsRebuild())
+@@ -259,6 +259,36 @@
+ 	CeWaterReflectionSetAllocatedRes(CeWaterReflectionActiveRes(), attempt);
+ }
+ 
++static void CeEnsureLandscapeVertexShader(CDXLandscape *land)
++{
++	if (!land || land->mVertexShader || !land->mPixelShader || !land->mUnknown08 || !land->mDepthSurface)
++		return;
++	land->mVertexShader = CVertexShader::Create("LandscapeShader", (DWORD *)
++		"vs.1.1\n"
++		"\n"
++		"dcl_position v0\n"
++		"dcl_texcoord v7\n"
++		"\n"
++		"; world/view/projection\n"
++		"\n"
++		"dp4 r2.x, v0, c[4]\n"
++		"dp4 r2.y, v0, c[5]\n"
++		"dp4 r2.z, v0, c[6]\n"
++		"dp4 r2.w, v0, c[7]\n"
++		"\n"
++		"dp4 r3.x, r2, c[8]\n"
++		"dp4 r3.y, r2, c[9]\n"
++		"dp4 r3.z, r2, c[10]\n"
++		"dp4 r3.w, r2, c[11]\n"
++		"\n"
++		"mov oPos, r3\n"
++		"\n"
++		"; stick z in the red, green and blue channels\n"
++		"mul oT0.xyz, r3.z, c[95].z\n"
++		"mov oT0.w, c[94].w\n", 4, NULL, 0, -1);
++	PortCeGraphicsResourceOutcome(CE_GRAPHICS_LANDSCAPE_VERTEX, land->mVertexShader && land->mVertexShader->mShader);
++}
++
+ class CeLandscapeMirrorDeviceHook : public DeviceObject
+ {
+ public:
+@@ -292,7 +322,7 @@
+ 	HRESULT RestoreDeviceObjects()
+ 	{
+ 		if (mOwner && mOwner->mPixelShader && !mOwner->mMirrorTexture &&
+-			GEFORCE_FX_POWER.mValue && !GAME.IsMultiplayer() && EXTRA_GEFORCE_FX_FEATURES.mValue)
++			GEFORCE_FX_POWER.mValue && CePolicyFullDetailShading() && EXTRA_GEFORCE_FX_FEATURES.mValue)
+ 		{
+ 			CeRenderTargetQualitySetHardwareCaps(LT.m_d3dCaps.MaxTextureWidth, LT.m_d3dCaps.MaxTextureHeight);
+ 			CeWaterReflectionBeginFrame();
+@@ -319,6 +349,7 @@
+ 					mOwner->mMirrorTexture = newMirror;
+ 					mOwner->mDepthTexture = newDepthTex;
+ 					mOwner->mDepthSurface = newDepthSurf;
++					CeEnsureLandscapeVertexShader(mOwner);
+ 					CeWaterReflectionSetAllocatedRes(res, attempt);
+ 					return S_OK;
+ 				}
+@@ -376,7 +407,11 @@
+ #endif
+ 	InitDeviceObjects();
+ 
++#ifdef CE_VERSION
++	if (!mVertexShader && mPixelShader && mUnknown08 && mDepthSurface)
++#else
+ 	if (mPixelShader && mUnknown08 && mDepthSurface)
++#endif
+ 		{
+ 		mVertexShader = CVertexShader::Create("LandscapeShader", (DWORD *)
+ 			"vs.1.1\n"
+@@ -413,11 +448,13 @@
+ HRESULT CDXLandscape::InitDeviceObjects()	// FUNCTION: 0x00544cc0
+ {
+ #ifdef CE_VERSION
+-	const bool ceExtraRequested = PortCeGraphicsRequested() && !GAME.IsMultiplayer();
+-#endif
+-
++	const bool ceExtraRequested = PortCeGraphicsRequested() && CePolicyFullDetailShading();
++	if ((GEFORCE_FX_POWER.mValue) && (CePolicyFullDetailShading()) && (EXTRA_GEFORCE_FX_FEATURES.mValue) &&
++		(LT.m_d3dCaps.PixelShaderVersion >= D3DPS_VERSION(2, 0)))
++#else
+ 	if ((GEFORCE_FX_POWER.mValue) && (!GAME.IsMultiplayer()) && (EXTRA_GEFORCE_FX_FEATURES.mValue) &&
+ 		(LT.m_d3dCaps.PixelShaderVersion >= D3DPS_VERSION(2, 0)))
++#endif
+ 	{
+ 		if (FAILED(LT.D3D_CreatePixelShader("ps_2_0\ndcl t0\nmov oC0, t0\n", &mPixelShader)))
+ 			{
+@@ -503,6 +540,7 @@
+ 		}
+ 		if (!ceMirrorAllocated)
+ 			CeWaterReflectionSetAllocatedRes((mMirrorTexture && mDepthSurface) ? 256u : 0u, ceMirrorAttempt);
++		CeEnsureLandscapeVertexShader(this);
+ #else
+ 		HRESULT	hr = LT.D3D_CreateTextureNoCheck(256, 256, 1, D3DUSAGE_RENDERTARGET, D3DFMT_R5G6B5, D3DPOOL_DEFAULT, &mMirrorTexture);
+ 		if (FAILED(hr))
+@@ -1329,8 +1367,13 @@
+ 
+ bool CDXLandscape::RenderShadowMap(int viewpoint)	// FUNCTION: 0x00546490
+ {
++#ifdef CE_VERSION
++	if (!EXTRA_GEFORCE_FX_FEATURES.mValue || !CePolicyFullDetailShading() || !mUnknown08 || !mDepthSurface || !mPixelShader ||
++		!mVertexShader || !EXTRA_GEFORCE_FX_FEATURES.mValue)
++#else
+ 	if (!EXTRA_GEFORCE_FX_FEATURES.mValue || GAME.IsMultiplayer() || !mUnknown08 || !mDepthSurface || !mPixelShader ||
+ 		!mVertexShader || !EXTRA_GEFORCE_FX_FEATURES.mValue)
++#endif
+ 		return false;
+ 
+ 	CLandscapeView	*view = &mViews[viewpoint];
+--- a/DXParticleTexture.cpp
++++ b/DXParticleTexture.cpp
+@@ -225,8 +225,13 @@
+ #else
+ 	const bool ceF1Kill = PLATFORM.KeyOn(DIK_F1);
+ #endif
++#ifdef CE_VERSION
++	if (CePolicyFullDetailShading() && !ceF1Kill && EXTRA_GEFORCE_FX_FEATURES.mValue && ENGINE.GetLandscape() &&
++		ENGINE.GetLandscape()->mUnknown08 && ENGINE.GetLandscape()->mVertexShader && sPixelShader && sVertexShader)
++#else
+ 	if (!GAME.IsMultiplayer() && !ceF1Kill && EXTRA_GEFORCE_FX_FEATURES.mValue && ENGINE.GetLandscape() &&
+ 		ENGINE.GetLandscape()->mUnknown08 && sPixelShader && sVertexShader)
++#endif
+ 	{
+ 		if (SUCCEEDED(LT.GetDevice()->SetPixelShader(sPixelShader)))
+ 		{
+--- a/DXWater.cpp
++++ b/DXWater.cpp
+@@ -533,7 +533,11 @@
+ #else
+ 	const bool ceF1Kill = PLATFORM.KeyOn(DIK_F1);
+ #endif
++#ifdef CE_VERSION
++	WATER_USE_SHADER = CePolicyFullDetailShading() && sPixelShader && sShader && ENGINE.GetLandscape() &&
++#else
+ 	WATER_USE_SHADER = !GAME.IsMultiplayer() && sPixelShader && sShader && ENGINE.GetLandscape() &&
++#endif
+ 		ENGINE.GetLandscape()->mMirrorTexture && !gMirrorPass && !ceF1Kill;
+ 
+ 	if (WATER_METHOD.Try(2))
+--- a/PDSimpleSprite.cpp
++++ b/PDSimpleSprite.cpp
+@@ -1347,7 +1347,11 @@
+ #else
+ 				const bool ceF1Kill = PLATFORM.KeyOn(DIK_F1);
+ #endif
++#ifdef CE_VERSION
++				rippled = (!ceF1Kill) && (EXTRA_GEFORCE_FX_FEATURES.mValue) && CePolicyFullDetailShading() &&
++#else
+ 				rippled = (!ceF1Kill) && (EXTRA_GEFORCE_FX_FEATURES.mValue) && (!GAME.IsMultiplayer()) &&
++#endif
+ 					IsBlastInitials(this) &&
+ 					((!strcmp(mName, "Mech Pulse Bolt Blast Aug")) || (!strcmp(mName, "Mech Pulse Bolt Blast Large")));
+ 			}
+--- a/ParticleDescriptor.cpp
++++ b/ParticleDescriptor.cpp
+@@ -831,7 +831,11 @@
+ #else
+ 	const bool ceF1Kill = PLATFORM.KeyOn(DIK_F1);
+ #endif
++#ifdef CE_VERSION
++	if ((mName[1] == 'e') && (mName[5] == 'P') && EXTRA_GEFORCE_FX_FEATURES.mValue && CePolicyFullDetailShading() &&
++#else
+ 	if ((mName[1] == 'e') && (mName[5] == 'P') && EXTRA_GEFORCE_FX_FEATURES.mValue && !GAME.IsMultiplayer() &&
++#endif
+ 		!ceF1Kill && ((mName[26] == 'L') || (mName[26] == 'A')) &&
+ 		(!strcmp(mName, "Mech Pulse Bolt Explosion Large") || !strcmp(mName, "Mech Pulse Bolt Explosion Aug")))
+ 		fx = true;

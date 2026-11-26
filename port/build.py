@@ -916,7 +916,15 @@ def ninja_file(target, sources, syntax, link, sdl_marker=None):
                 where = Path("third-party") / s.name
             obj = out / "port" / (str(where) + ".o")
             objs.append(obj)
-            lines.append(f"build {obj}: {rule} {s}" + (f" | {sdl_marker}" if sdl_marker else "") +
+            port_implicit = []
+            if rule in ("cxx", "qcxx"):
+                port_implicit.append(allocator_syms(target, out))
+            if rule == "qcxx":
+                port_implicit.append(PORT / "tools/qifist.py")
+            if sdl_marker:
+                port_implicit.append(sdl_marker)
+            port_deps = " | " + " ".join(map(str, port_implicit)) if port_implicit else ""
+            lines.append(f"build {obj}: {rule} {s}{port_deps}" +
                          (f"\n  extra = {extra}" if extra else ""))
         if target == "windows":
             res = out / "port/platform/windows/utf8.rc.o"

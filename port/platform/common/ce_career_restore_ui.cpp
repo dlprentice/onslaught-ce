@@ -113,8 +113,6 @@ bool card(CeRestoreCard &out) {
 CeRestoreOffer offerOf(const CeRestoreCard &c) {
   if (!c.open || !c.verified || c.careers.empty())
     return CE_RESTORE_OFFER_NONE;
-  if (kWindows)
-    return CE_RESTORE_OFFER_WINDOWS;
   if (c.stamp.empty())
     return CE_RESTORE_OFFER_UNBOUND;
   if (c.root.empty())
@@ -260,8 +258,9 @@ void words(const State &s, CeRestoreOffer offer, const char *&message,
     return;
   case CE_RESTORE_OUT_UNSUPPORTED:
     if (kWindows) {
-      message = "Restore as New is unavailable on Windows.";
-      detail = "Nothing was written. You can still inspect this backup.";
+      message = "This drive is not supported for restore.";
+      detail = "Nothing was written. Keep saves and backups on a local NTFS "
+               "drive.";
     } else {
       message = "This storage is not safe for a restore.";
       detail = "Nothing was written. Keep saves and backups on a local disk.";

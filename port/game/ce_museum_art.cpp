@@ -358,6 +358,22 @@ void EnsureAllCanvasesLoaded() {
                    loaded, static_cast<unsigned>(kManifestCount), missing, trimmed);
 }
 
+constexpr unsigned kMaxFlatQuadsPerCanvas = 10u; // 4 outer frame + 4 mat + 1 plaque + 1 optional fallback
+
+DWORD LerpArtColour(DWORD a, DWORD b, float t) {
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    auto ch = [&](unsigned sh) -> DWORD {
+        const float va = float((a >> sh) & 255u);
+        const float vb = float((b >> sh) & 255u);
+        int iv = static_cast<int>(va + (vb - va) * t + 0.5f);
+        if (iv < 0) iv = 0;
+        if (iv > 255) iv = 255;
+        return static_cast<DWORD>(iv) << sh;
+    };
+    return 0xff000000u | ch(16) | ch(8) | ch(0);
+}
+
 void BuildFrameGeometry(float floorZ, ArtFlatVertex *verts, uint16_t *indices,
                         unsigned *outVerts, unsigned *outIndices) {
     unsigned vAt = 0u, iAt = 0u;
@@ -370,6 +386,26 @@ void BuildFrameGeometry(float floorZ, ArtFlatVertex *verts, uint16_t *indices,
         verts[vAt++] = {cx + rx * hw, cy + ry * hw, cz + hh, botCol};
         indices[iAt++] = base + 0u; indices[iAt++] = base + 1u; indices[iAt++] = base + 2u;
         indices[iAt++] = base + 1u; indices[iAt++] = base + 3u; indices[iAt++] = base + 2u;
+    };
+    // Hollow 4-strip border around exact opening (inW, inH) so zero frame or mat pixels lie behind artwork.
+    auto pushHollowBorder = [&](float cx, float cy, float cz, float rx, float ry,
+                                float outW, float outH, float inW, float inH,
+                                DWORD topCol, DWORD botCol) {
+        const float spanH = 2.0f * outH;
+        const float tTop = spanH > 1e-5f ? (outH - inH) / spanH : 0.0f;
+        const float tBot = spanH > 1e-5f ? (outH + inH) / spanH : 1.0f;
+        const DWORD cInTop = LerpArtColour(topCol, botCol, tTop);
+        const DWORD cInBot = LerpArtColour(topCol, botCol, tBot);
+        const float stripH = 0.5f * (outH - inH);
+        const float midH = 0.5f * (outH + inH);
+        const float stripW = 0.5f * (outW - inW);
+        const float midW = 0.5f * (outW + inW);
+        // Top strip (cz - outH .. cz - inH), bottom strip (cz + inH .. cz + outH)
+        pushQuad(cx, cy, cz - midH, rx, ry, outW, stripH, topCol, cInTop);
+        pushQuad(cx, cy, cz + midH, rx, ry, outW, stripH, cInBot, botCol);
+        // Left & right strips strictly between top and bottom strips (cz - inH .. cz + inH)
+        pushQuad(cx - rx * midW, cy - ry * midW, cz, rx, ry, stripW, inH, cInTop, cInBot);
+        pushQuad(cx + rx * midW, cy + ry * midW, cz, rx, ry, stripW, inH, cInTop, cInBot);
     };
 
     for (unsigned i = 0; i < kManifestCount; ++i) {
@@ -390,13 +426,15 @@ void BuildFrameGeometry(float floorZ, ArtFlatVertex *verts, uint16_t *indices,
         const float frameW = matW + 0.055f;
         const float frameH = matH + 0.055f;
 
-        // Warm brushed-brass outer frame, warm linen/charcoal archival mat, brass curator plaque below frame
-        pushQuad(wx + sp.normalX * 0.025f, wy + sp.normalY * 0.025f, wz, rx, ry, frameW, frameH, 0xffd6b064, 0xff9a783a);
-        pushQuad(wx + sp.normalX * 0.042f, wy + sp.normalY * 0.042f, wz, rx, ry, matW, matH, 0xff2a3038, 0xff1e242b);
+        // Hollow brushed-brass outer frame & hollow charcoal archival mat (zero backing pixels behind artwork!)
+        pushHollowBorder(wx + sp.normalX * 0.025f, wy + sp.normalY * 0.025f, wz, rx, ry,
+                         frameW, frameH, matW, matH, 0xffd6b064, 0xff9a783a);
+        pushHollowBorder(wx + sp.normalX * 0.042f, wy + sp.normalY * 0.042f, wz, rx, ry,
+                         matW, matH, ext.halfW, ext.halfH, 0xff2a3038, 0xff1e242b);
         pushQuad(wx + sp.normalX * 0.046f, wy + sp.normalY * 0.046f, wz + frameH + 0.11f, rx, ry, 0.28f, 0.055f, 0xffd6b064, 0xffa4803e);
         if (!slot.texture) {
             pushQuad(wx + sp.normalX * 0.060f, wy + sp.normalY * 0.060f, wz, rx, ry,
-                     sp.maxWidth * 0.44f, sp.maxHeight * 0.44f, 0xff5a636c, 0xff464e56);
+                     ext.halfW, ext.halfH, 0xff5a636c, 0xff464e56);
         }
     }
     *outVerts = vAt;
@@ -438,8 +476,8 @@ void EnsureFrameGpuBuffers(IDirect3DDevice9 *dev, float floorZ) {
     gArt.gpuFloorZ = floorZ;
     gArt.gpuAttempted = true;
 
-    const unsigned maxFlatVerts = kManifestCount * 4u * 4u;
-    const unsigned maxFlatIdx = kManifestCount * 4u * 6u;
+    const unsigned maxFlatVerts = kManifestCount * kMaxFlatQuadsPerCanvas * 4u;
+    const unsigned maxFlatIdx = kManifestCount * kMaxFlatQuadsPerCanvas * 6u;
     ArtFlatVertex *flatVerts = static_cast<ArtFlatVertex *>(std::malloc(maxFlatVerts * sizeof(ArtFlatVertex)));
     uint16_t *flatIdx = static_cast<uint16_t *>(std::malloc(maxFlatIdx * sizeof(uint16_t)));
     if (flatVerts && flatIdx) {
@@ -576,6 +614,9 @@ void RuntimeDraw(float floorZ, bool ownStateBlock) {
     dev->SetTexture(1, NULL);
     dev->SetRenderState(D3DRS_LIGHTING, FALSE);
     dev->SetRenderState(D3DRS_FOGENABLE, FALSE);
+    dev->SetRenderState(D3DRS_RANGEFOGENABLE, FALSE);
+    dev->SetRenderState(D3DRS_FOGVERTEXMODE, D3DFOG_NONE);
+    dev->SetRenderState(D3DRS_FOGTABLEMODE, D3DFOG_NONE);
     dev->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE);
     dev->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
     dev->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
@@ -607,8 +648,8 @@ void RuntimeDraw(float floorZ, bool ownStateBlock) {
         dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, gArt.frameVertCount, 0, gArt.frameIdxCount / 3u);
     } else {
         // CPU fallback if GPU buffer allocation failed.
-        const unsigned maxFlatVerts = kManifestCount * 4u * 4u;
-        const unsigned maxFlatIdx = kManifestCount * 4u * 6u;
+        const unsigned maxFlatVerts = kManifestCount * kMaxFlatQuadsPerCanvas * 4u;
+        const unsigned maxFlatIdx = kManifestCount * kMaxFlatQuadsPerCanvas * 6u;
         ArtFlatVertex *fv = static_cast<ArtFlatVertex *>(std::malloc(maxFlatVerts * sizeof(ArtFlatVertex)));
         uint16_t *fi = static_cast<uint16_t *>(std::malloc(maxFlatIdx * sizeof(uint16_t)));
         if (fv && fi) {

@@ -286,6 +286,9 @@ struct CitadelState {
     IDirect3DIndexBuffer9 *shadowIb;
     IDirect3DVertexBuffer9 *beamVb;
     IDirect3DIndexBuffer9 *beamIb;
+    IDirect3DStateBlock9 *stateBlock;
+    IDirect3DDevice9 *stateBlockDevice;
+    uint64_t stateBlockGen;
 
     // Runtime-loaded official retail faction emblem murals (zero retail bytes in git).
     IDirect3DDevice9 *emblemDevice;
@@ -633,7 +636,7 @@ static void EmitBox(float x0, float y0, float h0, float x1, float y1, float h1,
     if (ny > 12u) ny = 12u;
 
     EmitHorizontalGrid(x0, y0, x1, y1, gCitadel->floorZ - h1, -1.0f, nx, ny, mat, col);
-    if (includeBottom || h0 > 2.2f)
+    if (includeBottom)
         EmitHorizontalGrid(x0, y0, x1, y1, gCitadel->floorZ - h0, 1.0f, nx, ny, mat, col);
 
     EmitVerticalWall(x0, y0, x1, y0, h0, h1,  0.0f, -1.0f, mat, col);
@@ -866,7 +869,7 @@ static void EmitFactionBanner(float cx, float cy, Material trimMat, Material glo
     const float bx1 = faceEast ? (cx + 0.26f) : (cx - 0.10f);
     EmitBox(bx0, cy - 0.92f, 2.25f, bx1, cy + 0.92f, 5.94f, trimMat, 0xffffffff);
     EmitBox(bx0 + s * 0.02f, cy - 0.18f, 2.55f, bx1 + s * 0.02f, cy + 0.18f, 5.65f, glowMat, kLightCol);
-    EmitBox(bx0 + s * 0.02f, cy - 0.96f, 2.15f, bx1 + s * 0.02f, cy + 0.96f, 2.32f, kMatBrass, kBrassCol);
+    EmitBox(bx0 + s * 0.02f, cy - 0.96f, 2.15f, bx1 + s * 0.02f, cy + 0.96f, 2.32f, kMatBrass, kBrassCol, true);
 }
 
 static void SortMaterials() {
@@ -961,18 +964,18 @@ static void BuildCitadelArchitecture() {
     EmitBox(72.5f, 429.8f, -10.0f, 151.5f, 431.5f, 0.00f, kMatPierBase, kSlateCol);
     EmitBox(72.5f, 354.2f, -10.0f,  74.2f, 429.8f, 0.00f, kMatPierBase, kSlateCol);
     EmitBox(149.8f, 354.2f, -10.0f, 151.5f, 429.8f, 0.00f, kMatPierBase, kSlateCol);
-    // Non-overlapping outer stone coping curb strictly outside [74..150]x[354..430]
+    // Non-overlapping outer stone coping curb strictly outside [74..150]x[354..430] with 2 cm cavity from retaining skirt faces
     // (flush with 0.025f terrace pavers and 2.5 cm cleanly above 0.00f plateau terrain).
-    EmitBox(72.5f, 352.5f, 0.00f, 119.5f, 354.0f, 0.025f, kMatPierBase, kSlateCol);
-    EmitBox(136.5f, 352.5f, 0.00f, 151.5f, 354.0f, 0.025f, kMatPierBase, kSlateCol);
-    EmitBox(72.5f, 430.0f, 0.00f, 151.5f, 431.5f, 0.025f, kMatPierBase, kSlateCol);
-    EmitBox(72.5f, 354.0f, 0.00f,  74.0f, 430.0f, 0.025f, kMatPierBase, kSlateCol);
-    EmitBox(150.0f, 354.0f, 0.00f, 151.5f, 430.0f, 0.025f, kMatPierBase, kSlateCol);
-    // Brass bastion belt-course trim around the outer terrace cornice (clean mitered corners)
-    EmitBox(72.3f, 352.3f, -0.45f, 119.5f, 352.7f, -0.05f, kMatBrass, kBrassCol);
-    EmitBox(136.5f, 352.3f, -0.45f, 151.7f, 352.7f, -0.05f, kMatBrass, kBrassCol);
-    EmitBox(151.3f, 352.7f, -0.45f, 151.7f, 431.7f, -0.05f, kMatBrass, kBrassCol);
-    EmitBox(72.3f, 352.7f, -0.45f,  72.7f, 431.7f, -0.05f, kMatBrass, kBrassCol);
+    EmitBox(72.52f, 352.52f, 0.00f, 119.48f, 353.98f, 0.025f, kMatPierBase, kSlateCol);
+    EmitBox(136.52f, 352.52f, 0.00f, 151.48f, 353.98f, 0.025f, kMatPierBase, kSlateCol);
+    EmitBox(72.52f, 430.02f, 0.00f, 151.48f, 431.48f, 0.025f, kMatPierBase, kSlateCol);
+    EmitBox(72.52f, 354.02f, 0.00f,  73.98f, 429.98f, 0.025f, kMatPierBase, kSlateCol);
+    EmitBox(150.02f, 354.02f, 0.00f, 151.48f, 429.98f, 0.025f, kMatPierBase, kSlateCol);
+    // Brass bastion belt-course trim around the outer terrace cornice (2 cm clear of retaining walls & ramp edges)
+    EmitBox(72.3f, 352.3f, -0.45f, 119.48f, 352.48f, -0.05f, kMatBrass, kBrassCol);
+    EmitBox(136.52f, 352.3f, -0.45f, 151.7f, 352.48f, -0.05f, kMatBrass, kBrassCol);
+    EmitBox(151.52f, 352.7f, -0.45f, 151.7f, 431.7f, -0.05f, kMatBrass, kBrassCol);
+    EmitBox(72.3f, 352.7f, -0.45f,  72.48f, 431.7f, -0.05f, kMatBrass, kBrassCol);
     EmitBox(72.7f, 431.3f, -0.45f, 151.3f, 431.7f, -0.05f, kMatBrass, kBrassCol);
 
     // Ceremonial Basalt-and-Brass Wayfinding Runners (trimmed cleanly at Rotunda ring,
@@ -1044,16 +1047,16 @@ static void BuildCitadelArchitecture() {
         // Cobalt mid shaft
         EmitBox(mx - 0.52f, my - 0.52f, 8.47f, mx + 0.52f, my + 0.52f, 16.00f, kMatForsetiTrim, 0xfff2f8ff);
         // Long signal yard reaching north-west over the terrace, two hanging lamps
-        EmitBox(mx - 4.10f, my - 0.14f, 15.20f, mx + 0.50f, my + 0.14f, 15.48f, kMatBrass, kBrassCol);
-        EmitBox(mx - 3.86f, my - 0.20f, 14.52f, mx - 3.46f, my + 0.20f, 15.19f, kMatForsetiGlow, 0xff80ecff);
-        EmitBox(mx - 2.36f, my - 0.20f, 14.72f, mx - 1.96f, my + 0.20f, 15.19f, kMatForsetiGlow, 0xff80ecff);
+        EmitBox(mx - 4.10f, my - 0.14f, 15.20f, mx + 0.50f, my + 0.14f, 15.48f, kMatBrass, kBrassCol, true);
+        EmitBox(mx - 3.86f, my - 0.20f, 14.52f, mx - 3.46f, my + 0.20f, 15.19f, kMatForsetiGlow, 0xff80ecff, true);
+        EmitBox(mx - 2.36f, my - 0.20f, 14.72f, mx - 1.96f, my + 0.20f, 15.19f, kMatForsetiGlow, 0xff80ecff, true);
         EmitBox(mx - 0.62f, my - 0.62f, 16.00f, mx + 0.62f, my + 0.62f, 16.20f, kMatBrass, kBrassCol);
         // Forged-iron upper shaft and a short counter-yard on the valley side
         EmitBox(mx - 0.30f, my - 0.30f, 16.21f, mx + 0.30f, my + 0.30f, 22.00f, kMatForgedIron, kIronCol);
-        EmitBox(mx - 0.12f, my - 1.90f, 19.00f, mx + 0.12f, my + 0.28f, 19.22f, kMatBrass, kBrassCol);
-        EmitBox(mx - 0.18f, my - 1.86f, 18.52f, mx + 0.18f, my - 1.50f, 18.99f, kMatWarmGlow, kLightCol);
+        EmitBox(mx - 0.12f, my - 1.90f, 19.00f, mx + 0.12f, my + 0.28f, 19.22f, kMatBrass, kBrassCol, true);
+        EmitBox(mx - 0.18f, my - 1.86f, 18.52f, mx + 0.18f, my - 1.50f, 18.99f, kMatWarmGlow, kLightCol, true);
         // Lantern crow's nest, spire and beacon tip
-        EmitBox(mx - 0.95f, my - 0.95f, 22.00f, mx + 0.95f, my + 0.95f, 22.18f, kMatBrass, kBrassCol);
+        EmitBox(mx - 0.95f, my - 0.95f, 22.00f, mx + 0.95f, my + 0.95f, 22.18f, kMatBrass, kBrassCol, true);
         EmitBox(mx - 0.42f, my - 0.42f, 22.19f, mx + 0.42f, my + 0.42f, 23.30f, kMatWarmGlow, kLightCol);
         EmitBox(mx - 0.56f, my - 0.56f, 23.31f, mx + 0.56f, my + 0.56f, 23.50f, kMatBrass, kBrassCol);
         EmitBox(mx - 0.10f, my - 0.10f, 23.51f, mx + 0.10f, my + 0.10f, 25.60f, kMatForgedIron, kIronCol);
@@ -1115,9 +1118,9 @@ static void BuildCitadelArchitecture() {
     }
     // Open-air stone & brushed-brass entablature architraves crowning the West & East colonnades
     EmitBox(81.1f,  373.0f, 9.20f,  82.9f, 415.0f, 10.15f, kMatLimestone, 0xfff6f1e7, true);
-    EmitBox(80.95f, 372.9f, 9.48f,  83.05f, 415.1f, 9.72f, kMatBrass, kBrassCol);
+    EmitBox(80.95f, 372.9f, 9.48f,  83.05f, 415.1f, 9.72f, kMatBrass, kBrassCol, true);
     EmitBox(141.1f, 373.0f, 9.20f, 142.9f, 415.0f, 10.15f, kMatLimestone, 0xfff6f1e7, true);
-    EmitBox(140.95f, 372.9f, 9.48f, 143.05f, 415.1f, 9.72f, kMatBrass, kBrassCol);
+    EmitBox(140.95f, 372.9f, 9.48f, 143.05f, 415.1f, 9.72f, kMatBrass, kBrassCol, true);
     // Twin grand overlook portal pylons opening wide onto the battlefield vista
     EmitDressedColumn(95.0f,  375.5f, 0.56f, 8.60f, kMatSlatePier, kMatBrass, kMatWarmGlow);
     EmitDressedColumn(129.0f, 375.5f, 0.56f, 8.60f, kMatSlatePier, kMatBrass, kMatWarmGlow);
@@ -1125,17 +1128,17 @@ static void BuildCitadelArchitecture() {
     // -------------------------------------------------------------------------
     // 5. West Forseti Memorial Alcove & East Muspell Memorial Alcove + Banners
     // -------------------------------------------------------------------------
-    // West Forseti Commonwealth Memorial Alcove (X = 82.2..94.0, Y = 384..400, open facing East)
-    EmitBox(82.2f, 383.6f, 0.02f, 83.8f, 400.4f, 8.39f, kMatLimestone, 0xfff4f7fa);
-    EmitBox(83.8f, 383.6f, 0.02f, 87.2f, 384.8f, 8.39f, kMatLimestone, 0xfff4f7fa);
-    EmitBox(83.8f, 399.2f, 0.02f, 87.2f, 400.4f, 8.39f, kMatLimestone, 0xfff4f7fa);
-    EmitBox(82.0f, 383.4f, 8.40f, 87.5f, 400.6f, 9.15f, kMatCofferCeiling, 0xffeef4fa, true);
-    EmitBox(83.8f, 385.0f, 1.20f, 84.15f, 399.0f, 7.60f, kMatForsetiTrim, 0xffe8f4ff);
-    EmitBox(84.15f, 385.6f, 7.35f, 84.35f, 398.4f, 7.55f, kMatForsetiGlow, 0xff80ecff);
-    EmitBox(84.15f, 385.6f, 1.25f, 84.35f, 398.4f, 1.45f, kMatForsetiGlow, 0xff80ecff);
+    // West Forseti Commonwealth Memorial Alcove (X = 82.2..94.0, Y = 384..400, open facing East; 2 cm cavity between layered faces)
+    EmitBox(82.20f, 383.60f, 0.02f, 83.80f, 400.40f, 8.39f, kMatLimestone, 0xfff4f7fa);
+    EmitBox(83.82f, 383.62f, 0.02f, 87.20f, 384.80f, 8.39f, kMatLimestone, 0xfff4f7fa);
+    EmitBox(83.82f, 399.20f, 0.02f, 87.20f, 400.38f, 8.39f, kMatLimestone, 0xfff4f7fa);
+    EmitBox(82.00f, 383.40f, 8.40f, 87.50f, 400.60f, 9.15f, kMatCofferCeiling, 0xffeef4fa, true);
+    EmitBox(83.82f, 385.00f, 1.20f, 84.15f, 399.00f, 7.60f, kMatForsetiTrim, 0xffe8f4ff);
+    EmitBox(84.17f, 385.60f, 7.35f, 84.35f, 398.40f, 7.55f, kMatForsetiGlow, 0xff80ecff, true);
+    EmitBox(84.17f, 385.60f, 1.25f, 84.35f, 398.40f, 1.45f, kMatForsetiGlow, 0xff80ecff, true);
     // Sculpted brushed-brass & charcoal archival mural frame for the official Forseti emblem
-    EmitBox(84.15f, 389.90f, 2.00f, 84.38f, 394.10f, 6.80f, kMatBrass, kBrassCol);
-    EmitBox(84.38f, 390.06f, 2.16f, 84.42f, 393.94f, 6.64f, kMatPierLine, kIronCol);
+    EmitBox(84.17f, 389.90f, 2.00f, 84.37f, 394.10f, 6.80f, kMatBrass, kBrassCol, true);
+    EmitBox(84.39f, 390.06f, 2.16f, 84.43f, 393.94f, 6.64f, kMatPierLine, kIronCol);
     // Forseti Ceremonial Honor Plinth
     AddContactShadow(kForsetiAlcoveX, kForsetiAlcoveY, 1.45f, 1.45f, 1.05f, 0.044f, 0.64f);
     EmitBox(kForsetiAlcoveX - 1.40f, kForsetiAlcoveY - 1.40f, 0.02f, kForsetiAlcoveX + 1.40f, kForsetiAlcoveY + 1.40f, 0.24f, kMatPierBase, kSlateCol);
@@ -1146,17 +1149,17 @@ static void BuildCitadelArchitecture() {
     EmitFactionBanner(88.0f, 378.0f, kMatForsetiTrim, kMatForsetiGlow, true);
     EmitFactionBanner(88.0f, 405.5f, kMatForsetiTrim, kMatForsetiGlow, true);
 
-    // East Muspell Dominion Memorial Alcove (X = 130.0..141.8, Y = 384..400, open facing West)
-    EmitBox(140.2f, 383.6f, 0.02f, 141.8f, 400.4f, 8.39f, kMatForgedIron, 0xffd0cac8);
-    EmitBox(136.8f, 383.6f, 0.02f, 140.2f, 384.8f, 8.39f, kMatForgedIron, 0xffd0cac8);
-    EmitBox(136.8f, 399.2f, 0.02f, 140.2f, 400.4f, 8.39f, kMatForgedIron, 0xffd0cac8);
-    EmitBox(136.5f, 383.4f, 8.40f, 142.0f, 400.6f, 9.15f, kMatCofferCeiling, 0xffd8d2d0, true);
-    EmitBox(139.85f, 385.0f, 1.20f, 140.2f, 399.0f, 7.60f, kMatMuspellTrim, 0xffffe8d8);
-    EmitBox(139.65f, 385.6f, 7.35f, 139.85f, 398.4f, 7.55f, kMatMuspellGlow, 0xffffa644);
-    EmitBox(139.65f, 385.6f, 1.25f, 139.85f, 398.4f, 1.45f, kMatMuspellGlow, 0xffffa644);
+    // East Muspell Dominion Memorial Alcove (X = 130.0..141.8, Y = 384..400, open facing West; 2 cm cavity between layered faces)
+    EmitBox(140.20f, 383.60f, 0.02f, 141.80f, 400.40f, 8.39f, kMatForgedIron, 0xffd0cac8);
+    EmitBox(136.80f, 383.62f, 0.02f, 140.18f, 384.80f, 8.39f, kMatForgedIron, 0xffd0cac8);
+    EmitBox(136.80f, 399.20f, 0.02f, 140.18f, 400.38f, 8.39f, kMatForgedIron, 0xffd0cac8);
+    EmitBox(136.50f, 383.40f, 8.40f, 142.00f, 400.60f, 9.15f, kMatCofferCeiling, 0xffd8d2d0, true);
+    EmitBox(139.85f, 385.00f, 1.20f, 140.18f, 399.00f, 7.60f, kMatMuspellTrim, 0xffffe8d8);
+    EmitBox(139.65f, 385.60f, 7.35f, 139.83f, 398.40f, 7.55f, kMatMuspellGlow, 0xffffa644, true);
+    EmitBox(139.65f, 385.60f, 1.25f, 139.83f, 398.40f, 1.45f, kMatMuspellGlow, 0xffffa644, true);
     // Sculpted brushed-brass & forged-iron archival mural frame for the official Muspell emblem
-    EmitBox(139.62f, 389.90f, 2.00f, 139.85f, 394.10f, 6.80f, kMatBrass, kBrassCol);
-    EmitBox(139.58f, 390.06f, 2.16f, 139.62f, 393.94f, 6.64f, kMatPierLine, kIronCol);
+    EmitBox(139.63f, 389.90f, 2.00f, 139.83f, 394.10f, 6.80f, kMatBrass, kBrassCol, true);
+    EmitBox(139.57f, 390.06f, 2.16f, 139.61f, 393.94f, 6.64f, kMatPierLine, kIronCol);
     // Muspell Ceremonial Basalt-and-Bronze Honor Plinth
     AddContactShadow(kMuspellAlcoveX, kMuspellAlcoveY, 1.45f, 1.45f, 1.05f, 0.044f, 0.64f);
     EmitBox(kMuspellAlcoveX - 1.40f, kMuspellAlcoveY - 1.40f, 0.02f, kMuspellAlcoveX + 1.40f, kMuspellAlcoveY + 1.40f, 0.24f, kMatPierLine, kIronCol);
@@ -1178,30 +1181,30 @@ static void BuildCitadelArchitecture() {
     EmitFloorGrid(109.68f, 409.90f, 109.80f, 425.6f, 0.056f, kMatWarmGlow, 2.5f, kLightCol);
     EmitFloorGrid(114.20f, 409.90f, 114.32f, 425.6f, 0.056f, kMatWarmGlow, 2.5f, kLightCol);
 
-    // Outer Limestone Architectural Shell + Inner Dark Acoustic Theater Lining
+    // Outer Limestone Architectural Shell + Inner Dark Acoustic Theater Lining (2-3 cm cavity separation)
     // South wall split around grand central doorway [109.5..114.5]
-    EmitBox(98.0f,  410.0f, 0.02f, 109.5f, 410.55f, 9.60f, kMatLimestone, 0xfff6f2e8);
-    EmitBox(114.5f, 410.0f, 0.02f, 126.0f, 410.55f, 9.60f, kMatLimestone, 0xfff6f2e8);
-    EmitBox(109.5f, 410.0f, 5.24f, 114.5f, 410.85f, 9.60f, kMatLimestone, 0xfff6f2e8, true);
-    // South interior acoustic backing
-    EmitBox(98.45f, 410.55f, 0.02f, 109.5f, 410.90f, 9.05f, kMatCinemaWall);
-    EmitBox(114.5f, 410.55f, 0.02f, 125.55f, 410.90f, 9.05f, kMatCinemaWall);
-    // West, East, and North exterior + interior acoustic walls
-    EmitBox(98.0f,  410.55f, 0.02f,  98.45f, 428.0f, 9.60f, kMatLimestone, 0xfff6f2e8);
-    EmitBox(98.45f, 410.90f, 0.02f,  98.85f, 427.55f, 9.05f, kMatCinemaWall);
-    EmitBox(125.55f, 410.55f, 0.02f, 126.0f, 428.0f, 9.60f, kMatLimestone, 0xfff6f2e8);
-    EmitBox(125.15f, 410.90f, 0.02f, 125.55f, 427.55f, 9.05f, kMatCinemaWall);
-    EmitBox(98.45f, 427.55f, 0.02f, 125.55f, 428.0f, 9.60f, kMatLimestone, 0xfff6f2e8);
-    EmitBox(98.85f, 427.15f, 0.02f, 125.15f, 427.55f, 9.05f, kMatCinemaWall);
+    EmitBox(98.00f, 410.00f, 0.02f, 109.50f, 410.55f, 9.60f, kMatLimestone, 0xfff6f2e8);
+    EmitBox(114.50f, 410.00f, 0.02f, 126.00f, 410.55f, 9.60f, kMatLimestone, 0xfff6f2e8);
+    EmitBox(109.52f, 410.02f, 5.24f, 114.48f, 410.85f, 9.60f, kMatLimestone, 0xfff6f2e8, true);
+    // South interior acoustic backing (3 cm cavity clear of exterior limestone shell)
+    EmitBox(98.48f, 410.58f, 0.02f, 109.48f, 410.90f, 9.05f, kMatCinemaWall);
+    EmitBox(114.52f, 410.58f, 0.02f, 125.52f, 410.90f, 9.05f, kMatCinemaWall);
+    // West, East, and North exterior + interior acoustic walls (2-3 cm cavity separation)
+    EmitBox(98.00f, 410.57f, 0.02f,  98.45f, 428.00f, 9.60f, kMatLimestone, 0xfff6f2e8);
+    EmitBox(98.48f, 410.93f, 0.02f,  98.85f, 427.12f, 9.05f, kMatCinemaWall);
+    EmitBox(125.55f, 410.57f, 0.02f, 126.00f, 428.00f, 9.60f, kMatLimestone, 0xfff6f2e8);
+    EmitBox(125.15f, 410.93f, 0.02f, 125.52f, 427.12f, 9.05f, kMatCinemaWall);
+    EmitBox(98.47f, 427.55f, 0.02f, 125.53f, 428.00f, 9.60f, kMatLimestone, 0xfff6f2e8);
+    EmitBox(98.88f, 427.15f, 0.02f, 125.12f, 427.52f, 9.05f, kMatCinemaWall);
 
     // Coffered Roof & Sealed Theater Ceiling (opaque above and below -> zero exterior light leak!)
     EmitHorizontalGrid(98.4f, 410.4f, 125.6f, 427.6f, gCitadel->floorZ - 9.00f, 1.0f, 10u, 8u, kMatCinemaCeiling);
     EmitBox(97.4f, 409.4f, 9.10f, 126.6f, 428.6f, 9.95f, kMatPierCap, 0xfffbf7ee, true);
     EmitBox(99.5f, 409.6f, 9.95f, 124.5f, 428.4f, 10.65f, kMatLimestone, 0xfff5f1e7);
-    EmitBox(97.2f, 409.2f, 9.25f, 126.8f, 409.6f, 9.52f, kMatBrass, kBrassCol);
+    EmitBox(97.2f, 409.2f, 9.25f, 126.8f, 409.6f, 9.52f, kMatBrass, kBrassCol, true);
     // Warm recessed ceiling cove lighting strips inside theater
-    EmitBox(99.2f, 411.5f, 8.78f, 99.5f, 426.5f, 8.95f, kMatWarmGlow, kLightCol);
-    EmitBox(124.5f, 411.5f, 8.78f, 124.8f, 426.5f, 8.95f, kMatWarmGlow, kLightCol);
+    EmitBox(99.2f, 411.5f, 8.78f, 99.5f, 426.5f, 8.95f, kMatWarmGlow, kLightCol, true);
+    EmitBox(124.5f, 411.5f, 8.78f, 124.8f, 426.5f, 8.95f, kMatWarmGlow, kLightCol, true);
     // Transverse ceiling coffer beams (1 cm clearance from ceiling & embedded brass underside trim)
     for (float by = 414.0f; by <= 424.5f; by += 3.5f) {
         EmitBox(98.9f, by - 0.28f, 8.55f, 125.1f, by + 0.28f, 8.99f, kMatSlatePier, kSlateCol, true);
@@ -1212,7 +1215,7 @@ static void BuildCitadelArchitecture() {
     EmitDressedColumn(108.9f, 409.7f, 0.44f, 9.09f, kMatSlatePier, kMatBrass, kMatWarmGlow);
     EmitDressedColumn(115.1f, 409.7f, 0.44f, 9.09f, kMatSlatePier, kMatBrass, kMatWarmGlow);
     EmitBox(108.3f, 409.2f, 5.20f, 115.7f, 410.4f, 5.78f, kMatBrass, kBrassCol, true);
-    EmitBox(109.2f, 409.15f, 5.36f, 114.8f, 409.30f, 5.56f, kMatWarmGlow, kLightCol);
+    EmitBox(109.2f, 409.15f, 5.36f, 114.8f, 409.30f, 5.56f, kMatWarmGlow, kLightCol, true);
     // Exterior facade flanking pilasters
     EmitDressedColumn(99.0f,  409.7f, 0.40f, 9.09f, kMatSlatePier, kMatBrass, kMatWarmGlow);
     EmitDressedColumn(125.0f, 409.7f, 0.40f, 9.09f, kMatSlatePier, kMatBrass, kMatWarmGlow);
@@ -1226,24 +1229,24 @@ static void BuildCitadelArchitecture() {
             const float sx0 = side < 0 ? 100.2f : 115.4f;
             const float sx1 = side < 0 ? 108.6f : 123.8f;
             EmitBox(sx0, y0, 0.02f, sx1, y1, deckH, kMatPierBase, kSlateCol);
-            // Bench seat cushion + backrest + brass armrest endcaps
-            EmitBox(sx0 + 0.3f, y0 + 0.65f, deckH, sx1 - 0.3f, y0 + 1.40f, deckH + 0.46f, kMatCinemaSeat);
-            EmitBox(sx0 + 0.3f, y0 + 0.32f, deckH + 0.35f, sx1 - 0.3f, y0 + 0.65f, deckH + 1.15f, kMatCinemaSeat);
-            EmitBox(sx0 + 0.18f, y0 + 0.30f, deckH, sx0 + 0.32f, y0 + 1.45f, deckH + 0.72f, kMatBrass, kBrassCol);
-            EmitBox(sx1 - 0.32f, y0 + 0.30f, deckH, sx1 - 0.18f, y0 + 1.45f, deckH + 0.72f, kMatBrass, kBrassCol);
+            // Bench seat cushion + backrest + brass armrest endcaps (2 cm separation between touching planes)
+            EmitBox(sx0 + 0.30f, y0 + 0.65f, deckH, sx1 - 0.30f, y0 + 1.40f, deckH + 0.46f, kMatCinemaSeat);
+            EmitBox(sx0 + 0.30f, y0 + 0.32f, deckH + 0.35f, sx1 - 0.30f, y0 + 0.63f, deckH + 1.15f, kMatCinemaSeat);
+            EmitBox(sx0 + 0.16f, y0 + 0.30f, deckH, sx0 + 0.28f, y0 + 1.45f, deckH + 0.72f, kMatBrass, kBrassCol);
+            EmitBox(sx1 - 0.28f, y0 + 0.30f, deckH, sx1 - 0.16f, y0 + 1.45f, deckH + 0.72f, kMatBrass, kBrassCol);
         }
     }
 
-    // Illuminated Widescreen Projection Screen Frame on North Wall (X in [102.8..121.2], Y = 426.9)
-    EmitBox(102.2f, 426.45f, 1.35f, 121.8f, 427.15f, 8.15f, kMatSlatePier, kSlateCol);
-    EmitBox(102.5f, 426.35f, 1.55f, 121.5f, 426.55f, 7.95f, kMatBrass, kBrassCol);
-    EmitBox(103.0f, 426.26f, 1.90f, 121.0f, 426.42f, 7.60f, kMatScreenGlass, 0xff283848);
-    // Warm proscenium stage deck beneath screen (nosing overhangs ends by 2 cm -> zero coplanar face)
-    EmitBox(100.5f, 424.6f, 0.02f, 123.5f, 427.15f, 0.55f, kMatPierBase, kSlateCol);
-    EmitBox(100.48f, 424.5f, 0.48f, 123.52f, 424.75f, 0.58f, kMatBrass, kBrassCol);
+    // Illuminated Widescreen Projection Screen Frame on North Wall (3 cm cavity between wall, slate, brass, and glass)
+    EmitBox(102.2f, 426.55f, 1.35f, 121.8f, 427.12f, 8.15f, kMatSlatePier, kSlateCol, true);
+    EmitBox(102.5f, 426.38f, 1.55f, 121.5f, 426.52f, 7.95f, kMatBrass, kBrassCol, true);
+    EmitBox(103.0f, 426.24f, 1.90f, 121.0f, 426.35f, 7.60f, kMatScreenGlass, 0xff283848, true);
+    // Warm proscenium stage deck beneath screen (3 cm clear of North acoustic wall, 2 cm clear of nosing)
+    EmitBox(100.5f, 424.60f, 0.02f, 123.5f, 427.12f, 0.55f, kMatPierBase, kSlateCol);
+    EmitBox(100.48f, 424.48f, 0.48f, 123.52f, 424.58f, 0.58f, kMatBrass, kBrassCol);
     // Overhead Cinema Projector Housing above doorway (keeps aisle 100% unobstructed)
     EmitBox(110.8f, 411.1f, 6.20f, 113.2f, 412.6f, 7.10f, kMatSlatePier, kSlateCol, true);
-    EmitBox(111.5f, 412.55f, 6.42f, 112.5f, 412.80f, 6.88f, kMatWarmGlow, kLightCol);
+    EmitBox(111.5f, 412.62f, 6.42f, 112.5f, 412.82f, 6.88f, kMatWarmGlow, kLightCol, true);
 
     SortMaterials();
 }
@@ -1510,7 +1513,6 @@ static void SetupCitadelLightRig(IDirect3DDevice9 *dev) {
 static void RestoreEngineRenderState(IDirect3DStateBlock9 *saved) {
     if (saved) {
         saved->Apply();
-        saved->Release();
     }
     LT.InvalidateAllStates();
     RENDERINFO.mWorldChanged = true;
@@ -1523,8 +1525,35 @@ static void RestoreEngineRenderState(IDirect3DStateBlock9 *saved) {
     RENDERINFO.Apply();
 }
 
+static void ReleaseCitadelStateBlock() {
+    if (!gCitadel) return;
+    if (gCitadel->stateBlock) {
+        gCitadel->stateBlock->Release();
+        gCitadel->stateBlock = NULL;
+    }
+    gCitadel->stateBlockDevice = NULL;
+    gCitadel->stateBlockGen = 0u;
+}
+
+static IDirect3DStateBlock9 *EnsureCitadelStateBlock(IDirect3DDevice9 *dev) {
+    if (!gCitadel || !dev) return NULL;
+    const uint64_t gen = CurrentCitadelDeviceGen();
+    if (gCitadel->stateBlock &&
+        (gCitadel->stateBlockDevice != dev || gCitadel->stateBlockGen != gen)) {
+        ReleaseCitadelStateBlock();
+    }
+    if (!gCitadel->stateBlock) {
+        if (SUCCEEDED(dev->CreateStateBlock(D3DSBT_ALL, &gCitadel->stateBlock)) && gCitadel->stateBlock) {
+            gCitadel->stateBlockDevice = dev;
+            gCitadel->stateBlockGen = gen;
+        }
+    }
+    return gCitadel->stateBlock;
+}
+
 static void ReleaseGpuBuffers() {
     if (!gCitadel) return;
+    ReleaseCitadelStateBlock();
     if (gCitadel->litVb) { gCitadel->litVb->Release(); gCitadel->litVb = NULL; }
     if (gCitadel->litIb) { gCitadel->litIb->Release(); gCitadel->litIb = NULL; }
     if (gCitadel->shadowVb) { gCitadel->shadowVb->Release(); gCitadel->shadowVb = NULL; }
@@ -2196,9 +2225,8 @@ void RuntimeDrawWorld() {
 
     if (!CitadelWithinDrawRange(gCitadel->floorZ)) return;
 
-    IDirect3DStateBlock9 *saved = NULL;
-    if (FAILED(dev->CreateStateBlock(D3DSBT_ALL, &saved)) || !saved) return;
-    if (FAILED(saved->Capture())) { saved->Release(); return; }
+    IDirect3DStateBlock9 *saved = EnsureCitadelStateBlock(dev);
+    if (!saved || FAILED(saved->Capture())) return;
 
     D3DMATRIX world = {}, view = {}, proj = {};
     world._11 = world._22 = world._33 = world._44 = 1.0f;
@@ -2277,9 +2305,8 @@ void RuntimeDrawWorld() {
         dev->SetRenderState(D3DRS_SPECULARENABLE, hasSpec ? TRUE : FALSE);
         dev->SetMaterial(&mat);
 
-        // Only flat floor inlays and flat glow strips receive depth bias; never 3D solid frames/trims like kMatBrass.
-        const bool isInlay = (m == kMatRunner || m == kMatWarmGlow ||
-                              m == kMatForsetiGlow || m == kMatMuspellGlow || m == kMatAquaGlow);
+        // Only flat floor inlays receive depth bias; never 3D brass trims or 3D glow boxes.
+        const bool isInlay = (m == kMatRunner);
         const float bias = isInlay ? -0.00002f : 0.0f;
         const float slope = isInlay ? -1.0f : 0.0f;
         dev->SetRenderState(D3DRS_DEPTHBIAS, *reinterpret_cast<const DWORD *>(&bias));
@@ -2392,9 +2419,8 @@ void RuntimeDrawDomeFx() {
     IDirect3DDevice9 *dev = LT.GetDevice();
     if (!dev) return;
 
-    IDirect3DStateBlock9 *saved = NULL;
-    if (FAILED(dev->CreateStateBlock(D3DSBT_ALL, &saved)) || !saved) return;
-    if (FAILED(saved->Capture())) { saved->Release(); return; }
+    IDirect3DStateBlock9 *saved = EnsureCitadelStateBlock(dev);
+    if (!saved || FAILED(saved->Capture())) return;
 
     D3DMATRIX world = {}, view = {}, proj = {};
     world._11 = world._22 = world._33 = world._44 = 1.0f;

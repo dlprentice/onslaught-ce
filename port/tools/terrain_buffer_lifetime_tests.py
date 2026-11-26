@@ -65,6 +65,7 @@ struct { bool freeCamera=false; bool IsFreeCameraOn(int){return freeCamera;} boo
 int PortCeCameraSplitAspect() { return GAME.IsMultiplayer() ? 1 : 0; }
 bool CePolicyUseHalfHeightAspect() { return PortCeCameraSplitAspect() != 0; }
 bool CePolicyIsSplitViewport() { return GAME.IsMultiplayer(); }
+bool CePolicyFullDetailShading() { return !GAME.IsMultiplayer(); }
 int CePolicyLandscapeViewCount() { return GAME.IsMultiplayer() ? 2 : 1; }
 struct IDirect3DIndexBuffer9 {
     static int nextID;

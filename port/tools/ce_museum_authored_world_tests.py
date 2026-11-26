@@ -117,10 +117,10 @@ def audit_grand_hall_alignment():
 
     # 4. Cohesive Atrium walls (gold frieze on all 4 sides, zero Forseti/Muspell dado strips on Atrium walls)
     atrium_sec = hall[hall.index("// 2. SKYLIT GRAND ATRIUM"):hall.index("// 3. FORSETI FORCES WING")]
-    need("LocalBox(-15.70f, 27.2f, 6.0f, -15.56f, 37.3f, 6.45f, floorZ, kMatTrim, kBrass);" in atrium_sec
-         and "LocalBox(15.56f, 27.2f, 6.0f, 15.70f, 37.3f, 6.45f, floorZ, kMatTrim, kBrass);" in atrium_sec
-         and "LocalBox(-15.70f, 44.7f, 6.0f, -15.56f, 51.56f, 6.45f, floorZ, kMatTrim, kBrass);" in atrium_sec
-         and "LocalBox(15.56f, 44.7f, 6.0f, 15.70f, 51.56f, 6.45f, floorZ, kMatTrim, kBrass);" in atrium_sec
+    need("LocalBox(-15.70f, 27.38f, 6.0f, -15.58f, 37.12f, 6.45f, floorZ, kMatTrim, kBrass, true);" in atrium_sec
+         and "LocalBox(15.58f, 27.38f, 6.0f, 15.70f, 37.12f, 6.45f, floorZ, kMatTrim, kBrass, true);" in atrium_sec
+         and "LocalBox(-15.70f, 44.88f, 6.0f, -15.58f, 51.56f, 6.45f, floorZ, kMatTrim, kBrass, true);" in atrium_sec
+         and "LocalBox(15.58f, 44.88f, 6.0f, 15.70f, 51.56f, 6.45f, floorZ, kMatTrim, kBrass, true);" in atrium_sec
          and "kMatForsetiTrim);" not in atrium_sec and "kMatMuspellTrim);" not in atrium_sec,
          "Grand Atrium uses cohesive warm limestone & continuous gold frieze around all 4 sides")
 
@@ -128,8 +128,8 @@ def audit_grand_hall_alignment():
     hangar_sec = hall[hall.index("// 5. AVIATION & NAVAL HANGAR"):hall.index("// 6. CONCEPT ART GALLERY")]
     need("EmitSweptRibY(y - 0.36f, y + 0.36f, wRibX, wRibZ, floorZ, kMatPier, kSlate);" in hangar_sec
          and "EmitSweptRibY(y - 0.36f, y + 0.36f, eRibX, eRibZ, floorZ, kMatPier, kSlate);" in hangar_sec
-         and "LocalBox(-19.65f, 52.5f, 9.6f, -19.45f, 77.5f, 10.4f, floorZ, kMatTrim, kBrass);" in hangar_sec
-         and "LocalBox( 19.45f, 52.5f, 9.6f,  19.65f, 77.5f, 10.4f, floorZ, kMatTrim, kBrass);" in hangar_sec,
+         and "LocalBox(-19.65f, hiBay[bi][0], 9.60f, -19.45f, hiBay[bi][1], 10.40f, floorZ, kMatTrim, kBrass, true);" in hangar_sec
+         and "LocalBox( 19.45f, hiBay[bi][0], 9.60f,  19.65f, hiBay[bi][1], 10.40f, floorZ, kMatTrim, kBrass, true);" in hangar_sec,
          "Hangar vaulted roof ribs and upper friezes are symmetrical on West & East sides")
 
     # 6. No depth-bias punch-through on 3D brass trim frames, and grounded coastal horizon
@@ -156,7 +156,7 @@ def audit_grand_hall_alignment():
          "Hall binds baked Portal Signage Atlas and Atrium Directory Floor-Plan/Buttons Atlas")
 
     # 8. Verified Z-fighting, signboard standoff, diorama shadow dedup, and cinema glow dimming fixes
-    need("AddPortalSignboard( 40.0f + w + 0.28f, 14.5f, 5.42f" in hall
+    need("AddPortalSignboard( 40.0f + w + 0.29f, 14.5f, 5.42f" in hall
          and "AddPortalSignboard(  0.0f, 20.0f - w, 8.25f" in hall,
          "Portal 6 east signboard clears west acoustic lining and Portal 0a bezel centers at z = 8.25 m")
     need("0.56f, 14.76f, ny[i] + 1.21f, 0.62f" in hangar_sec
@@ -164,10 +164,10 @@ def audit_grand_hall_alignment():
          and "LocalFloorGrid(-0.14f, 65.14f, 0.14f, 68.0f" in hangar_sec
          and "LocalFloorGrid(-0.28f, 36.28f, 0.28f, 41.76f" in atrium_sec,
          "Naval Bay & Scale Alcove brass collars sit below pier/dais tops and compass crosses split without overlap")
-    need("AddContactShadow(dx, dy, 1.65f, 0.35f, 0.72f, floorZ, 0.048f, 0.46f);" in atrium_sec
-         and "tiered ? 0.048f : 0.036f" in hall
+    need("AddContactShadow(dx, dy, 1.65f, 0.35f, 0.72f, floorZ, 0.054f, 0.44f);" in atrium_sec
+         and "tiered ? 0.056f : 0.052f" in hall
          and "CeMuseumDiorama::kDioramaCount" not in atrium_sec,
-         "Directory/Hero Dais shadows sit above inlays at 0.048 m and duplicate Atrium diorama shadow loop is removed")
+         "Directory/Hero Dais shadows sit above inlays/curbs at >= 0.052 m and duplicate Atrium diorama shadow loop is removed")
     need("kMatCinemaSconce" in hall and "const float glowDim = 0.15f + 0.85f * house;" in draw_sec,
          "Screening Room glow strips and wall sconces dim cleanly with house lights during playback")
 

@@ -96,7 +96,11 @@ PortHandle *PortHandleNew(PortHandleKind kind, size_t size)
 	}
 	h->kind = kind;
 	pthread_mutex_init(&h->lock, NULL);
-	pthread_cond_init(&h->cond, NULL);
+	pthread_condattr_t condAttr;
+	pthread_condattr_init(&condAttr);
+	pthread_condattr_setclock(&condAttr, CLOCK_MONOTONIC);
+	pthread_cond_init(&h->cond, &condAttr);
+	pthread_condattr_destroy(&condAttr);
 	if (!Register(h))
 	{
 		pthread_cond_destroy(&h->cond);
@@ -360,7 +364,7 @@ static bool TryAcquire(PortHandle *h)
 
 static void Deadline(timespec *ts, DWORD ms)
 {
-	clock_gettime(CLOCK_REALTIME, ts);
+	clock_gettime(CLOCK_MONOTONIC, ts);
 	ts->tv_sec += ms / 1000;
 	ts->tv_nsec += (long)(ms % 1000) * 1000000L;
 	if (ts->tv_nsec >= 1000000000L)
@@ -395,11 +399,27 @@ extern "C" DWORD WINAPI WaitForSingleObject(HANDLE handle, DWORD ms)
 
 // Several objects: a process-wide generation counter that every signal bumps, and a scan of the objects after each.
 static pthread_mutex_t sWaitLock = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t sWaitCond = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t sWaitCond;
+static pthread_once_t sWaitCondOnce = PTHREAD_ONCE_INIT;
 static unsigned sWaitGeneration;
+
+static void InitWaitCond()
+{
+	pthread_condattr_t attr;
+	pthread_condattr_init(&attr);
+	pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+	pthread_cond_init(&sWaitCond, &attr);
+	pthread_condattr_destroy(&attr);
+}
+
+static void EnsureWaitCond()
+{
+	pthread_once(&sWaitCondOnce, InitWaitCond);
+}
 
 void PortWaitersWake()
 {
+	EnsureWaitCond();
 	pthread_mutex_lock(&sWaitLock);
 	sWaitGeneration++;
 	pthread_cond_broadcast(&sWaitCond);
@@ -500,6 +520,7 @@ extern "C" DWORD WINAPI WaitForMultipleObjects(DWORD count, const HANDLE *handle
 		}
 		if (ms == 0)
 			return WAIT_TIMEOUT;
+		EnsureWaitCond();
 		pthread_mutex_lock(&sWaitLock);
 		int rc = 0;
 		while (generation == sWaitGeneration && rc != ETIMEDOUT)

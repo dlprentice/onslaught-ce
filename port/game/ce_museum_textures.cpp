@@ -11,7 +11,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <vector>
 
 #ifndef CE_MUSEUM_TEXTURES_HOST_TEST
 #include "common.h"
@@ -174,17 +173,66 @@ static inline void DrawLineRgba(uint32_t *buf, unsigned bw, unsigned bh,
 // Accumulates max capsule-SDF coverage per pixel so joins have zero bright seams.
 // =============================================================================
 
+template <typename T>
+struct RawBuf {
+    T *ptr;
+    size_t count;
+    size_t cap;
+
+    RawBuf() : ptr(nullptr), count(0), cap(0) {}
+    explicit RawBuf(size_t n) : ptr(nullptr), count(0), cap(0) {
+        if (n > 0) {
+            ptr = static_cast<T *>(std::calloc(n, sizeof(T)));
+            if (ptr) { count = n; cap = n; }
+        }
+    }
+    RawBuf(size_t n, T initVal) : ptr(nullptr), count(0), cap(0) {
+        if (n > 0) {
+            ptr = static_cast<T *>(std::malloc(n * sizeof(T)));
+            if (ptr) {
+                count = n;
+                cap = n;
+                for (size_t i = 0; i < n; ++i) ptr[i] = initVal;
+            }
+        }
+    }
+    ~RawBuf() { std::free(ptr); }
+    RawBuf(const RawBuf &) = delete;
+    RawBuf &operator=(const RawBuf &) = delete;
+
+    bool resize(size_t n) {
+        if (n == 0) { count = 0; return true; }
+        if (n <= cap && ptr) { count = n; return true; }
+        T *p = static_cast<T *>(std::malloc(n * sizeof(T)));
+        if (!p) return false;
+        std::free(ptr);
+        ptr = p;
+        count = n;
+        cap = n;
+        return true;
+    }
+
+    T *data() { return ptr; }
+    const T *data() const { return ptr; }
+    size_t size() const { return count; }
+    bool empty() const { return !ptr || count == 0; }
+    T &operator[](size_t i) { return ptr[i]; }
+    const T &operator[](size_t i) const { return ptr[i]; }
+};
+
 struct StrokeMask {
     unsigned w, h;
-    std::vector<float> cov;
+    RawBuf<float> cov;
 
-    StrokeMask(unsigned width, unsigned height) : w(width), h(height), cov(width * height, 0.0f) {}
+    StrokeMask(unsigned width, unsigned height)
+        : w(width), h(height), cov(static_cast<size_t>(width) * static_cast<size_t>(height)) {}
 
     void Clear() {
         if (!cov.empty()) std::memset(cov.data(), 0, cov.size() * sizeof(float));
     }
 
     void Seg(float x0, float y0, float x1, float y1, float radius) {
+        if (cov.empty()) return;
         const float minX = (x0 < x1 ? x0 : x1) - radius - 1.5f;
         const float maxX = (x0 > x1 ? x0 : x1) + radius + 1.5f;
         const float minY = (y0 < y1 ? y0 : y1) - radius - 1.5f;
@@ -497,6 +545,7 @@ static void DrawCenteredText(StrokeMask &mask, const char *text,
 static void CompositeEngravedMask(uint32_t *canvas, const StrokeMask &mask,
                                   uint32_t mainCol, uint32_t hiCol, uint32_t shadowCol,
                                   int shadowDx, int shadowDy) {
+    if (!canvas || mask.cov.empty()) return;
     const unsigned w = mask.w, h = mask.h;
     for (unsigned y = 0; y < h; ++y) {
         for (unsigned x = 0; x < w; ++x) {
@@ -603,14 +652,17 @@ IDirect3DTexture9 *UploadManagedArgbAtlas(IDirect3DDevice9 *device, const unsign
         if (tex) tex->Release();
         return NULL;
     }
-    std::vector<unsigned int> mipBuf;
+    RawBuf<unsigned int> mipBuf;
     for (unsigned lvl = 0u; lvl < kAtlasMipLevels; ++lvl) {
         const unsigned lw = width >> lvl;
         const unsigned lh = height >> lvl;
         if (!lw || !lh) break;
         const unsigned int *src = argb;
         if (lvl > 0u) {
-            mipBuf.resize(static_cast<size_t>(lw) * static_cast<size_t>(lh));
+            if (!mipBuf.resize(static_cast<size_t>(lw) * static_cast<size_t>(lh))) {
+                tex->Release();
+                return NULL;
+            }
             if (isPortalSign)
                 CeMuseumTextures::DownsamplePortalSignAtlasLevel(argb, lvl, mipBuf.data());
             else
@@ -693,8 +745,9 @@ void BakePortalSignAtlasRgba(unsigned int *outArgb) {
     if (!outArgb) return;
     constexpr unsigned kHiW = 2048u;
     constexpr unsigned kHiH = 256u;
-    std::vector<uint32_t> hi(kHiW * kHiH, 0xff161c22u);
+    RawBuf<uint32_t> hi(static_cast<size_t>(kHiW) * static_cast<size_t>(kHiH), 0xff161c22u);
     StrokeMask mask(kHiW, kHiH);
+    if (hi.empty() || mask.cov.empty()) return;
 
     for (unsigned s = 0; s < static_cast<unsigned>(CE_MUSEUM_SIGN_COUNT); ++s) {
         // 1. Honed dark obsidian stone plate (#161C22 with subtle top-lit sheen)
@@ -740,8 +793,9 @@ void BakeDirectoryAtlasRgba(unsigned int *outArgb) {
     constexpr unsigned kHiW = kDirectoryAtlasWidth * 2u;  // 1024
     constexpr unsigned kHiH = kDirectoryAtlasHeight * 2u; // 1024
     constexpr unsigned kHiMapH = kDirectoryMapHeight * 2u; // 768
-    std::vector<uint32_t> hi(kHiW * kHiH, 0xff161c22u);
+    RawBuf<uint32_t> hi(static_cast<size_t>(kHiW) * static_cast<size_t>(kHiH), 0xff161c22u);
     StrokeMask mask(kHiW, kHiH);
+    if (hi.empty() || mask.cov.empty()) return;
 
     // =========================================================================
     // 1. TOP PANEL (1024x768 -> 512x384): ARCHITECTURAL FLOOR-PLAN MAP PLAQUE
@@ -1069,7 +1123,7 @@ void LoadAll(IDirect3DDevice9 *device) {
             continue;
         }
         if (!entry.packed || !entry.packedSize || !entry.rawSize || entry.rawSize > (4u << 20)) continue;
-        unsigned char *raw = new unsigned char[entry.rawSize];
+        unsigned char *raw = static_cast<unsigned char *>(std::malloc(entry.rawSize));
         if (!raw) continue;
         unsigned long outLen = entry.rawSize;
         const int rc = uncompress(raw, &outLen, entry.packed, entry.packedSize);
@@ -1090,21 +1144,25 @@ void LoadAll(IDirect3DDevice9 *device) {
                                entry.name);
             }
         }
-        delete[] raw;
+        std::free(raw);
     }
 
     // Bake the 1024x512 Portal Lintel Signage Atlas ONCE into D3DPOOL_MANAGED with per-strip capped mips.
     if (!ForcedMissing("portal_signage")) {
-        std::vector<unsigned int> pixels(kPortalAtlasWidth * kPortalAtlasHeight, 0xff161c22u);
-        BakePortalSignAtlasRgba(pixels.data());
-        gPortalSignAtlas = UploadManagedArgbAtlas(device, pixels.data(), kPortalAtlasWidth, kPortalAtlasHeight, true);
+        RawBuf<unsigned int> pixels(static_cast<size_t>(kPortalAtlasWidth) * static_cast<size_t>(kPortalAtlasHeight), 0xff161c22u);
+        if (!pixels.empty()) {
+            BakePortalSignAtlasRgba(pixels.data());
+            gPortalSignAtlas = UploadManagedArgbAtlas(device, pixels.data(), kPortalAtlasWidth, kPortalAtlasHeight, true);
+        }
     }
 
     // Bake the 512x512 Atrium Directory Floor-Plan & Labeled Console Buttons Atlas ONCE with per-cell capped mips.
     if (!ForcedMissing("directory_map")) {
-        std::vector<unsigned int> pixels(kDirectoryAtlasWidth * kDirectoryAtlasHeight, 0xff161c22u);
-        BakeDirectoryAtlasRgba(pixels.data());
-        gDirectoryAtlas = UploadManagedArgbAtlas(device, pixels.data(), kDirectoryAtlasWidth, kDirectoryAtlasHeight, false);
+        RawBuf<unsigned int> pixels(static_cast<size_t>(kDirectoryAtlasWidth) * static_cast<size_t>(kDirectoryAtlasHeight), 0xff161c22u);
+        if (!pixels.empty()) {
+            BakeDirectoryAtlasRgba(pixels.data());
+            gDirectoryAtlas = UploadManagedArgbAtlas(device, pixels.data(), kDirectoryAtlasWidth, kDirectoryAtlasHeight, false);
+        }
     }
 
     PortSessionLog(PORT_SESSION_GAME, false,

@@ -156,12 +156,12 @@ void CinemaShell(bool planned, float floor, float height) {
         box(kRight - 0.16f, (kFront + kBack) * 0.5f, 0.16f, (kBack - kFront) * 0.5f - 0.32f, 0, roof, kWall, kWallCap);
         box(0.5f * (kLeft + wall + kRight), kFront + 0.16f, 0.5f * (kRight - (kLeft + wall)), 0.16f, 0, roof, kWall, kWallCap);
         {
-            const float westX = kLeft + wall + 0.14f;
+            const float westX = kLeft + wall + 0.15f; // west face 1 cm clear of Portal 6 east face (40.30 -> 40.31)
             const float doorLo = kDoorY - kDoorHalf;
             const float doorHi = kDoorY + kDoorHalf;
             const float jambLo = doorLo - 1.02f;
             const float jambHi = doorHi + 1.02f;
-            const float headerLo = 5.06f; // top of Portal 6 architrave (4.60 + 0.46)
+            const float headerLo = 5.07f; // 1 cm clear above Portal 6 architrave top (4.60 + 0.46 = 5.06)
             const float capLo = roof - 0.62f;
             if (jambLo > kFront + 0.32f)
                 box(westX, (kFront + 0.32f + jambLo) * 0.5f, 0.14f, (jambLo - (kFront + 0.32f)) * 0.5f, 0, roof, kWall, kWallCap);
@@ -184,8 +184,8 @@ void CinemaShell(bool planned, float floor, float height) {
         // Warm recessed theater wall sconces & ceiling cove light strips (dimmed smoothly when film plays)
         g.current = kMatCinemaGlow;
         const DWORD kWarmStrip = 0xff181004;
-        box(kRight - 0.36f, (kFront + kBack) * 0.5f, 0.08f, (kBack - kFront) * 0.42f, roof - 0.38f, 0.16f, kWarmStrip, kWarmStrip);
-        box(kLeft + wall + 0.38f, (kFront + kBack) * 0.5f, 0.08f, (kBack - kFront) * 0.42f, roof - 0.38f, 0.16f, kWarmStrip, kWarmStrip);
+        box(kRight - 0.44f, (kFront + kBack) * 0.5f, 0.08f, (kBack - kFront) * 0.42f, roof - 0.38f, 0.16f, kWarmStrip, kWarmStrip);
+        box(kLeft + wall + 0.44f, (kFront + kBack) * 0.5f, 0.08f, (kBack - kFront) * 0.42f, roof - 0.38f, 0.16f, kWarmStrip, kWarmStrip);
         // Three wall sconces on the east lining: a small amber lamp on a brass backplate (where a tall white slab
         // used to glare), each over a soft wash on the acoustic wall. The wash is four wall panels meeting at the
         // lamp, so the baked sconce light (BakeGrandVertexColour) falls off smoothly from their shared centre.
@@ -226,9 +226,9 @@ void CinemaShell(bool planned, float floor, float height) {
     // A stopped screen is a drawn house curtain: deep wine folds, dim enough to sit behind the room, lighter at
     // the top where the proscenium light catches them. (The film's own quad is drawn in front of it.)
     g.current = kMatScreenIdle;
-    box(kScreenX,kScreenY+.10f,kScreenHalfW,.10f,-(kScreenZ+kScreenHalfH),2*kScreenHalfH,0xff0e1016,0xff0e1016);
+    box(kScreenX,kScreenY+.140f,kScreenHalfW,.060f,-(kScreenZ+kScreenHalfH),2*kScreenHalfH,0xff0e1016,0xff0e1016);
     {
-        const CeHallPoint centre=Offset(o,kScreenX,kScreenY-.006f);
+        const CeHallPoint centre=Offset(o,kScreenX,kScreenY-.015f);
         float ground=0;
         if (g.ground(centre.x,centre.y,&ground)) {
             const float bottom=ground+(kScreenZ+kScreenHalfH),top=bottom-2*kScreenHalfH;
@@ -399,7 +399,7 @@ bool CinemaStep() {
     s.output = CinemaControls::Update(&s.controls, CinemaControllerInput());
     const bool consumed = s.output.consumeFire;
     const CinemaConsole::HostAction action = CinemaConsole::ResolveCommand(s.output, s.catalogue.count);
-    if (action.select) s.firstPlayable = false;
+    if (action.select || (action.play && s.phase == Cinema::Playing)) s.firstPlayable = false;
     if (action.stop) CinemaClose(Cinema::Idle);
     if (action.play && action.hasIndex) CinemaOpen(action.index);
     if (action.select || action.stop || action.play)
@@ -623,7 +623,7 @@ void CinemaScreen(IDirect3DDevice9 *dev) {
     const float aspect=float(s.bitmapW)/s.bitmapH,box=kScreenHalfW/kScreenHalfH;
     const float wh=aspect>box?kScreenHalfW:kScreenHalfH*aspect,hh=aspect>box?kScreenHalfW/aspect:kScreenHalfH;
     const float x=CeMuseumWorld::kEntranceX+CinemaOffX()+kScreenX;
-    const float y=CeMuseumWorld::kEntranceY+CinemaOffY()+kScreenY-.025f;
+    const float y=CeMuseumWorld::kEntranceY+CinemaOffY()+kScreenY-.055f;
     float ground = gGrandFloorZ;
     if (gPtr && gPtr->ground) gPtr->ground(x, y, &ground);
     const float z = ground + kScreenZ;

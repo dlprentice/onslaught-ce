@@ -21,6 +21,49 @@ H2_DIM = 256
 H3_DIM = 128
 OUT_DIM = 8
 
+# Canonical feature & output index map (must match CeAiMlpFeatIdx / CeAiMlpOutIdx in port/game/ai/ce_ai_pilot_l1.h).
+FEAT_LIFE_RATIO        = 0
+FEAT_ENERGY_RATIO      = 1
+FEAT_IS_JET            = 2
+FEAT_IS_ON_GROUND      = 3
+FEAT_ALTITUDE          = 4
+FEAT_DRY_HERE          = 5
+FEAT_DRY_FWD           = 6
+FEAT_DRY_BACK          = 7
+FEAT_DRY_LEFT          = 8
+FEAT_DRY_RIGHT         = 9
+FEAT_DRY_AHEAD_28      = 10
+FEAT_WEAPON_READY      = 11
+FEAT_WEAPON_OVERHEATED = 12
+FEAT_WEAPON_HEAT_AMMO  = 13
+FEAT_PITCH             = 14
+FEAT_POS_X             = 15
+FEAT_POS_Y             = 16
+FEAT_HAS_HOSTILE       = 17
+FEAT_HOSTILE_DX        = 18
+FEAT_HOSTILE_DY        = 19
+FEAT_HOSTILE_DZ        = 20
+FEAT_HOSTILE_LIFE      = 21
+FEAT_HOSTILE_AIRBORNE  = 22
+FEAT_HOSTILE_IS_BE     = 23
+FEAT_HOSTILE_CLASS     = 24
+FEAT_REPAIR_PAD_DX     = 25
+FEAT_REPAIR_PAD_DY     = 26
+FEAT_FORCE_BALANCE     = 27
+FEAT_FLIGHT_ALLOWED    = 28
+FEAT_PRIOR_AGGRESSION  = 29
+FEAT_PRIOR_AIR_BIAS    = 30
+FEAT_PRIOR_POSTURE     = 31
+
+OUT_STRAFE_TRIM        = 0
+OUT_FWD_TRIM           = 1
+OUT_JET_TURN_TRIM      = 2
+OUT_JET_THRUST_TRIM    = 3
+OUT_JET_CRUISE_BIAS    = 4
+OUT_RESERVED_5         = 5
+OUT_RESERVED_6         = 6
+OUT_RESERVED_7         = 7
+
 
 def splitmix64(x: int) -> int:
     x = (x + 0x9E3779B97F4A7C15) & 0xFFFFFFFFFFFFFFFF
@@ -67,23 +110,22 @@ def main() -> int:
     w4 = gen_matrix(OUT_DIM, H3_DIM, 0x4345414930303034, 14)
     b4 = [0] * OUT_DIM
 
-    # Embed structured tactical priors into layer-1 input projections & output readouts:
-    # Feature map (Q12: 4096 == 1.0):
-    #   f[0] = lifeRatio, f[1] = energyRatio, f[2] = isJet, f[3] = isOnGround,
-    #   f[4] = altitude/64, f[5] = targetDist/256, f[6] = targetAlt/64, f[7] = targetYawErr/pi,
-    #   f[8] = targetPitchErr/pi, f[9] = targetLifeRatio, f[10] = underFire, f[11] = dryHere,
-    #   f[12] = dryFwd, f[13] = dryLeft, f[14] = dryRight, f[15] = strategicPosture/4,
-    #   f[16] = aggressionBias, f[17] = airBias, ...
-    # Output channels (Q12 in [-4096, +4096]):
-    #   o[0] = standoffBias, o[1] = strafeBias, o[2] = retreatBias, o[3] = morphBias,
-    #   o[4] = fireAggressionBias, o[5] = pitchTrim, o[6] = yawLeadTrim, o[7] = dashBias
-    for h in range(8):
-        w1[h * IN_DIM + 0] = 64 if h % 2 == 0 else -64   # life sensitivity
-        w1[h * IN_DIM + 1] = 48 if h < 4 else -48        # energy sensitivity
-        w1[h * IN_DIM + 5] = 40                          # range sensitivity
-        w1[h * IN_DIM + 10] = 56                         # under-fire sensitivity
-        w1[h * IN_DIM + 16] = 44                         # strategic aggression prior
-        w1[h * IN_DIM + 17] = 44                         # strategic air prior
+    # Embed structured tactical priors aligned 1:1 with CeAiMlpFeatIdx & CeAiMlpOutIdx
+    # (port/game/ai/ce_ai_pilot_l1.h & ce_ai_pilot_l1.cpp):
+    #   Outputs [0..4] drive bounded micro-trims:
+    #     OUT_STRAFE_TRIM (0), OUT_FWD_TRIM (1), OUT_JET_TURN_TRIM (2),
+    #     OUT_JET_THRUST_TRIM (3), OUT_JET_CRUISE_BIAS (4); [5..7] reserved.
+    for h in range(OUT_DIM):
+        w1[h * IN_DIM + FEAT_LIFE_RATIO]        = 64 if h % 2 == 0 else -64   # life sensitivity
+        w1[h * IN_DIM + FEAT_ENERGY_RATIO]      = 48 if h < 4 else -48        # energy sensitivity
+        w1[h * IN_DIM + FEAT_WEAPON_OVERHEATED] = -36 if h in (OUT_FWD_TRIM, OUT_JET_THRUST_TRIM) else 24
+        w1[h * IN_DIM + FEAT_HAS_HOSTILE]       = 40                          # active engagement sensitivity
+        w1[h * IN_DIM + FEAT_HOSTILE_DX]        = 32 if h in (OUT_STRAFE_TRIM, OUT_JET_TURN_TRIM) else 16
+        w1[h * IN_DIM + FEAT_HOSTILE_DY]        = 32 if h in (OUT_FWD_TRIM, OUT_JET_THRUST_TRIM) else 16
+        w1[h * IN_DIM + FEAT_FORCE_BALANCE]     = -32 if h == OUT_FWD_TRIM else 28
+        w1[h * IN_DIM + FEAT_PRIOR_AGGRESSION]  = 44                          # strategic aggression prior [29]
+        w1[h * IN_DIM + FEAT_PRIOR_AIR_BIAS]    = 44                          # strategic air prior [30]
+        w1[h * IN_DIM + FEAT_PRIOR_POSTURE]     = 36 if h in (OUT_FWD_TRIM, OUT_JET_CRUISE_BIAS) else -24  # posture [31]
         w2[h * H1_DIM + h] = 64
         w3[h * H2_DIM + h] = 64
         w4[h * H3_DIM + h] = 48

@@ -733,9 +733,7 @@ extern "C" void PortCeFlagshipDuelLevelEnd(int level, int quit) {
 	} else if (gMode == CeFlagshipDuelMode::kSplitScreen2P) {
 		gPendingReturn = true;
 	} else {
-		gArmed = false;
-		ClearCareerSnapshot();
-		PortCeFlagshipDuelDropWorld();
+		PortCeFlagshipDuelCancel();
 	}
 }
 

@@ -1012,11 +1012,11 @@ void CeAiPilotL1TickSlot(int idx, const CePlayerObs &obs, const CeStrategicPrior
 	int16_t mlpOutQ12[kCeAiMlpOutDim];
 	CeAiPilotExtractFeaturesQ12(obs, prior, mlpFeaturesQ12);
 	CeAiPilotMlpInfer(mlpFeaturesQ12, mlpOutQ12);
-	const float mlpStrafeTrim    = static_cast<float>(mlpOutQ12[0]) * (0.06f / 4096.0f);
-	const float mlpFwdTrim       = static_cast<float>(mlpOutQ12[1]) * (0.05f / 4096.0f);
-	const float mlpJetTurnTrim   = static_cast<float>(mlpOutQ12[2]) * (0.05f / 4096.0f);
-	const float mlpJetThrustTrim = static_cast<float>(mlpOutQ12[3]) * (0.04f / 4096.0f);
-	const float mlpCruiseBias    = static_cast<float>(mlpOutQ12[4]) * (2.0f / 4096.0f);
+	const float mlpStrafeTrim    = static_cast<float>(mlpOutQ12[CE_AI_OUT_STRAFE_TRIM]) * (0.06f / 4096.0f);
+	const float mlpFwdTrim       = static_cast<float>(mlpOutQ12[CE_AI_OUT_FWD_TRIM]) * (0.05f / 4096.0f);
+	const float mlpJetTurnTrim   = static_cast<float>(mlpOutQ12[CE_AI_OUT_JET_TURN_TRIM]) * (0.05f / 4096.0f);
+	const float mlpJetThrustTrim = static_cast<float>(mlpOutQ12[CE_AI_OUT_JET_THRUST_TRIM]) * (0.04f / 4096.0f);
+	const float mlpCruiseBias    = static_cast<float>(mlpOutQ12[CE_AI_OUT_JET_CRUISE_BIAS]) * (2.0f / 4096.0f);
 
 	const int simTicks = CeMultiBeAiHostSimTicks();
 	CeMultiBeSmartMorphInput morphIn = {};

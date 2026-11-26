@@ -248,13 +248,27 @@ struct CeOnlineWireInput {
             if (!rank || rank <= lastRank || in.actions[i].button > 255u ||
                 in.actions[i].source > CE_WORLD_ACTION_MOUSE_AXIS)
                 return false;
-            lastRank = rank;
             const uint32_t vb = FloatToBits(in.actions[i].value);
             if (!IsFiniteBits(vb) || !(in.actions[i].value >= -1.0f && in.actions[i].value <= 1.0f))
                 return false;
             out->actions[i].button = (uint8_t)in.actions[i].button;
             out->actions[i].source = (uint8_t)in.actions[i].source;
             out->actions[i].value_bits = vb;
+            // Mirror CE_WorldLockstepValidInput(): a centered mouse axis may be immediately
+            // followed by a binding entry for the same button within one native flush.
+            if (in.actions[i].source == CE_WORLD_ACTION_MOUSE_AXIS && in.actions[i].value == 0.0f &&
+                i + 1u < in.count &&
+                in.actions[i + 1u].button == in.actions[i].button &&
+                in.actions[i + 1u].source == CE_WORLD_ACTION_BINDING) {
+                ++i;
+                const uint32_t vb2 = FloatToBits(in.actions[i].value);
+                if (!IsFiniteBits(vb2) || !(in.actions[i].value >= -1.0f && in.actions[i].value <= 1.0f))
+                    return false;
+                out->actions[i].button = (uint8_t)in.actions[i].button;
+                out->actions[i].source = (uint8_t)in.actions[i].source;
+                out->actions[i].value_bits = vb2;
+            }
+            lastRank = rank;
         }
         return true;
     }
@@ -279,10 +293,21 @@ struct CeOnlineWireInput {
             if (!rank || rank <= lastRank ||
                 actions[i].source > CE_WORLD_ACTION_MOUSE_AXIS || !IsFiniteBits(actions[i].value_bits))
                 return false;
-            lastRank = rank;
             const float val = BitsToFloat(actions[i].value_bits);
             if (!(val >= -1.0f && val <= 1.0f))
                 return false;
+            if (actions[i].source == CE_WORLD_ACTION_MOUSE_AXIS && val == 0.0f &&
+                i + 1u < count &&
+                actions[i + 1u].button == actions[i].button &&
+                actions[i + 1u].source == CE_WORLD_ACTION_BINDING) {
+                ++i;
+                if (!IsFiniteBits(actions[i].value_bits))
+                    return false;
+                const float val2 = BitsToFloat(actions[i].value_bits);
+                if (!(val2 >= -1.0f && val2 <= 1.0f))
+                    return false;
+            }
+            lastRank = rank;
         }
         for (size_t i = count; i < kMaxActions; ++i) {
             if (actions[i].button != 0u || actions[i].source != 0u || actions[i].value_bits != 0u)

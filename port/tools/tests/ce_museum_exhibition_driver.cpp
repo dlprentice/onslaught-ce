@@ -1403,25 +1403,32 @@ void TestCinemaLists() {
         CHECK(r.in.decoder == Cc::kDecoderStopped);        // choosing alone starts nothing
         o = r.Click(Cc::kRegionPlay);
         CHECK(o.command == Cc::kCommandPlay && o.index == 1 && o.playing == 1);
-        // Choosing another film leaves the one on the screen alone, and Play then replaces it.
+        // Stepping Next/Previous while a film plays auto-switches playback to the new film immediately.
         o = r.Click(Cc::kRegionNext);
-        CHECK(o.command == Cc::kCommandSelect && o.index == 2 && o.playing == 1 && r.in.decoder == Cc::kDecoderPlaying);
-        CHECK(r.Step(Cc::kRegionPlay, false).prompt == Cc::kPromptPlay);
-        o = r.Click(Cc::kRegionPlay);
-        CHECK(o.command == Cc::kCommandPlay && o.index == 2 && o.playing == 2);
+        CHECK(o.command == Cc::kCommandPlay && o.index == 2 && o.playing == 2 && r.in.decoder == Cc::kDecoderPlaying);
         CHECK(r.Step(Cc::kRegionPlay, false).prompt == Cc::kPromptStop);
-        // Away and back to the film that is running: Play is Stop again.
-        CHECK(r.Click(Cc::kRegionPrevious).index == 1 && r.Step(Cc::kRegionPlay, false).prompt == Cc::kPromptPlay);
-        CHECK(r.Click(Cc::kRegionNext).index == 2 && r.Step(Cc::kRegionPlay, false).prompt == Cc::kPromptStop);
+        o = r.Click(Cc::kRegionPrevious);
+        CHECK(o.command == Cc::kCommandPlay && o.index == 1 && o.playing == 1 && r.in.decoder == Cc::kDecoderPlaying);
+        CHECK(r.Step(Cc::kRegionPlay, false).prompt == Cc::kPromptStop);
+        o = r.Click(Cc::kRegionNext);
+        CHECK(o.command == Cc::kCommandPlay && o.index == 2 && o.playing == 2 && r.in.decoder == Cc::kDecoderPlaying);
+        CHECK(r.Step(Cc::kRegionPlay, false).prompt == Cc::kPromptStop);
+        // If selection diverges from playing externally (e.g. Select()), Play switches and Stop resumes once aligned.
+        CHECK(Cc::Select(&r.s, 4, 1) && r.Step(Cc::kRegionPlay, false).prompt == Cc::kPromptPlay);
+        CHECK(Cc::Select(&r.s, 4, 2) && r.Step(Cc::kRegionPlay, false).prompt == Cc::kPromptStop);
         o = r.Click(Cc::kRegionPlay);
         CHECK(o.command == Cc::kCommandStop && o.index == -1 && o.playing == -1 && o.selected == 2);
         CHECK(r.in.decoder == Cc::kDecoderStopped && r.in.playing == -1);
-        // A film that ran to its end still holds the screen; Play shows it again.
+        // A film that ran to its end still holds the screen; Next/Prev only select, and Play shows it again.
         o = r.Click(Cc::kRegionPlay);
         CHECK(o.command == Cc::kCommandPlay && o.index == 2);
         r.in.decoder = Cc::kDecoderEnded;
         o = r.Step(Cc::kRegionPlay, false);
         CHECK(Idle(o) && o.prompt == Cc::kPromptPlay && o.playing == 2);
+        o = r.Click(Cc::kRegionNext);
+        CHECK(o.command == Cc::kCommandSelect && o.index == 3 && o.playing == 2);
+        o = r.Click(Cc::kRegionPrevious);
+        CHECK(o.command == Cc::kCommandSelect && o.index == 2 && o.playing == 2);
         o = r.Click(Cc::kRegionPlay);
         CHECK(o.command == Cc::kCommandPlay && o.index == 2 && o.playing == 2);
     }
@@ -1917,7 +1924,7 @@ struct Model {
                     else { *command = Cc::kCommandPlay; *index = selected; }
                 } else if (films > 1) {
                     selected = (selected + (aim == Cc::kRegionNext ? 1 : films - 1)) % films;
-                    *command = Cc::kCommandSelect;
+                    *command = (in.decoder == Cc::kDecoderPlaying) ? Cc::kCommandPlay : Cc::kCommandSelect;
                     *index = selected;
                 }
             }
@@ -2004,10 +2011,13 @@ void TestCinemaStream() {
                 bool fair = release && o.consumeFire && atControl;
                 if (o.command == Cc::kCommandSelect) {
                     ++selects;
-                    fair = fair && in.region != Cc::kRegionPlay && in.films > 1 && o.index >= 0 && unsigned(o.index) < in.films;
+                    fair = fair && in.region != Cc::kRegionPlay && in.decoder != Cc::kDecoderPlaying &&
+                           in.films > 1 && o.index >= 0 && unsigned(o.index) < in.films;
                 } else if (o.command == Cc::kCommandPlay) {
                     ++plays;
-                    fair = fair && in.region == Cc::kRegionPlay && o.index >= 0 && unsigned(o.index) < in.films;
+                    const bool autoSwitch = in.region != Cc::kRegionPlay && in.decoder == Cc::kDecoderPlaying && in.films > 1;
+                    fair = fair && (in.region == Cc::kRegionPlay || autoSwitch) &&
+                           o.index >= 0 && unsigned(o.index) < in.films;
                 } else {
                     ++stops;
                     fair = fair && in.region == Cc::kRegionPlay && in.decoder == Cc::kDecoderPlaying;

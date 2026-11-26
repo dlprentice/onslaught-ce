@@ -1338,10 +1338,19 @@ void Mixer::Mix(Sint16 *out, int frames)
 		else
 			b->cursor = pos;
 	}
+	const bool ceSoftClip = (PortCeLayer && PortCeLayer());
 	for (int i = 0; i < 2 * frames; i++)
 	{
 		float s = scratch[i];
-		s = s > 1.0f ? 1.0f : s < -1.0f ? -1.0f : s;
+		if (ceSoftClip)
+		{
+			if (s > 0.85f)
+				s = 0.85f + 0.15f * tanhf((s - 0.85f) * (1.0f / 0.15f));
+			else if (s < -0.85f)
+				s = -0.85f + 0.15f * tanhf((s + 0.85f) * (1.0f / 0.15f));
+		}
+		else
+			s = s > 1.0f ? 1.0f : s < -1.0f ? -1.0f : s;
 		out[i] = (Sint16)lrintf(s * 32767.0f);
 	}
 	Record(out, frames);

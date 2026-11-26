@@ -47,6 +47,7 @@ BUILT_ON_COMMANDER = (
     "0265-ce-authored-exhibition-world.patch",
     "0381-ce-perf-surf-museum-fixes.patch",
     "0385-ce-flagship-duel.patch",
+    "0397-ce-audio-pause-museum-shader-fixes.patch",
 )
 POSITIONAL = ()    # none since patch 0189 carries context (port/tools/patch_control_body_tests.py refuses a hunk without any)
 # The CE hook points (patches 0300-0319, port/game/ce_hooks.h): each adds one call into an empty, ordered table, and their

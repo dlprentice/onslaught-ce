@@ -134,8 +134,9 @@ void words(const State &s, const char *&message, const char *&detail) {
     return;
   case CE_FULL_BACKUP_OUT_UNSUPPORTED:
     if (kWindows) {
-      message = "Back Up All Careers is unavailable on Windows.";
-      detail = "Back Up Career still backs up one career.";
+      message = "This drive is not supported for full backup.";
+      detail = "No set was added. Keep saves and backups on a local NTFS "
+               "drive.";
     } else {
       message = "This storage is not safe for a backup.";
       detail = "No set was added. Keep saves and backups on a local disk.";

@@ -418,8 +418,9 @@ class SiteTests(unittest.TestCase):
         self.order("ltshell.cpp", "CE_BootStart()", "MEM_MANAGER.Init(", "LT.mhInstance=hInstance;", "ce_hook_boot();", "PortCeGraphicsOptionsOpened(")
         self.order("ltshell.cpp", "if (!sMemoryManagerReady)", "ce_hook_exit(CE_EXIT_ATEXIT)", "PATCHMANAGER.FreeData();")
         self.order("ltshell.cpp", "ce_hook_exit(CE_EXIT_SHELL)", "PortSessionSummary();\n#ifdef CE_NETWORK_OFF")
+        self.assertEqual([h[1] for h in rows["exit"][2]], ["ai_strategist_shutdown"])
         self.order("game.cpp", "\tPortCeEditorLevelEnd();\n", "\tPortCeMuseumVisitLevelEnd();\n", "ce_hook_level_end(", "\t\tMUSIC.Stop();\n\n\t// we don")
-        self.assertEqual([h[1] for h in rows["level_end"][2]], ["palette_close", "console_level_end", "photo_level_end", "commander_level_end", "multibe_level_end", "carrier_clash_level_end", "living_sandbox_level_end", "flagship_duel_level_end", "muspell_cockpit_level_end", "entity_handles_level_end"])
+        self.assertEqual([h[1] for h in rows["level_end"][2]], ["palette_close", "console_level_end", "photo_level_end", "commander_level_end", "multibe_level_end", "carrier_clash_level_end", "living_sandbox_level_end", "flagship_duel_level_end", "muspell_cockpit_level_end", "player_hooks_level_end", "entity_handles_level_end"])
         self.order("game.cpp", "{ PORT_UPDATE_HOOK();", "\tce_hook_tick_pre();", "\tce_hook_tick_post();", "void\tCGame::PreRun()")
         self.assertEqual([h[1] for h in rows["tick_pre"][2]], ["gamepad_cycle", "multibe_tick_pre", "carrier_clash_tick_pre", "living_sandbox_tick_pre", "flagship_duel_tick_pre"])
         self.order("game.cpp", "PortCeGamepadBeginCycle();\n#endif\n\t\tmController[0]->Flush();", "ce_hook_level_begin(aLevel);", "CE_SessionPreparePlay()")
@@ -441,7 +442,7 @@ class SiteTests(unittest.TestCase):
         self.assertEqual([h[1] for h in rows["draw_hud"][2]], ["multibe_draw_hud", "carrier_clash_draw_hud", "living_sandbox_draw_hud", "flagship_duel_draw_hud"])
         self.assertEqual([h[1] for h in rows["hud_focus"][2]], ["multibe_hud_focus"])
         self.order("Unit.cpp", "EVENT_MANAGER.AddEvent(UNIT_EVENT_4003, this, NEXT_FRAME);", "ce_hook_unit_spawn(this, init);")
-        self.assertEqual([h[1] for h in rows["unit_spawn"][2]], ["multibe_unit_spawn", "entity_handles_unit_spawn", "carrier_clash_unit_spawn", "living_sandbox_unit_spawn", "flagship_duel_unit_spawn"])
+        self.assertEqual([h[1] for h in rows["unit_spawn"][2]], ["entity_handles_unit_spawn", "multibe_unit_spawn", "carrier_clash_unit_spawn", "living_sandbox_unit_spawn", "flagship_duel_unit_spawn"])
         self.order("Unit.cpp", "ClearSpawners();", "ce_hook_unit_destroyed(this);", "void CUnit::SpawnExplosion()")
         self.assertEqual([h[1] for h in rows["unit_destroyed"][2]], ["multibe_unit_destroyed", "carrier_clash_unit_destroyed", "living_sandbox_unit_destroyed", "flagship_duel_unit_destroyed", "entity_handles_unit_destroyed"])
         self.order("BattleEngine.cpp", "mSmoke.SetPos(mPos);", "ce_hook_unit_destroyed(this);", "void CBattleEngine::HandleIncomingMissle()")
@@ -513,6 +514,16 @@ static void Q1(const CeHookCommand *c) { gLog += "q" + std::to_string(c->kind); 
 static void Q2(const CeHookCommand *c) { gLog += "r" + std::to_string(c->a); }
 static constexpr CeHookRow<Q> kApply[] = {{10, "q1", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, Q1}, {20, "q2", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, Q2}, CE_HOOK_END};
 CE_HOOK_CHECK(kApply, CE_HOOK_SIM, CE_DISPATCH_COMMAND_APPLY, "apply");
+static CeHookCommandQueue *gReentrantQueue = nullptr;
+static void QRe(const CeHookCommand *c) {
+    gLog += "x" + std::to_string(c->kind);
+    if (c->kind == 1 && gReentrantQueue) {
+        CeHookCommand cNext = {3, 33, 0, 0, 0, 0};
+        gReentrantQueue->Push(cNext);
+    }
+}
+static constexpr CeHookRow<Q> kApplyRe[] = {{10, "qr", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, QRe}, CE_HOOK_END};
+CE_HOOK_CHECK(kApplyRe, CE_HOOK_SIM, CE_DISPATCH_COMMAND_APPLY, "apply_re");
 static constexpr CeHookRow<V> kEmpty[] = {CE_HOOK_END};
 CE_HOOK_CHECK(kEmpty, CE_HOOK_SIM, CE_DISPATCH_ORDERED_BROADCAST, "empty");
 int main() {
@@ -531,6 +542,13 @@ int main() {
     Check(queue.Push(c1) && queue.Push(c2) && !queue.Push(c0), "commands: kind 0 is refused");
     gLog.clear(); CeHookApply("apply", kApply, &queue); Check(gLog == "q1r11q2r22" && queue.count == 0, "command apply: oldest first, every row per command, then emptied");
     gLog.clear(); CeHookApply("apply", kApply, &queue); Check(gLog.empty(), "command apply: an empty queue runs nothing");
+    gReentrantQueue = &queue;
+    Check(queue.Push(c1), "reentrant push seed");
+    gLog.clear(); CeHookApply("apply_re", kApplyRe, &queue);
+    Check(gLog == "x1" && queue.count == 1 && queue.items[0].kind == 3, "command apply: re-entrant push defers to next tick without double execution");
+    gLog.clear(); CeHookApply("apply_re", kApplyRe, &queue);
+    Check(gLog == "x3" && queue.count == 0, "command apply: deferred re-entrant command drains next tick");
+    gReentrantQueue = nullptr;
     Check(CeHookPlace(3, 1) == 1 && CeHookPlace(3, -1) == 3 && CeHookPlace(3, 9) == 3 && CeHookPlace(0, 0) == 0, "positions");
 #if CE_HOOKS_GUARDED
     gGuard.clear(); gLog.clear(); CeHookBroadcast("broadcast", kBroadcast, 1); CeHookBroadcast("empty", kEmpty, 1);
@@ -1009,6 +1027,9 @@ bool PortCeLayer() { return gLayer; }
 
 static std::string gSaveLog;
 static CBattleEngine *gFocusReturn = nullptr;
+static int gNullGuardCalls = 0;
+static int gPlayerResetCalls = 0;
+static int gStratShutdownCalls = 0;
 
 void PortCeGamepadBeginCycle() {}
 void PortCePaletteClose() {}
@@ -1026,6 +1047,11 @@ extern "C" void PortCeMuseumVisitFilterSave(CCareer *, void *) { gSaveLog += "mu
 CCamera *PortCeCmdRenderCamera(CCamera *c, CPlayer *) { return c; }
 CCamera *PortCePlayUnitRenderCamera(CCamera *c, CPlayer *) { return c; }
 extern "C" CBattleEngine *PortCeMultiBeHudFocus(CBattleEngine *, CPlayer *) { return gFocusReturn; }
+extern "C" void PortCeMultiBeMenuRows(CeMenuEvent, CeMenuPage *) { ++gNullGuardCalls; }
+extern "C" bool PortCeWorldProviderHandleSource(CeWorldSourceReq *) { ++gNullGuardCalls; return true; }
+extern "C" void PortCeSanctuaryProjectileIntercept(CeProjectileIntercept *) { ++gNullGuardCalls; }
+extern "C" void PortCePlayerHooksLevelReset(void) { ++gPlayerResetCalls; }
+extern "C" void PortCeAiStrategistShutdown(void) { ++gStratShutdownCalls; }
 
 int main() {
     static_assert(CeHookMinCareerSize() == (int)sizeof(CCareer), "save_gate sees complete sizeof(CCareer)");
@@ -1087,6 +1113,26 @@ int main() {
 
     gFocusReturn = &headless;
     if (ce_hook_hud_focus(&p1, &headless) != nullptr) { std::puts("FAIL headless fallback when incoming be is also headless"); return 8; }
+
+    // 3. Pointer null-guards prevent dispatch on null payload arguments; level_begin/end drain gCommands,
+    //    level_end invokes PortCePlayerHooksLevelReset, and exit invokes PortCeAiStrategistShutdown.
+    ce_hook_menu_rows(CE_MENU_BUILD, nullptr);
+    ce_hook_spawner_trigger(nullptr);
+    ce_hook_render_pass(nullptr);
+    if (ce_hook_world_source(nullptr)) { std::puts("FAIL world_source accepted nullptr"); return 16; }
+    ce_hook_projectile_intercept(nullptr);
+    ce_hook_unit_damage(nullptr);
+    if (gNullGuardCalls != 0) { std::puts("FAIL null payload reached handler"); return 17; }
+
+    CeHookCommand stale = {7, 1, 2, 0.f, 0.f, 0.f};
+    if (!ce_hook_command_push(stale) || gCommands.count != 1) { std::puts("FAIL command push setup"); return 18; }
+    ce_hook_level_begin(850);
+    if (gCommands.count != 0) { std::puts("FAIL level_begin did not clear stale commands"); return 19; }
+    if (!ce_hook_command_push(stale) || gCommands.count != 1) { std::puts("FAIL command push setup 2"); return 20; }
+    ce_hook_level_end(850, 0);
+    if (gCommands.count != 0 || gPlayerResetCalls != 1) { std::puts("FAIL level_end did not clear commands or reset player_hooks"); return 21; }
+    ce_hook_exit(CE_EXIT_SHELL);
+    if (gStratShutdownCalls != 1) { std::puts("FAIL exit did not invoke ai_strategist_shutdown"); return 22; }
 
     std::puts("hardening ok");
     return 0;

@@ -240,7 +240,7 @@ static uint64_t RunRollout(uint32_t worldEpoch, int ticks, uint64_t *outMlpAndGu
         jIn.hasHostile = true;
         jIn.isRetreating = retreating;
         jIn.underHeavyFire = dmg.heavyHitPending;
-        jIn.desiredCruiseHeight = 22.0f + static_cast<float>(mlpOut[4]) * (2.0f / 4096.0f);
+        jIn.desiredCruiseHeight = 22.0f + static_cast<float>(mlpOut[CE_AI_OUT_JET_CRUISE_BIAS]) * (2.0f / 4096.0f);
         jIn.prevPhase = jetPhase;
         jIn.phaseTicks = jetPhaseTicks;
         jIn.breakTurnDir = breakDir;
@@ -628,6 +628,32 @@ class CeAiDeterminismTests(unittest.TestCase):
             res = subprocess.run([str(exe), str(empty_dir), str(model_dir)], capture_output=True, text=True)
             self.assertEqual(res.returncode, 0, f"L3 driver failed: stdout={res.stdout} stderr={res.stderr}")
             self.assertIn("L3_OK", res.stdout)
+
+    def test_04_mlp_feature_and_output_index_alignment(self):
+        l1_h = (PORT / "game/ai/ce_ai_pilot_l1.h").read_text(encoding="utf-8")
+        l1_cpp = (PORT / "game/ai/ce_ai_pilot_l1.cpp").read_text(encoding="utf-8")
+        gen_py = (PORT / "tools/gen_ai_pilot_weights.py").read_text(encoding="utf-8")
+
+        hdr_feats = {m.group(1): int(m.group(2)) for m in re.finditer(r"CE_AI_(FEAT_[A-Z0-9_]+)\s*=\s*(\d+)", l1_h) if m.group(1) != "FEAT_COUNT"}
+        gen_feats = {m.group(1): int(m.group(2)) for m in re.finditer(r"^(FEAT_[A-Z0-9_]+)\s*=\s*(\d+)", gen_py, re.M)}
+        self.assertEqual(len(hdr_feats), 32, f"Expected 32 CeAiMlpFeatIdx entries, got {len(hdr_feats)}")
+        self.assertEqual(hdr_feats, gen_feats, "gen_ai_pilot_weights.py FEAT_* indices must match CeAiMlpFeatIdx 1:1")
+        self.assertEqual(set(hdr_feats.values()), set(range(32)))
+
+        hdr_outs = {m.group(1): int(m.group(2)) for m in re.finditer(r"CE_AI_(OUT_[A-Z0-9_]+)\s*=\s*(\d+)", l1_h) if m.group(1) != "OUT_COUNT"}
+        gen_outs = {m.group(1): int(m.group(2)) for m in re.finditer(r"^(OUT_[A-Z0-9_]+)\s*=\s*(\d+)", gen_py, re.M) if m.group(1) != "OUT_DIM"}
+        self.assertEqual(len(hdr_outs), 8, f"Expected 8 CeAiMlpOutIdx entries, got {len(hdr_outs)}")
+        self.assertEqual(hdr_outs, gen_outs, "gen_ai_pilot_weights.py OUT_* indices must match CeAiMlpOutIdx 1:1")
+        self.assertEqual(set(hdr_outs.values()), set(range(8)))
+
+        # Verify ce_ai_pilot_l1.cpp consumes the named output indices rather than raw magic numbers.
+        for name in ("CE_AI_OUT_STRAFE_TRIM", "CE_AI_OUT_FWD_TRIM", "CE_AI_OUT_JET_TURN_TRIM",
+                     "CE_AI_OUT_JET_THRUST_TRIM", "CE_AI_OUT_JET_CRUISE_BIAS"):
+            self.assertIn(f"mlpOutQ12[{name}]", l1_cpp)
+
+        # Verify strategic prior indices [29..31] are wired into gen_ai_pilot_weights.py priors.
+        for name in ("FEAT_PRIOR_AGGRESSION", "FEAT_PRIOR_AIR_BIAS", "FEAT_PRIOR_POSTURE"):
+            self.assertIn(name, gen_py)
 
 
 if __name__ == "__main__":

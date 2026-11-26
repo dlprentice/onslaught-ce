@@ -90,12 +90,12 @@ Each table row declares:
 
 ### 3.1 Registered Built-in Handlers (25 Hook Points)
 
-The compiled dispatch table in `port/game/ce_hooks.cpp` wires the following built-in CE handlers (53 rows across 17 active hook points; 8 points are currently open for extension):
+The compiled dispatch table in `port/game/ce_hooks.cpp` wires the following built-in CE handlers (55 rows across 18 active hook points; 7 points are currently open for extension):
 
 | Point | Slot | Handler Name | Tag | Gate | Mode | Owner Module |
 |---|---|---|---|---|---|---|
 | `boot` | — | *(open — no built-in rows)* | `SIM` | — | — | — |
-| `exit` | — | *(open — no built-in rows)* | `SIM` | — | — | — |
+| `exit` | `10` | `ai_strategist_shutdown` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ai/ce_ai_strategist_l3.cpp` |
 | `level_begin` | `10` | `multibe_level_begin` | `SIM` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_multibe.cpp` |
 | `level_begin` | `20` | `carrier_clash_level_begin` | `SIM` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_carrier_clash.cpp` |
 | `level_begin` | `30` | `living_sandbox_level_begin` | `SIM` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_sandbox_director.cpp` |
@@ -105,11 +105,12 @@ The compiled dispatch table in `port/game/ce_hooks.cpp` wires the following buil
 | `level_end` | `30` | `photo_level_end` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_photo.cpp` |
 | `level_end` | `40` | `commander_level_end` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_cmdmap.cpp` |
 | `level_end` | `50` | `multibe_level_end` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_multibe.cpp` |
-| `level_end` | `60` | `entity_handles_level_end` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_entity_handles.cpp` |
 | `level_end` | `70` | `carrier_clash_level_end` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_carrier_clash.cpp` |
 | `level_end` | `80` | `living_sandbox_level_end` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_sandbox_director.cpp` |
 | `level_end` | `85` | `flagship_duel_level_end` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_flagship_duel.cpp` |
 | `level_end` | `90` | `muspell_cockpit_level_end` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_muspell_cockpit.cpp` |
+| `level_end` | `92` | `player_hooks_level_end` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_player_hooks.cpp` |
+| `level_end` | `95` | `entity_handles_level_end` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_entity_handles.cpp` |
 | `tick_pre` | `10` | `gamepad_cycle` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_gamepad.cpp` |
 | `tick_pre` | `20` | `multibe_tick_pre` | `SIM` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_multibe.cpp` |
 | `tick_pre` | `30` | `carrier_clash_tick_pre` | `SIM` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_carrier_clash.cpp` |
@@ -138,8 +139,8 @@ The compiled dispatch table in `port/game/ce_hooks.cpp` wires the following buil
 | `render_camera` | `20` | `playunit_camera` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_playunit.cpp` |
 | `render_camera` | `30` | `multibe_camera` | `SIM` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_multibe.cpp` |
 | `hud_focus` | `10` | `multibe_hud_focus` | `RENDER` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_multibe.cpp` |
+| `unit_spawn` | `5` | `entity_handles_unit_spawn` | `SIM` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_entity_handles.cpp` |
 | `unit_spawn` | `10` | `multibe_unit_spawn` | `SIM` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_multibe.cpp` |
-| `unit_spawn` | `20` | `entity_handles_unit_spawn` | `SIM` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_entity_handles.cpp` |
 | `unit_spawn` | `30` | `carrier_clash_unit_spawn` | `SIM` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_carrier_clash.cpp` |
 | `unit_spawn` | `40` | `living_sandbox_unit_spawn` | `SIM` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_sandbox_director.cpp` |
 | `unit_spawn` | `50` | `flagship_duel_unit_spawn` | `SIM` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_flagship_duel.cpp` |
@@ -156,7 +157,7 @@ The compiled dispatch table in `port/game/ce_hooks.cpp` wires the following buil
 | `unit_damage` | — | *(open — no built-in rows)* | `SIM` | — | — | — |
 | `player_act` | `10` | `player_hooks_act` | `SIM` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_player_hooks.cpp` |
 
-> **Why certain legacy CE call sites intentionally remain direct:** Some older CE seams sit at distinct render-stage, write-fence, or control-flow boundaries that do not match the 21 hook sites (for example: `PortCeEditorKey` in `ltshell.cpp` plays UI cues via `CFrontEnd::PlaySound` (`rand()`) and applies editor mutations such as `actor->MoveTo` / `GAME.SetQuit`, which intentionally mutate state and therefore cannot sit behind `key_capture`'s `CE_HOOK_RENDER` simulation-digest guard in `CE_TEST_BUILD`; `PortCeMuseumHallDraw` in `CDXEngine::Render` draws opaque hall geometry before `mWater->Render()` and `WORLD.Render()` rather than in `draw_world`; `PortCeMuseumViewCapture` / `PortCeWorldViewCapture` capture projection matrices after `RENDERINFO.SetProjection` rather than at `CE_RENDER_PASS_PRE_WORLD`; `PortCeMuseumLabelsRender` draws inside `CHud::RenderBattleline` while `0366` suppresses combat overlays before `draw_hud`; `CePlayUnitHudOverlay` executes in the `GetShowHUD() == FALSE` branch of `CHud::Render`; and `PortCeEditorLevelEnd` / `PortCeMuseumVisitLevelEnd` tear down mode state before `CE_SessionBeginTeardown`). Those sites are preserved directly to guarantee exact write-fence, Z-ordering, matrix restoration, and mode invariants.
+> **Why certain legacy CE call sites intentionally remain direct:** Some older CE seams sit at distinct render-stage, write-fence, or control-flow boundaries that do not match the 25 hook sites (for example: `PortCeEditorKey` in `ltshell.cpp` plays UI cues via `CFrontEnd::PlaySound` (`rand()`) and applies editor mutations such as `actor->MoveTo` / `GAME.SetQuit`, which intentionally mutate state and therefore cannot sit behind `key_capture`'s `CE_HOOK_RENDER` simulation-digest guard in `CE_TEST_BUILD`; `PortCeMuseumHallDraw` in `CDXEngine::Render` draws opaque hall geometry before `mWater->Render()` and `WORLD.Render()` rather than in `draw_world`; `PortCeMuseumViewCapture` / `PortCeWorldViewCapture` capture projection matrices after `RENDERINFO.SetProjection` rather than at `CE_RENDER_PASS_PRE_WORLD`; `PortCeMuseumLabelsRender` draws inside `CHud::RenderBattleline` while `0366` suppresses combat overlays before `draw_hud`; `CePlayUnitHudOverlay` executes in the `GetShowHUD() == FALSE` branch of `CHud::Render`; and `PortCeEditorLevelEnd` / `PortCeMuseumVisitLevelEnd` tear down mode state before `CE_SessionBeginTeardown`). Those sites are preserved directly to guarantee exact write-fence, Z-ordering, matrix restoration, and mode invariants.
 
 ### 3.2 New Data Payloads (v2.0)
 

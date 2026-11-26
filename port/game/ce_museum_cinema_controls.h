@@ -145,7 +145,8 @@ inline Output Update(State *state, const Input &in) {
             } else if (films > 1) {
                 const unsigned step = region == kRegionNext ? 1u : films - 1u;
                 s.selected = int((unsigned(s.selected) + step) % films);
-                out.command = kCommandSelect; out.index = s.selected;
+                out.command = (in.decoder == kDecoderPlaying) ? kCommandPlay : kCommandSelect;
+                out.index = s.selected;
             }
         }
         s.pressOwned = s.pressSpoiled = false; s.pressRegion = kRegionNone;

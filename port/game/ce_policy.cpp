@@ -11,13 +11,17 @@
 extern bool PortCeLayer();
 extern bool PortRecording();
 extern bool PortCeMenus();
+extern bool PortCeExperimental(const char *mode) __attribute__((weak));
+extern bool CeCmdMapOn() __attribute__((weak));
 extern bool PortCeOneScreenMatch() __attribute__((weak));
 extern "C" int PortCeMultiBeActive(void) __attribute__((weak));
 extern "C" int PortCeSoloSkirmishActive(void) __attribute__((weak));
 extern "C" int PortCeSoloControlsActive(void) __attribute__((weak));
 extern "C" int PortCeBattleEngineIsLocalHuman(const void *be) __attribute__((weak));
-extern "C" int PortCeMultiBeHandleDeath(void *be) __attribute__((weak));
+extern "C" int PortCeMultiBeIsAuxEngine(const void *be) __attribute__((weak));
+extern "C" int PortCeCarrierClashBeInStasis(const void *be) __attribute__((weak));
 extern "C" int PortCeLivingSandboxBeInStasis(const void *be) __attribute__((weak));
+extern "C" int PortCeFlagshipDuelBeInStasis(const void *be) __attribute__((weak));
 extern "C" bool PortCeEditorActive(void) __attribute__((weak));
 extern "C" bool PortCeMuseumVisitActive(void) __attribute__((weak));
 extern "C" bool PortCeCarrierClashActive(void) __attribute__((weak));
@@ -100,15 +104,19 @@ uint32_t CePolicyActiveToggles()
 		mask |= CE_TOGGLE_MULTI_BE;
 	if (solo || multiBe)
 		mask |= CE_TOGGLE_AI_PILOTS;
-	// Commander & Play-Any-Unit are disallowed under Editor, Museum Visit, and Online Match v1.
-	const bool allowTactical = PortCeMenus() && !online &&
+	// Commander & Play-Any-Unit are disallowed under Editor, Museum Visit, recordings, and Online Match v1,
+	// and stay strictly gated on their actual feature enablement (0 overhead when OFF).
+	const bool allowTactical = PortCeMenus() && !PortRecording() && !online &&
 	                           !CeModeActive(CE_MODE_EDITOR) && !(PortCeEditorActive && PortCeEditorActive()) &&
 	                           !CeModeActive(CE_MODE_MUSEUM_VISIT) && !(PortCeMuseumVisitActive && PortCeMuseumVisitActive());
 	if (allowTactical)
 	{
-		if (CeModeActive(CE_MODE_COMMANDER) || !GAME.IsMultiplayer() || IsOneScreenMatch() || solo)
+		const bool singleViewportEligible = !GAME.IsMultiplayer() || IsOneScreenMatch() || solo;
+		const bool cmdEnabled = CeCmdMapOn ? CeCmdMapOn() : (PortCeExperimental && PortCeExperimental("commander"));
+		const bool playUnitEnabled = PortCeExperimental && PortCeExperimental("play_unit");
+		if (CeModeActive(CE_MODE_COMMANDER) || (cmdEnabled && singleViewportEligible))
 			mask |= CE_TOGGLE_COMMANDER;
-		if (CeModeActive(CE_MODE_PLAY_UNIT) || !GAME.IsMultiplayer() || IsOneScreenMatch() || solo)
+		if (CeModeActive(CE_MODE_PLAY_UNIT) || (playUnitEnabled && singleViewportEligible))
 			mask |= CE_TOGGLE_PLAY_UNIT;
 	}
 	if (!online && (mask & CE_TOGGLE_AI_PILOTS))
@@ -317,9 +325,11 @@ CeDeathAction CePolicyDeathAction(const void *be)
 #else
 	if (!PortCeLayer() || !be)
 		return CE_DEATH_RETAIL;
-	if (PortCeLivingSandboxBeInStasis && PortCeLivingSandboxBeInStasis(be) != 0)
+	if ((PortCeCarrierClashBeInStasis && PortCeCarrierClashBeInStasis(be) != 0) ||
+	    (PortCeLivingSandboxBeInStasis && PortCeLivingSandboxBeInStasis(be) != 0) ||
+	    (PortCeFlagshipDuelBeInStasis && PortCeFlagshipDuelBeInStasis(be) != 0))
 		return CE_DEATH_STASIS_RESCUE;
-	if (PortCeMultiBeHandleDeath && PortCeMultiBeHandleDeath(const_cast<void *>(be)) != 0)
+	if (PortCeMultiBeIsAuxEngine && PortCeMultiBeIsAuxEngine(be) != 0)
 		return CE_DEATH_AUX_RESPAWN;
 	return CE_DEATH_RETAIL;
 #endif

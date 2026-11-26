@@ -19,7 +19,7 @@
  #ifdef CE_VERSION
  bool PortCeOneScreenMatch();	// patch 0235: port/game/ce_cmdmatch.cpp, a Commander match shown on one screen
 -#define CE_SPLIT_HUD() (GAME.IsMultiplayer() && !PortCeOneScreenMatch())	// the HUD of a split screen: not a match's one screen
-+#define CE_SPLIT_HUD() (PortCeIsSplitScreen() && !PortCeOneScreenMatch())	// the HUD of a split screen: not single-viewport MP or a match's one screen
++#define CE_SPLIT_HUD() CePolicyIsSplitViewport()	// the HUD of a split screen: not single-viewport MP or a match's one screen
  #else
  #define CE_SPLIT_HUD() GAME.IsMultiplayer()
  #endif
@@ -28,7 +28,7 @@
  	}
  	BOOL	second = (mBattleEngine->GetPlayer()->GetNumber() != 1);
 +#ifdef CE_VERSION
-+	BOOL	splitSecond = second && PortCeIsSplitScreen();
++	BOOL	splitSecond = second && CePolicyIsSplitViewport();
 +#else
 +	BOOL	splitSecond = second;
 +#endif
@@ -102,7 +102,7 @@
  #ifdef CE_VERSION
  bool PortCeOneScreenMatch();	// patch 0235: port/game/ce_cmdmatch.cpp, a Commander match shown on one screen
 -#define CE_SPLIT_HUD() (GAME.IsMultiplayer() && !PortCeOneScreenMatch())	// the HUD of a split screen: not a match's one screen
-+#define CE_SPLIT_HUD() (PortCeIsSplitScreen() && !PortCeOneScreenMatch())	// the HUD of a split screen: not single-viewport MP or a match's one screen
++#define CE_SPLIT_HUD() CePolicyIsSplitViewport()	// the HUD of a split screen: not single-viewport MP or a match's one screen
  #else
  #define CE_SPLIT_HUD() GAME.IsMultiplayer()
  #endif
@@ -113,7 +113,7 @@
  #ifdef CE_VERSION
  bool PortCeOneScreenMatch();	// patch 0235: port/game/ce_cmdmatch.cpp, a Commander match shown on one screen
 -#define CE_SPLIT_HUD() (GAME.IsMultiplayer() && !PortCeOneScreenMatch())	// the HUD of a split screen: not a match's one screen
-+#define CE_SPLIT_HUD() (PortCeIsSplitScreen() && !PortCeOneScreenMatch())	// the HUD of a split screen: not single-viewport MP or a match's one screen
++#define CE_SPLIT_HUD() CePolicyIsSplitViewport()	// the HUD of a split screen: not single-viewport MP or a match's one screen
  #else
  #define CE_SPLIT_HUD() GAME.IsMultiplayer()
  #endif
@@ -124,7 +124,7 @@
  #ifdef CE_VERSION
  bool PortCeOneScreenMatch();	// patch 0235: port/game/ce_cmdmatch.cpp, a Commander match shown on one screen
 -#define CE_SPLIT_HUD() (GAME.IsMultiplayer() && !PortCeOneScreenMatch())	// the HUD of a split screen: not a match's one screen
-+#define CE_SPLIT_HUD() (PortCeIsSplitScreen() && !PortCeOneScreenMatch())	// the HUD of a split screen: not single-viewport MP or a match's one screen
++#define CE_SPLIT_HUD() CePolicyIsSplitViewport()	// the HUD of a split screen: not single-viewport MP or a match's one screen
  #else
  #define CE_SPLIT_HUD() GAME.IsMultiplayer()
  #endif
@@ -135,7 +135,7 @@
  #ifdef CE_VERSION
  bool PortCeOneScreenMatch();	// patch 0235: port/game/ce_cmdmatch.cpp, a Commander match shown on one screen
 -#define CE_SPLIT_HUD() (GAME.IsMultiplayer() && !PortCeOneScreenMatch())	// the HUD of a split screen: not a match's one screen
-+#define CE_SPLIT_HUD() (PortCeIsSplitScreen() && !PortCeOneScreenMatch())	// the HUD of a split screen: not single-viewport MP or a match's one screen
++#define CE_SPLIT_HUD() CePolicyIsSplitViewport()	// the HUD of a split screen: not single-viewport MP or a match's one screen
  #else
  #define CE_SPLIT_HUD() GAME.IsMultiplayer()
  #endif
@@ -235,7 +235,7 @@
  #ifdef CE_VERSION
  bool PortCeOneScreenMatch();	// patch 0235: port/game/ce_cmdmatch.cpp, a Commander match shown on one screen
 -#define CE_ONE_SCREEN() PortCeOneScreenMatch()
-+#define CE_ONE_SCREEN() (PortCeOneScreenMatch() || (GAME.IsMultiplayer() && !PortCeIsSplitScreen()))
++#define CE_ONE_SCREEN() (PortCeOneScreenMatch() || (GAME.IsMultiplayer() && !CePolicyIsSplitViewport()))
  #else
  #define CE_ONE_SCREEN() false
  #endif

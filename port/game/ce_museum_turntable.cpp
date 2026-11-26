@@ -373,6 +373,229 @@ void AppendStudIndicator(StudVertex *batch, unsigned &used, unsigned cap,
     emitBox(wx, wy, wz, r, r, 0.06f, col);
 }
 
+struct PanoramaTexVertex { float x, y, z; DWORD colour; float u, v; };
+struct PanoramaFlatVertex { float x, y, z; DWORD colour; };
+
+static bool ContainsIgnoreCase(const char *haystack, const char *needle) {
+    if (!haystack || !needle || !*needle) return false;
+    for (const char *h = haystack; *h; ++h) {
+        const char *a = h, *b = needle;
+        while (*a && *b) {
+            char ca = (*a >= 'A' && *a <= 'Z') ? char(*a + ('a' - 'A')) : *a;
+            char cb = (*b >= 'A' && *b <= 'Z') ? char(*b + ('a' - 'A')) : *b;
+            if (ca != cb) break;
+            ++a; ++b;
+        }
+        if (!*b) return true;
+    }
+    return false;
+}
+
+static unsigned ResolvePanoramaPanels(const LoadedGoodie &slot, IDirect3DTexture9 *out[8]) {
+    if (!slot.textures || slot.numTextures <= 0) return 0u;
+    struct PanelEntry { int order; IDirect3DTexture9 *tex; };
+    PanelEntry found[8] = {};
+    unsigned count = 0u;
+    for (int t = 0; t < slot.numTextures; ++t) {
+        CTEXTURE *ct = slot.textures[t];
+        if (!ct) continue;
+        IDirect3DTexture9 *d3dTex = ct->GetTexture();
+        if (!d3dTex) continue;
+        const char *name = ct->GetName();
+        if (!name || !ContainsIgnoreCase(name, "panorama")) continue;
+        int order = 100 + t;
+        for (const char *p = name; *p; ++p) {
+            if (ContainsIgnoreCase(p, "section") &&
+                (p[0] == 's' || p[0] == 'S') && (p[1] == 'e' || p[1] == 'E') &&
+                (p[2] == 'c' || p[2] == 'C') && (p[3] == 't' || p[3] == 'T') &&
+                (p[4] == 'i' || p[4] == 'I') && (p[5] == 'o' || p[5] == 'O') &&
+                (p[6] == 'n' || p[6] == 'N')) {
+                const char *d = p + 7;
+                int v = 0;
+                bool any = false;
+                while (*d >= '0' && *d <= '9') {
+                    v = v * 10 + (*d - '0');
+                    any = true;
+                    ++d;
+                }
+                if (any) order = v;
+                break;
+            }
+        }
+        if (count < 8u) found[count++] = {order, d3dTex};
+    }
+    // Sort by section number (section01 .. section05) so panels stitch left-to-right seamlessly.
+    for (unsigned i = 1u; i < count; ++i) {
+        PanelEntry key = found[i];
+        unsigned j = i;
+        while (j > 0u && found[j - 1u].order > key.order) {
+            found[j] = found[j - 1u];
+            --j;
+        }
+        found[j] = key;
+    }
+    for (unsigned i = 0u; i < count; ++i) out[i] = found[i].tex;
+    return count;
+}
+
+// Renders goodie 76 (Lost Toys Panorama Monument) as a finished outward-facing cylindrical
+// museum sculpture stitched from all 5 authentic retail panorama1_512x512_section01..05 panels
+// at flat 1x brightness and 1:1 aspect ratio, capped top and bottom with brushed-brass collars
+// and dark-slate discs.
+void DrawPanoramaMonument(IDirect3DDevice9 *dev, unsigned index, float floorZ) {
+    if (!dev || index >= kManifestCount) return;
+    const Spec &sp = kManifest[index];
+    const float wx = CeMuseumWorld::kEntranceX + sp.localX;
+    const float wy = CeMuseumWorld::kEntranceY + sp.localY;
+    const float plinthZ = floorZ - sp.plinthTopZ;
+    const float yawRad = gBank.slots[index].yawRad;
+
+    constexpr unsigned kSegs = 40u;
+    constexpr float kTwoPi = 6.283185307f;
+    constexpr float kDrumRadius = 1.02f; // circumference 6.41 m -> 1.28 m per panel across 5 sections
+    constexpr float kDrumHeight = 1.28f; // exact 1:1 aspect ratio for 512x512 panorama section panels
+    constexpr float kCollarRadius = 1.06f;
+    constexpr float kCollarHeight = 0.06f;
+    constexpr float kSlateCapRadius = 0.96f;
+
+    // Native Z points downward: plinthZ is the plinth top deck, negative offsets rise upward.
+    const float zBaseBot = plinthZ - 0.004f;
+    const float zDrumBot = plinthZ - kCollarHeight;
+    const float zDrumTop = zDrumBot - kDrumHeight;
+    const float zCrownTop = zDrumTop - kCollarHeight;
+
+    D3DMATRIX world = {}, view = {}, proj = {};
+    world._11 = world._22 = world._33 = world._44 = 1.0f;
+    RENDERINFO.GetView(&view);
+    RENDERINFO.GetProjection(&proj);
+    dev->SetVertexShader(NULL);
+    dev->SetPixelShader(NULL);
+    dev->SetTransform(D3DTS_WORLD, &world);
+    dev->SetTransform(D3DTS_VIEW, &view);
+    dev->SetTransform(D3DTS_PROJECTION, &proj);
+    dev->SetTexture(1, NULL);
+    dev->SetRenderState(D3DRS_LIGHTING, FALSE);
+    dev->SetRenderState(D3DRS_SPECULARENABLE, FALSE);
+    dev->SetRenderState(D3DRS_FOGENABLE, FALSE);
+    dev->SetRenderState(D3DRS_RANGEFOGENABLE, FALSE);
+    dev->SetRenderState(D3DRS_FOGVERTEXMODE, D3DFOG_NONE);
+    dev->SetRenderState(D3DRS_FOGTABLEMODE, D3DFOG_NONE);
+    dev->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE);
+    dev->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+    dev->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+    dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_CCW);
+    dev->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
+    dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+    dev->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+    dev->SetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
+    dev->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
+    dev->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+    dev->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+
+    // 1. Outward-facing cylindrical panorama drum: draw each section01..05 panel with local U in [0..1].
+    IDirect3DTexture9 *panels[8] = {};
+    const unsigned panelCount = ResolvePanoramaPanels(gLoaded[index], panels);
+    if (panelCount > 0u) {
+        const unsigned segsPerPanel = (kSegs / panelCount >= 4u) ? (kSegs / panelCount) : 4u;
+        const float panelArc = kTwoPi / float(panelCount);
+        dev->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+        dev->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+        dev->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+        dev->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+        dev->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_LINEAR);
+        dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+        dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+        dev->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+        dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+        dev->SetFVF(D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX1);
+        for (unsigned p = 0u; p < panelCount; ++p) {
+            PanoramaTexVertex panelVerts[kSegs * 6u];
+            unsigned dv = 0u;
+            const float baseAngle = yawRad + float(p) * panelArc;
+            for (unsigned s = 0u; s < segsPerPanel; ++s) {
+                const float u0 = float(s) / float(segsPerPanel);
+                const float u1 = float(s + 1u) / float(segsPerPanel);
+                const float a0 = baseAngle + u0 * panelArc;
+                const float a1 = baseAngle + u1 * panelArc;
+                const float x0 = wx + std::cos(a0) * kDrumRadius;
+                const float y0 = wy + std::sin(a0) * kDrumRadius;
+                const float x1 = wx + std::cos(a1) * kDrumRadius;
+                const float y1 = wy + std::sin(a1) * kDrumRadius;
+                const PanoramaTexVertex tl = {x0, y0, zDrumTop, 0xffffffffu, u0, 0.0f};
+                const PanoramaTexVertex tr = {x1, y1, zDrumTop, 0xffffffffu, u1, 0.0f};
+                const PanoramaTexVertex bl = {x0, y0, zDrumBot, 0xfff6f4f0u, u0, 1.0f};
+                const PanoramaTexVertex br = {x1, y1, zDrumBot, 0xfff6f4f0u, u1, 1.0f};
+                panelVerts[dv++] = tl; panelVerts[dv++] = tr; panelVerts[dv++] = br;
+                panelVerts[dv++] = tl; panelVerts[dv++] = br; panelVerts[dv++] = bl;
+            }
+            dev->SetTexture(0, panels[p]);
+            dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, dv / 3u, panelVerts, sizeof(PanoramaTexVertex));
+        }
+    }
+    const bool hasPanoramaTex = (panelCount > 0u);
+
+    // 2. Solid brushed-brass base & crown collars + honed dark-slate top & bottom cap discs.
+    constexpr unsigned kCapCap = kSegs * 36u;
+    PanoramaFlatVertex capVerts[kCapCap];
+    unsigned cv = 0u;
+    auto pushSideBand = [&](float r, float zTopBand, float zBotBand, DWORD colTop, DWORD colBot) {
+        for (unsigned s = 0u; s < kSegs; ++s) {
+            const float a0 = yawRad + (float(s) / float(kSegs)) * kTwoPi;
+            const float a1 = yawRad + (float(s + 1u) / float(kSegs)) * kTwoPi;
+            const float x0 = wx + std::cos(a0) * r, y0 = wy + std::sin(a0) * r;
+            const float x1 = wx + std::cos(a1) * r, y1 = wy + std::sin(a1) * r;
+            const PanoramaFlatVertex tl = {x0, y0, zTopBand, colTop};
+            const PanoramaFlatVertex tr = {x1, y1, zTopBand, colTop};
+            const PanoramaFlatVertex bl = {x0, y0, zBotBand, colBot};
+            const PanoramaFlatVertex br = {x1, y1, zBotBand, colBot};
+            capVerts[cv++] = tl; capVerts[cv++] = tr; capVerts[cv++] = br;
+            capVerts[cv++] = tl; capVerts[cv++] = br; capVerts[cv++] = bl;
+        }
+    };
+    auto pushTopDisc = [&](float r, float zPlane, DWORD colCenter, DWORD colRim) {
+        const PanoramaFlatVertex cen = {wx, wy, zPlane, colCenter};
+        for (unsigned s = 0u; s < kSegs; ++s) {
+            const float a0 = yawRad + (float(s) / float(kSegs)) * kTwoPi;
+            const float a1 = yawRad + (float(s + 1u) / float(kSegs)) * kTwoPi;
+            const PanoramaFlatVertex p0 = {wx + std::cos(a0) * r, wy + std::sin(a0) * r, zPlane, colRim};
+            const PanoramaFlatVertex p1 = {wx + std::cos(a1) * r, wy + std::sin(a1) * r, zPlane, colRim};
+            capVerts[cv++] = cen; capVerts[cv++] = p1; capVerts[cv++] = p0;
+        }
+    };
+    auto pushBotDisc = [&](float r, float zPlane, DWORD colCenter, DWORD colRim) {
+        const PanoramaFlatVertex cen = {wx, wy, zPlane, colCenter};
+        for (unsigned s = 0u; s < kSegs; ++s) {
+            const float a0 = yawRad + (float(s) / float(kSegs)) * kTwoPi;
+            const float a1 = yawRad + (float(s + 1u) / float(kSegs)) * kTwoPi;
+            const PanoramaFlatVertex p0 = {wx + std::cos(a0) * r, wy + std::sin(a0) * r, zPlane, colRim};
+            const PanoramaFlatVertex p1 = {wx + std::cos(a1) * r, wy + std::sin(a1) * r, zPlane, colRim};
+            capVerts[cv++] = cen; capVerts[cv++] = p0; capVerts[cv++] = p1;
+        }
+    };
+
+    const DWORD kBrassHi = 0xffdfc074u, kBrassLo = 0xff9a7636u;
+    const DWORD kSlateHi = 0xff343e48u, kSlateLo = 0xff222a32u;
+    // Base collar & top lip + underside cap
+    pushSideBand(kCollarRadius, zDrumBot, zBaseBot, kBrassHi, kBrassLo);
+    pushTopDisc(kCollarRadius, zDrumBot, kBrassLo, kBrassHi);
+    pushBotDisc(kCollarRadius, zBaseBot, kSlateLo, kBrassLo);
+    // Crown collar + solid brass rim + inset honed dark-slate crown cap disc
+    pushSideBand(kCollarRadius, zCrownTop, zDrumTop, kBrassHi, kBrassLo);
+    pushBotDisc(kCollarRadius, zDrumTop, kBrassLo, kBrassLo);
+    pushTopDisc(kCollarRadius, zCrownTop, kBrassLo, kBrassHi);
+    pushTopDisc(kSlateCapRadius, zCrownTop - 0.008f, kSlateHi, kSlateLo);
+    if (!hasPanoramaTex) {
+        pushSideBand(kDrumRadius, zDrumTop, zDrumBot, kSlateHi, kSlateLo);
+    }
+
+    dev->SetTexture(0, NULL);
+    dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+    dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+    dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+    dev->SetFVF(D3DFVF_XYZ | D3DFVF_DIFFUSE);
+    dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, cv / 3u, capVerts, sizeof(PanoramaFlatVertex));
+}
+
 } // namespace
 
 void RuntimeInit() {
@@ -455,7 +678,8 @@ void RuntimeDraw(float floorZ) {
     for (unsigned i = 0; i < kManifestCount; ++i) {
         if (!ShouldBeResident(i, gBank.residentWing)) continue;
         anyResident = true;
-        if (gLoaded[i].mesh) anyMesh = true;
+        if (gLoaded[i].mesh || (kManifest[i].goodieId == 76 && gLoaded[i].textures && gLoaded[i].numTextures > 0))
+            anyMesh = true;
     }
     if (!anyResident) return;
 
@@ -591,12 +815,18 @@ void RuntimeDraw(float floorZ) {
     CMESHRENDERER::SetRenderAlpha(255);
     CMESHRENDERER::SetRenderMode(R_Normal);
 
+    int panoramaSlot = -1;
     for (unsigned i = 0; i < kManifestCount; ++i) {
         if (!ShouldBeResident(i, gBank.residentWing)) continue;
+        const Spec &sp = kManifest[i];
+        if (sp.goodieId == 76) {
+            if (gLoaded[i].mesh || (gLoaded[i].textures && gLoaded[i].numTextures > 0))
+                panoramaSlot = static_cast<int>(i);
+            continue;
+        }
         CMesh *mesh = gLoaded[i].mesh;
         if (!mesh || !mesh->mBoundingBox || !mesh->mBoundingBox->mValid) continue;
 
-        const Spec &sp = kManifest[i];
         const CBoundingBox *box = mesh->mBoundingBox;
         const float spanXY = 2.0f * std::sqrt(box->mAxes.X * box->mAxes.X + box->mAxes.Y * box->mAxes.Y);
         const float span = spanXY > (2.0f * box->mAxes.Z) ? spanXY : (2.0f * box->mAxes.Z);
@@ -619,27 +849,15 @@ void RuntimeDraw(float floorZ) {
         const float plinthZ = floorZ - sp.plinthTopZ;
         FVector pos(wx - offset.X, wy - offset.Y, plinthZ - halfH - offset.Z);
 
-        const bool flatPhoto = (sp.goodieId == 76);
-        if (flatPhoto) {
-            // Render the Dev Team Photo panorama at flat ~1x exposure under MODULATE2X (no white blowout).
-            RENDERINFO.SetAmbient(0x00787878);
-            RENDERINFO.SetLightEnable(0, FALSE);
-            RENDERINFO.SetLightEnable(1, FALSE);
-            RENDERINFO.SetLightEnable(2, FALSE);
-            RENDERINFO.Apply();
-        }
         CMESHRENDERER::Render(&pos, &scaledOri, mesh, NULL, NULL, 0, FALSE, 0);
-        if (flatPhoto) {
-            RENDERINFO.SetAmbient(0x00262a32);
-            RENDERINFO.SetLightEnable(0, TRUE);
-            RENDERINFO.SetLightEnable(1, TRUE);
-            RENDERINFO.SetLightEnable(2, TRUE);
-            RENDERINFO.Apply();
-        }
     }
 
     CMESHRENDERER::SetRenderAlpha(alphaWas);
     CMESHRENDERER::SetRenderMode(modeWas);
+
+    if (panoramaSlot >= 0) {
+        DrawPanoramaMonument(dev, static_cast<unsigned>(panoramaSlot), floorZ);
+    }
 
     savedState->Apply();
     LT.InvalidateAllStates();

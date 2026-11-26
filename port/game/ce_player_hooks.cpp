@@ -29,6 +29,51 @@
 
 extern bool PortCeLayer();
 
+namespace CePlayerHooksAccess
+{
+
+// Standard C++ explicit-instantiation read-only accessors for private CBattleEngine weapon store arrays
+// so BuildSlotObs reads live heat, overheat, and ammo counts without touching BattleEngine.h or calling
+// CBattleEngine::GetCurrentWeapon() (which mutates mCurrentWeapon / intrusive weapon iterators).
+template <typename Tag>
+struct CeBeStoreSlot
+{
+	static typename Tag::MemberPtr ptr;
+};
+template <typename Tag>
+typename Tag::MemberPtr CeBeStoreSlot<Tag>::ptr = nullptr;
+
+template <typename Tag, typename Tag::MemberPtr P>
+struct CeBeStoreBind
+{
+	struct Init
+	{
+		Init() { CeBeStoreSlot<Tag>::ptr = P; }
+	};
+	static Init sInit;
+};
+template <typename Tag, typename Tag::MemberPtr P>
+typename CeBeStoreBind<Tag, P>::Init CeBeStoreBind<Tag, P>::sInit;
+
+struct BeStoreValueTag
+{
+	typedef float (CBattleEngine::*MemberPtr)[kBattleEngineStores];
+};
+struct BeStoreOverheatTag
+{
+	typedef BOOL (CBattleEngine::*MemberPtr)[kBattleEngineStores];
+};
+struct BeStoreHeatTag
+{
+	typedef BOOL (CBattleEngine::*MemberPtr)[kBattleEngineStores];
+};
+
+template struct CeBeStoreBind<BeStoreValueTag, &CBattleEngine::mStoreValue>;
+template struct CeBeStoreBind<BeStoreOverheatTag, &CBattleEngine::mStoreOverheat>;
+template struct CeBeStoreBind<BeStoreHeatTag, &CBattleEngine::mStoreHeat>;
+
+} // namespace CePlayerHooksAccess
+
 namespace
 {
 
@@ -220,10 +265,19 @@ void BuildSlotObs(uint8_t slot, CBattleEngine *be, uint32_t simTick, uint32_t ma
 		const int store = curWep->GetAmmoStore();
 		if (cfg && store >= 0 && store < kBattleEngineStores)
 		{
-			obs.weaponIsEnergy = (cfg->mStoreHeat[store] != FALSE) ? 1u : 0u;
-			obs.weaponOverheated = (obs.weaponIsEnergy && !obs.weaponReady) ? 1u : 0u;
-			obs.weaponHeatOrAmmo = CeAiClamp(1.0f - curWep->GetReadiness(), 0.0f, 1.0f);
-			obs.weaponAmmoCount = obs.weaponIsEnergy ? 1 : static_cast<int32_t>(cfg->mStoreValue[store]);
+			const auto valPtr = CePlayerHooksAccess::CeBeStoreSlot<CePlayerHooksAccess::BeStoreValueTag>::ptr;
+			const auto ovhPtr = CePlayerHooksAccess::CeBeStoreSlot<CePlayerHooksAccess::BeStoreOverheatTag>::ptr;
+			const auto heatPtr = CePlayerHooksAccess::CeBeStoreSlot<CePlayerHooksAccess::BeStoreHeatTag>::ptr;
+			const bool isEnergy = heatPtr ? ((be->*heatPtr)[store] != FALSE) : (cfg->mStoreHeat[store] != FALSE);
+			const bool isOverheated = ovhPtr ? ((be->*ovhPtr)[store] != FALSE) : (isEnergy && !obs.weaponReady);
+			const float curVal = valPtr ? (be->*valPtr)[store] : 0.0f;
+			const float maxVal = cfg->mStoreValue[store];
+			obs.weaponIsEnergy = isEnergy ? 1u : 0u;
+			obs.weaponOverheated = isOverheated ? 1u : 0u;
+			obs.weaponHeatOrAmmo = (valPtr && maxVal > 1e-6f)
+				? CeAiClamp(curVal / maxVal, 0.0f, 1.0f)
+				: CeAiClamp(1.0f - curWep->GetReadiness(), 0.0f, 1.0f);
+			obs.weaponAmmoCount = isEnergy ? 0 : static_cast<int32_t>(valPtr ? curVal : maxVal);
 		}
 	}
 
@@ -281,7 +335,7 @@ void BuildSlotObs(uint8_t slot, CBattleEngine *be, uint32_t simTick, uint32_t ma
 		e.airborne = (u->IsA(THING_TYPE_AIR_UNIT) != FALSE) ? 1u : 0u;
 		e.inWater = (u->IsInWater() != FALSE) ? 1u : 0u;
 		e.isBattleEngine = (u->IsA(THING_TYPE_BATTLE_ENGINE) != FALSE) ? 1u : 0u;
-		e.isBaseBuilding = (isFriendly && u->IsA(THING_TYPE_BUILDING)) ? 1u : 0u;
+		e.isBaseBuilding = (u->IsA(THING_TYPE_BUILDING) != FALSE) ? 1u : 0u;
 		e.isRepairPad = 0u;
 		if ((isFriendly || u->GetAllegiance() == kIndependentAllegiance) && u->GetUnitData() && u->GetUnitData()->mName)
 		{
@@ -298,6 +352,26 @@ void BuildSlotObs(uint8_t slot, CBattleEngine *be, uint32_t simTick, uint32_t ma
 	}
 	obs.entityCount = entCount;
 	CePlayerObsSortEntities(obs.entities, obs.entityCount);
+
+	// Populate read-only weapon range bounds against the nearest visible hostile (or self pos).
+	if (curWep)
+	{
+		FVector rangeRef = myPos;
+		for (uint32_t i = 0u; i < obs.entityCount; ++i)
+		{
+			if (!obs.entities[i].isFriendly)
+			{
+				rangeRef = FVector(obs.entities[i].pos[0], obs.entities[i].pos[1], obs.entities[i].pos[2]);
+				break;
+			}
+		}
+		const float minR = curWep->GetMinRange(rangeRef);
+		float maxR = curWep->GetActualMaxRange(rangeRef);
+		if (!CeAiIsFinite(maxR) || maxR <= 5.0f)
+			maxR = curWep->GetMaxRange(rangeRef);
+		obs.weaponMinRange = (CeAiIsFinite(minR) && minR > 0.0f) ? minR : 0.0f;
+		obs.weaponMaxRange = (CeAiIsFinite(maxR) && maxR > 0.0f) ? maxR : 0.0f;
+	}
 
 	// Toggle-gated Commander squads (zeroed when CE_TOGGLE_COMMANDER is OFF).
 	if (toggles & CE_TOGGLE_COMMANDER)
@@ -424,6 +498,10 @@ extern "C" void PortCePlayerHooksAct(uint32_t sim_tick)
 		// Layer 2: Toggle-gated Tactical Commander & Headless Possession (0 CPU when toggles OFF).
 		if (toggles & (CE_TOGGLE_COMMANDER | CE_TOGGLE_PLAY_UNIT))
 		{
+			// Reconcile cached possession handle against authoritative lease table before L2 decides.
+			gTacticalState[slot].possessedUnit = (toggles & CE_TOGGLE_PLAY_UNIT)
+				? CePlayUnitSlotUnit(static_cast<uint8_t>(slot))
+				: kCeEntityHandleInvalid;
 			CeCommanderIntent cmd = {};
 			CePossessIntent possess = {};
 			CeAiTacticalL2Decide(&gTacticalState[slot], gSlotObs[slot], prior, &cmd, &possess);
@@ -438,13 +516,19 @@ extern "C" void PortCePlayerHooksAct(uint32_t sim_tick)
 				if (possess.release)
 				{
 					CePlayUnitSlotRelease(static_cast<uint8_t>(slot));
+					gTacticalState[slot].possessedUnit = kCeEntityHandleInvalid;
 				}
 				else
 				{
-					if (CePlayUnitSlotUnit(static_cast<uint8_t>(slot)) != possess.unitHandle)
-						CePlayUnitSlotTake(static_cast<uint8_t>(slot), gSlotObs[slot].allegiance, possess.unitHandle, nullptr);
-					CePlayUnitSlotDrive(static_cast<uint8_t>(slot), possess.goalX, possess.goalY,
-					                    possess.fire != 0u, possess.aimX, possess.aimY, possess.aimZ, sim_tick);
+					bool hasLease = (CePlayUnitSlotUnit(static_cast<uint8_t>(slot)) == possess.unitHandle);
+					if (!hasLease)
+						hasLease = CePlayUnitSlotTake(static_cast<uint8_t>(slot), gSlotObs[slot].allegiance,
+						                              possess.unitHandle, nullptr);
+					if (!hasLease || !CePlayUnitSlotDrive(static_cast<uint8_t>(slot), possess.goalX, possess.goalY,
+					                                      possess.fire != 0u, possess.aimX, possess.aimY, possess.aimZ, sim_tick))
+					{
+						gTacticalState[slot].possessedUnit = kCeEntityHandleInvalid;
+					}
 				}
 			}
 		}

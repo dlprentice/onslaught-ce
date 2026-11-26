@@ -383,4 +383,6 @@ extern "C" void PortCeAiStrategistShutdown(void)
 	gRuntime.StopWorker();
 	gRuntime.probed = false;
 	gRuntime.modelLoaded = false;
+	for (int i = 0; i < CE_PLAYER_MAX_SLOTS; ++i)
+		std::memset(&gRuntime.outbox[i].mainCopy, 0, sizeof(gRuntime.outbox[i].mainCopy));
 }

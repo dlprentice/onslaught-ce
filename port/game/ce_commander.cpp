@@ -591,6 +591,7 @@ void Follow();		// below, after the map's face (it needs the arrival radius)
 
 void Reset()
 {
+	memset(gRecs, 0, sizeof(gRecs));
 	gNRecs = 0;
 	gTick = 0;
 	gLevel = -1;
@@ -950,7 +951,8 @@ void Probe()
 void CeCommanderUpdate()
 {
 	if (!gConfigured) ReadConfiguration();
-	if (!gEnabled) return;
+	const bool toggleOn = (CePolicyActiveToggles() & CE_TOGGLE_COMMANDER) != 0u;
+	if (!gEnabled && !toggleOn) return;
 	const int state = GAME.GetGameState();
 #ifdef CE_COMMANDER_TEST
 	if (state != gLastState)
@@ -968,7 +970,7 @@ void CeCommanderUpdate()
 	if (state == GAME_STATE_PRE_RUNNING || state == GAME_STATE_PANNING || state == GAME_STATE_PLAYING) CeCmdMatchUpdate();
 	if (state == GAME_STATE_NOT_RUNNING || state == GAME_STATE_PRE_RUNNING) { Reset(); CeFactoryReset(); return; }
 	if (state != GAME_STATE_PLAYING || GAME.IsPaused()) return;
-	if (!CeCmdAdmits(!GAME.IsMultiplayer() && GAME.GetNPlayers() == 1)) return;
+	if (!CeCmdAdmits(!GAME.IsMultiplayer() && GAME.GetNPlayers() == 1) && !toggleOn) return;
 #ifdef CE_COMMANDER_TEST
 	if (!gOut && gProbePath)
 	{
@@ -1023,21 +1025,21 @@ void CeCommanderUpdate()
 
 bool CeCommanderNoMerge(const void *squad)
 {
-	if (!gEnabled || !gNRecs) return false;
+	if ((!gEnabled && !(CePolicyActiveToggles() & CE_TOGGLE_COMMANDER)) || !gNRecs) return false;
 	Rec *r = ByPointer(squad);
 	return r && r->ordered && r->guard;
 }
 
 extern "C" int PortCeCmdSquadHasPlayerOrder(const void *squad)
 {
-	if (!gEnabled || !gNRecs || !squad) return 0;
+	if ((!gEnabled && !(CePolicyActiveToggles() & CE_TOGGLE_COMMANDER)) || !gNRecs || !squad) return 0;
 	Rec *r = ByPointer(squad);
 	return (r && r->ordered) ? 1 : 0;
 }
 
 int CeCommanderRelaxed(void *squad, FVector *pos)
 {
-	if (!gEnabled || !gNRecs) return 0;
+	if ((!gEnabled && !(CePolicyActiveToggles() & CE_TOGGLE_COMMANDER)) || !gNRecs) return 0;
 	Rec *r = ByPointer(squad);
 	if (!r || !r->ordered || !r->reassert) return 0;
 	switch (r->verb)
@@ -1050,6 +1052,11 @@ int CeCommanderRelaxed(void *squad, FVector *pos)
 		return 2;
 	default: return 0;
 	}
+}
+
+void CeCommanderLevelEnd()
+{
+	Reset();
 }
 
 // ---- the map's face -----------------------------------------------------------------------------------------------------------------
