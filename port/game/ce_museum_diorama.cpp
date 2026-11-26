@@ -146,6 +146,11 @@ struct RuntimeData {
 
     // Dynamic host scratch buffer for tracers, 3-plane additive starbursts, smoke & lectern jewels.
     FlatVfxVertex *vfxBatch;
+
+    // Reusable D3D9 state block for standalone ownStateBlock draws (avoids per-frame allocation).
+    IDirect3DStateBlock9 *stateBlock;
+    IDirect3DDevice9 *stateBlockDev;
+    uint64_t stateBlockGen;
 };
 
 static RuntimeData *gDio = NULL;
@@ -336,6 +341,9 @@ void ReleaseStageBuffers(RuntimeData *d) {
     if (d->domeVb)  { d->domeVb->Release();  d->domeVb = NULL; }
     if (d->domeIb)  { d->domeIb->Release();  d->domeIb = NULL; }
     if (d->terrainDetailTex) { d->terrainDetailTex->Release(); d->terrainDetailTex = NULL; }
+    if (d->stateBlock) { d->stateBlock->Release(); d->stateBlock = NULL; }
+    d->stateBlockDev = NULL;
+    d->stateBlockGen = 0u;
     d->stageVertCount = 0;
     d->stageIdxCount = 0;
     d->domeVertCount = 0;
@@ -438,8 +446,8 @@ void BuildFallbackUnitMesh(IDirect3DDevice9 *dev, UniqueMeshGpu *out) {
             verts[vAt++] = {bx, by, bz, nx, ny, nz, col, 1.0f, 0.0f};
             verts[vAt++] = {cx, cy, cz, nx, ny, nz, col, 1.0f, 1.0f};
             verts[vAt++] = {dx, dy, dz, nx, ny, nz, col, 0.0f, 1.0f};
-            indices[iAt++] = b + 0u; indices[iAt++] = b + 1u; indices[iAt++] = b + 2u;
-            indices[iAt++] = b + 0u; indices[iAt++] = b + 2u; indices[iAt++] = b + 3u;
+            indices[iAt++] = b + 0u; indices[iAt++] = b + 2u; indices[iAt++] = b + 1u;
+            indices[iAt++] = b + 0u; indices[iAt++] = b + 3u; indices[iAt++] = b + 2u;
         };
         face(x0,y0,z1, x1,y0,z1, x1,y1,z1, x0,y1,z1,  0,0,-1);
         face(x0,y0,z0, x1,y0,z0, x1,y0,z1, x0,y0,z1,  0,-1,0);
@@ -1281,8 +1289,8 @@ void EnsureStageGpuBuffers(RuntimeData *d, IDirect3DDevice9 *dev, float floorZ) 
             sb.DrumTier(wcx, wcy, floorZ, 1.32f, 1.14f, 0.18f, 0.78f, 32u, 0xff36404au, 0xff20262eu, false, 0.55f);
             sb.DrumTier(wcx, wcy, floorZ, 1.14f, 1.98f, 0.78f, 0.90f, 32u, 0xff4c5864u, 0xff2c343eu, false, 0.55f);
             sb.DrumTier(wcx, wcy, floorZ, 2.02f, 2.02f, 0.90f, 0.945f, 32u, accent,     accent,      false, 0.40f);
-            // Recessed dark inner bed beneath terrain dish (zero polygonal gaps!)
-            sb.DrumTier(wcx, wcy, floorZ, 1.88f, 1.88f, 1.02f, 1.048f, 48u, 0xff1c2228u, 0xff161b20u, true, 0.50f);
+            // Recessed dark inner bed cleanly beneath terrain dish troughs (zero polygonal gaps or clipping!)
+            sb.DrumTier(wcx, wcy, floorZ, 1.88f, 1.88f, 0.99f, 1.020f, 48u, 0xff1c2228u, 0xff161b20u, true, 0.50f);
             EmitCuratorLectern(sb, di, floorZ, false);
             d->pedSlateRange[di] = {slateStart, (sb.iUsed - slateStart) / 3u};
 
@@ -1552,6 +1560,14 @@ void DrawDioramaVfx(IDirect3DDevice9 *dev, const RuntimeData *d, float floorZ) {
     dev->SetIndices(NULL);
     dev->SetFVF(kFlatFvf);
 
+    // Evaluate all active tracers once per frame and share the results across smoke + additive passes.
+    TracerSegment evaluated[kDioramaCount][kMaxTracersPerDiorama] = {};
+    for (unsigned di = 0; di < kDioramaCount; ++di) {
+        const DioramaSpec &ds = kDioramas[di];
+        for (unsigned ti = 0; ti < ds.tracerCount && ti < kMaxTracersPerDiorama; ++ti)
+            EvaluateTracer(ds, ds.tracers[ti], d->state.simTime[di], &evaluated[di][ti]);
+    }
+
     // -------------------------------------------------------------------------
     // Sub-pass A: Soft alpha-faded rising miniature smoke puffs above impacts
     // -------------------------------------------------------------------------
@@ -1581,8 +1597,7 @@ void DrawDioramaVfx(IDirect3DDevice9 *dev, const RuntimeData *d, float floorZ) {
         const float wcy = CeMuseumWorld::kEntranceY + ds.localY;
         const float topBase = floorZ - kTabletopZ;
         for (unsigned ti = 0; ti < ds.tracerCount && ti < kMaxTracersPerDiorama; ++ti) {
-            TracerSegment seg = {};
-            EvaluateTracer(ds, ds.tracers[ti], d->state.simTime[di], &seg);
+            const TracerSegment &seg = evaluated[di][ti];
             if (seg.smokeAlpha > 0.04f) {
                 const float r = 0.040f + 0.055f * (1.0f - seg.smokeAlpha);
                 const unsigned a = FloatToByte(Clamp01(seg.smokeAlpha) * 110.0f);
@@ -1676,9 +1691,7 @@ void DrawDioramaVfx(IDirect3DDevice9 *dev, const RuntimeData *d, float floorZ) {
         const float wcy = CeMuseumWorld::kEntranceY + ds.localY;
         const float topBase = floorZ - kTabletopZ;
         for (unsigned ti = 0; ti < ds.tracerCount && ti < kMaxTracersPerDiorama; ++ti) {
-            const TracerSpec &ts = ds.tracers[ti];
-            TracerSegment seg = {};
-            EvaluateTracer(ds, ts, d->state.simTime[di], &seg);
+            const TracerSegment &seg = evaluated[di][ti];
             if (seg.active) {
                 const float ax = wcx + seg.ax, ay = wcy + seg.ay, az = topBase - seg.az;
                 const float bx = wcx + seg.bx, by = wcy + seg.by, bz = topBase - seg.bz;
@@ -1810,8 +1823,21 @@ void RuntimeDraw(float floorZ, bool ownStateBlock) {
 
     IDirect3DStateBlock9 *saved = NULL;
     if (ownStateBlock) {
-        if (FAILED(dev->CreateStateBlock(D3DSBT_ALL, &saved)) || !saved) return;
-        if (FAILED(saved->Capture())) { saved->Release(); return; }
+        const uint64_t gen = CurrentDioramaDeviceGen();
+        if (d->stateBlock && (d->stateBlockDev != dev || d->stateBlockGen != gen)) {
+            d->stateBlock->Release();
+            d->stateBlock = NULL;
+            d->stateBlockDev = NULL;
+            d->stateBlockGen = 0u;
+        }
+        if (!d->stateBlock) {
+            if (SUCCEEDED(dev->CreateStateBlock(D3DSBT_ALL, &d->stateBlock)) && d->stateBlock) {
+                d->stateBlockDev = dev;
+                d->stateBlockGen = gen;
+            }
+        }
+        saved = d->stateBlock;
+        if (!saved || FAILED(saved->Capture())) return;
     }
 
     D3DMATRIX id = {}, view = {}, proj = {};
@@ -2133,12 +2159,18 @@ void RuntimeDraw(float floorZ, bool ownStateBlock) {
 
     if (saved) {
         saved->Apply();
-        saved->Release();
         CeMuseumRestoreEngineRenderState();
     }
 }
 
 } // namespace CeMuseumDiorama
+
+extern "C" void PortCeMuseumDioramaDeleteDeviceObjects(void) {
+    if (CeMuseumDiorama::gDio) {
+        CeMuseumDiorama::ReleaseUnitAssets(CeMuseumDiorama::gDio);
+        CeMuseumDiorama::ReleaseStageBuffers(CeMuseumDiorama::gDio);
+    }
+}
 #else
 #include "ce_museum_diorama.h"
 namespace CeMuseumDiorama {

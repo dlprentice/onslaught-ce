@@ -435,7 +435,7 @@ void LoadCurrentExhibit(RuntimeData *d) {
                     d->deviceGen = CurrentPedestalDeviceGen();
                     d->content = kContentArt;
                     std::snprintf(d->activeNote, sizeof(d->activeNote),
-                                  "Archive plate, %u by %u. Aim at the brass controls to browse.",
+                                  "Archive plate, %u by %u - aim at the brass controls to browse.",
                                   d->artSrcW, d->artSrcH);
                     return;
                 }
@@ -660,11 +660,20 @@ void DrawSteleFrame(IDirect3DDevice9 *dev, const RuntimeData *d, float floorZ,
             {wx - hw, fy, centerZ + hh, accentBot},
             {wx + hw, fy, centerZ + hh, accentBot},
         };
+        const float by = wy + 0.12f;
+        const FlatVert bq[4] = {
+            {wx + hw, by, centerZ - hh, accentTop},
+            {wx - hw, by, centerZ - hh, accentTop},
+            {wx + hw, by, centerZ + hh, accentBot},
+            {wx - hw, by, centerZ + hh, accentBot},
+        };
+        dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
         dev->SetTexture(0, NULL);
         dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
         dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
         dev->SetFVF(D3DFVF_XYZ | D3DFVF_DIFFUSE);
         dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, q, sizeof(FlatVert));
+        dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, bq, sizeof(FlatVert));
     }
 }
 
@@ -1001,6 +1010,11 @@ void RuntimeDraw(float floorZ, bool ownStateBlock) {
 }
 
 } // namespace CeArchivePedestal
+
+extern "C" void PortCeArchivePedestalDeleteDeviceObjects(void) {
+    if (CeArchivePedestal::gData)
+        CeArchivePedestal::ReleaseGpuTextures(CeArchivePedestal::gData);
+}
 #else
 #include "ce_archive_pedestal.h"
 namespace CeArchivePedestal {

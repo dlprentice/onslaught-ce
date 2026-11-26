@@ -2201,10 +2201,14 @@ void Refused(const File *f, const char *why, bool fallback)
 
 // The first time the game is given a mod's copy of a file, the log says so (once per file): what the game read is then
 // in the log, not only what was checked at startup.
+extern "C" void PortCeScriptGuardNoteModFile(const char *key) __attribute__((weak));
+
 void Served(const File *f)
 {
 	if (!__atomic_exchange_n(&const_cast<File *>(f)->served, 1, __ATOMIC_RELAXED))
 		Log("%s serves %s to the game", gMods[f->mod].id.c_str(), f->rel.c_str());
+	if (PortCeScriptGuardNoteModFile)
+		PortCeScriptGuardNoteModFile(f->key.c_str());
 }
 }
 
@@ -2501,17 +2505,47 @@ const int kMaxListed = 1024;
 bool ListModsFolder(std::vector<Listed> *out)
 {
 #ifdef _WIN32
-	wchar_t pattern[2 * MAX_PATH + 16];
-	if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, PortUserDir(), -1, pattern, 2 * MAX_PATH))
+	wchar_t userWide[4096];
+	if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, PortUserDir(), -1, userWide, 4096))
 		return false;
-	wcscat(pattern, L"\\mods\\*");
+	HANDLE userHandle = CreateFileW(userWide, FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+									FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+									FILE_FLAG_BACKUP_SEMANTICS, NULL);
+	if (userHandle == INVALID_HANDLE_VALUE)
+		return false;
+	// Open and pin <user>\mods without following reparse points, matching LoadMod's security policy.
+	HANDLE modsHandle = OpenChild(userHandle, "mods", true);
+	CloseHandle(userHandle);
+	if (modsHandle == INVALID_HANDLE_VALUE)
+		return false;
+	if (Verify(modsHandle, true, NULL) != NULL)
+	{
+		CloseHandle(modsHandle);
+		return false;
+	}
+	std::vector<wchar_t> modsPath(4096);
+	DWORD pathLen = GetFinalPathNameByHandleW(modsHandle, modsPath.data(), (DWORD)modsPath.size(), VOLUME_NAME_DOS | FILE_NAME_NORMALIZED);
+	if (pathLen >= modsPath.size())
+	{
+		modsPath.resize(pathLen + 1);
+		pathLen = GetFinalPathNameByHandleW(modsHandle, modsPath.data(), (DWORD)modsPath.size(), VOLUME_NAME_DOS | FILE_NAME_NORMALIZED);
+	}
+	if (pathLen == 0 || pathLen >= modsPath.size())
+	{
+		CloseHandle(modsHandle);
+		return false;
+	}
+	std::wstring pattern(modsPath.data(), pathLen);
+	if (!pattern.empty() && pattern.back() != L'\\')
+		pattern += L'\\';
+	pattern += L'*';
 	WIN32_FIND_DATAW found;
-	HANDLE find = FindFirstFileW(pattern, &found);
+	HANDLE find = FindFirstFileW(pattern.c_str(), &found);
 	if (find == INVALID_HANDLE_VALUE)
 	{
-		wcscpy(wcsrchr(pattern, L'\\'), L"");	// no entry at all, or no folder: the folder itself answers
-		const DWORD attributes = GetFileAttributesW(pattern);
-		return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY);
+		const DWORD err = GetLastError();
+		CloseHandle(modsHandle);
+		return err == ERROR_FILE_NOT_FOUND || err == ERROR_NO_MORE_FILES;
 	}
 	int read = 0;
 	do
@@ -2526,6 +2560,7 @@ bool ListModsFolder(std::vector<Listed> *out)
 			out->push_back({name, 2});
 	} while (++read < kMaxListed && FindNextFileW(find, &found));
 	FindClose(find);
+	CloseHandle(modsHandle);
 #else
 	int user = open(PortUserDir(), O_PATH | O_DIRECTORY | O_CLOEXEC);
 	int mods = user < 0 ? -1 : openat(user, "mods", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);

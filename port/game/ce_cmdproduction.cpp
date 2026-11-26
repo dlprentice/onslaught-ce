@@ -250,7 +250,7 @@ void RefreshStructures(int level, int allegiance, float simulationTime) {
             if ((s.stage == CE_FACTORY_QUEUED || s.stage == CE_FACTORY_LAUNCHING) &&
                 s.queuedOption >= 0 && s.queuedOption < s.optionCount) {
                 CSpawner* mount = s.mounts[s.queuedOption];
-                if (!mount || !mount->mEnabled || mount->Unknown4e4430()) {
+                if (!mount || !mount->mEnabled || (mount->Unknown4e4430() && !mount->Unknown4e4420())) {
                     s.stage = CE_FACTORY_BLOCKED;
                     s.queuedOption = -1;
                 } else if (s.stage == CE_FACTORY_QUEUED && simulationTime - s.queuedAt >= kAssemblySeconds) {

@@ -137,6 +137,7 @@ struct Video
 	U32 played = 0;
 	bool paused = false;			// PortBinkPause: the clock held, and the sound stopped where it was if it was playing
 	bool pausedPlaying = false;		// the sound was still playing when the video was held (so it resumes)
+	bool soundFailed = false;		// audio Play failed or hit voice cap: fall back to wall clock
 	LARGE_INTEGER pausedAt;
 
 };
@@ -164,7 +165,7 @@ double Clock(Video *v)
 	}
 	else
 		wall = Seconds(v->start);
-	if (v->sound && v->soundBlock && v->soundRate)
+	if (v->sound && !v->soundFailed && v->soundBlock && v->soundRate)
 	{
 		DWORD play = 0, status = 0;
 		v->sound->GetStatus(&status);
@@ -469,9 +470,10 @@ inline int Clamp(int x) { return x < 0 ? 0 : x > 255 ? 255 : x; }
 
 // BEA_BINK_LOG=file: the game's Bink calls in the form of the retail replay shim's log ("D <present> <seconds> Bink.<Call>"),
 // so which video frame the game copies at each Present can be compared with retail's (A/V sync).
+std::mutex gBinkLogMutex;
 FILE *gBinkLog;
 bool gBinkLogChecked;
-bool BinkLogging()
+bool BinkLoggingLocked()
 {
 	if (!gBinkLogChecked)
 	{
@@ -482,9 +484,15 @@ bool BinkLogging()
 	}
 	return gBinkLog != NULL;
 }
+bool BinkLogging()
+{
+	std::lock_guard<std::mutex> lock(gBinkLogMutex);
+	return BinkLoggingLocked();
+}
 void BinkLog(const char *fmt, ...)
 {
-	if (!BinkLogging())
+	std::lock_guard<std::mutex> lock(gBinkLogMutex);
+	if (!BinkLoggingLocked())
 		return;
 	unsigned long long f = PortClockFrames();
 	fprintf(gBinkLog, "D %llu %d.%03d ", f, (int)(f / 30), (int)(f % 30 * 1000 / 30));
@@ -672,6 +680,19 @@ HBINK __stdcall BinkOpen(const char *name, U32 flags)
 	v->pub.Height = (U32)st->codecpar->height;
 	v->pub.Frames = (U32)v->packets.size();
 	v->pub.FrameNum = 1;
+	// All video packets and audio PCM are already demuxed into memory; release the container and raw file buffer.
+	if (v->fmt)
+	{
+		AVIOContext *fmtIo = v->fmt->pb;
+		avformat_close_input(&v->fmt);
+		if (fmtIo)
+		{
+			av_freep(&fmtIo->buffer);
+			avio_context_free(&fmtIo);
+		}
+	}
+	std::vector<unsigned char>().swap(v->file);
+	v->mem = {};
 	PortSessionLog(PORT_SESSION_FILM, false, "film=%u opened size=%lux%lu frames=%lu sound=%d", v->sessionId,
 		(unsigned long)v->pub.Width, (unsigned long)v->pub.Height, (unsigned long)v->pub.Frames, v->sound ? 1 : 0);
 	BinkLog("Bink.Open bink=%08lX frames=%lu size=%lux%lu fps=%d sound=%d name=%s", (unsigned long)(uintptr_t)&v->pub,
@@ -693,8 +714,14 @@ int PortBinkHasSound(HBINK bink)
 int PortBinkPause(HBINK bink, int pause)
 {
 	Video *v = (Video *)bink;
-	if (!v || !v->started || (pause != 0) == v->paused)
+	if (!v || (pause != 0) == v->paused)
 		return 0;
+	if (!v->started)
+	{
+		v->paused = pause != 0;
+		v->pausedPlaying = false;
+		return 1;
+	}
 	LARGE_INTEGER now;
 	QueryPerformanceCounter(&now);
 	if (pause)
@@ -714,7 +741,12 @@ int PortBinkPause(HBINK bink, int pause)
 		v->start.QuadPart += now.QuadPart - v->pausedAt.QuadPart;
 		// only a sound that was still playing goes on: an ended one would start again from its beginning
 		if (v->pausedPlaying)
-			v->sound->Play(0, 0, 0);
+		{
+			HRESULT resumed = v->sound->Play(0, 0, 0);
+			DWORD st = 0;
+			v->sound->GetStatus(&st);
+			v->soundFailed = FAILED(resumed) || !(st & DSBSTATUS_PLAYING);
+		}
 		v->pausedPlaying = false;
 	}
 	return 1;
@@ -761,10 +793,14 @@ S32 __stdcall BinkDoFrame(HBINK bink)
 			#endif
 			if (!deferWhilePaused)
 			{
+				v->soundFailed = false;
 				HRESULT played = v->sound->Play(0, 0, 0);
+				DWORD st = 0;
+				v->sound->GetStatus(&st);
+				v->soundFailed = FAILED(played) || !(st & DSBSTATUS_PLAYING);
 				if (firstStart)
 					PortSessionLog(PORT_SESSION_FILM, FAILED(played), "film=%u first audio play result=%08lx", v->sessionId, (unsigned long)played);
-				if (SUCCEEDED(played)) PortSessionMediaActive(PORT_SESSION_FILM, v, true);
+				if (SUCCEEDED(played) && !v->soundFailed) PortSessionMediaActive(PORT_SESSION_FILM, v, true);
 			}
 		}
 	}

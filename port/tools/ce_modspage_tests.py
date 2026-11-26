@@ -1021,6 +1021,11 @@ class ModsPageTests(unittest.TestCase):
             "CePs2ImportCancel()",
         ):
             self.assertIn(expected, code)
+        busy_fn = code[code.index("const char\t*BusyPs2Text()"):code.index("void\tStartPs2Import()")]
+        self.assertNotIn("CePs2ImportPoll", busy_fn, "render path BusyPs2Text must read cached state without mutating/polling")
+        self.assertNotIn("CePs2ImportPickPoll", busy_fn)
+        proc_fn = code[code.index("void\tPortCeModsPageProcess()"):code.index("bool\tPortCeModsPageRender(")]
+        self.assertIn("CePs2ImportPoll(&sPs2ImportStatus)", proc_fn, "background PS2 import completes even after backing out of Mods page")
 
 
 # ---- mutants: each must make its named test fail -------------------------------------------------------------------------------------

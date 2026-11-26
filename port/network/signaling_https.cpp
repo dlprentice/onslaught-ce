@@ -137,6 +137,20 @@ struct Headers {
 #ifndef _WIN32
 bool curlReady=false;
 size_t curlTransports=0;
+bool ConfigureLinuxCaBundle(CURL* easy) noexcept {
+    static const char* const kLinuxCaBundles[] = {
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/pki/tls/certs/ca-bundle.crt",
+        "/etc/ssl/ca-bundle.pem",
+        "/etc/ssl/cert.pem",
+    };
+    for (const char* bundle : kLinuxCaBundles) {
+        if (access(bundle, R_OK) == 0) {
+            return curl_easy_setopt(easy, CURLOPT_CAINFO, bundle) == CURLE_OK;
+        }
+    }
+    return true;
+}
 class CurlHttps final:public CeSignalHttps {
     Origin origin_;CURLM* multi_=nullptr;CURL* easy_=nullptr;curl_slist* list_=nullptr;
     std::string body_,received_,url_;Headers headers_;uint64_t deadline_=0;bool active_=false,failed_=false;
@@ -183,6 +197,7 @@ public:
             CE_CURL_SET(CURLOPT_HTTPHEADER,list_);CE_CURL_SET(CURLOPT_PROXY,"");CE_CURL_SET(CURLOPT_NOPROXY,"*");
             CE_CURL_SET(CURLOPT_NETRC,long(CURL_NETRC_IGNORED));CE_CURL_SET(CURLOPT_HTTPAUTH,long(CURLAUTH_NONE));
             CE_CURL_SET(CURLOPT_FOLLOWLOCATION,0L);CE_CURL_SET(CURLOPT_MAXREDIRS,0L);
+            if (!ConfigureLinuxCaBundle(easy_)) { ClearHandles();return false; }
             CE_CURL_SET(CURLOPT_PROTOCOLS,long(CURLPROTO_HTTPS));CE_CURL_SET(CURLOPT_REDIR_PROTOCOLS,long(CURLPROTO_HTTPS));
             CE_CURL_SET(CURLOPT_SSL_VERIFYPEER,1L);CE_CURL_SET(CURLOPT_SSL_VERIFYHOST,2L);CE_CURL_SET(CURLOPT_SSLVERSION,long(CURL_SSLVERSION_TLSv1_2));
             CE_CURL_SET(CURLOPT_NOSIGNAL,1L);CE_CURL_SET(CURLOPT_TIMEOUT_MS,timeout);CE_CURL_SET(CURLOPT_CONNECTTIMEOUT_MS,std::min(timeout,5000L));
@@ -232,7 +247,7 @@ struct SensitiveWide {
 struct WinCall {
     HINTERNET session=nullptr,connection=nullptr,request=nullptr;
     std::mutex mutex;std::shared_ptr<WinCall> closingOwner;
-    bool sent=false,headers=false,read=false,failed=false,cancelled=false;
+    bool sent=false,headers=false,read=false,failed=false,cancelled=false,handleClosed=false;
     DWORD count=0;std::array<char,4096> buffer{};std::string body,received;Headers parsed;
     uint64_t deadline=0;
     ~WinCall() { if (connection) WinHttpCloseHandle(connection);if (session) WinHttpCloseHandle(session);Wipe(body);Wipe(received);crypto_wipe(buffer.data(),buffer.size()); }
@@ -240,7 +255,7 @@ struct WinCall {
         auto* p=reinterpret_cast<WinCall*>(context);if (!p) return;
         std::shared_ptr<WinCall> finalOwner;
         { std::lock_guard<std::mutex> lock(p->mutex);
-          if (status==WINHTTP_CALLBACK_STATUS_HANDLE_CLOSING) finalOwner=std::move(p->closingOwner);
+          if (status==WINHTTP_CALLBACK_STATUS_HANDLE_CLOSING) { p->handleClosed=true;finalOwner=std::move(p->closingOwner); }
           else if (!p->cancelled) {
               if (status==WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE) p->sent=true;
               else if (status==WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE) p->headers=true;
@@ -250,6 +265,43 @@ struct WinCall {
         }
     }
 };
+struct RetiredWinCallPool {
+    std::mutex mutex;
+    std::vector<std::shared_ptr<WinCall>> calls;
+};
+RetiredWinCallPool& RetiredWinCalls() noexcept {
+    static RetiredWinCallPool* pool = new RetiredWinCallPool();
+    return *pool;
+}
+void RetainRetiredWinCall(const std::shared_ptr<WinCall>& p) noexcept {
+    if (!p) return;
+    try {
+        auto& pool = RetiredWinCalls();
+        std::lock_guard<std::mutex> lock(pool.mutex);
+        pool.calls.push_back(p);
+    } catch (...) {}
+}
+void ReapRetiredWinCalls() noexcept {
+    std::vector<std::shared_ptr<WinCall>> ready;
+    try {
+        auto& pool = RetiredWinCalls();
+        std::lock_guard<std::mutex> lock(pool.mutex);
+        auto it = pool.calls.begin();
+        while (it != pool.calls.end()) {
+            bool closed = false;
+            {
+                std::lock_guard<std::mutex> callLock((*it)->mutex);
+                closed = (*it)->handleClosed;
+            }
+            if (closed) {
+                ready.push_back(std::move(*it));
+                it = pool.calls.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    } catch (...) {}
+}
 class WinHttps final:public CeSignalHttps {
     Origin origin_;std::shared_ptr<WinCall> call_;unsigned phase_=0;
     static bool ReadHeaders(WinCall& p) {
@@ -268,6 +320,7 @@ public:
     explicit WinHttps(Origin origin):origin_(std::move(origin)) {}
     ~WinHttps() override { Cancel(); }
     bool Begin(const char* route,const char* bearer,size_t bearerSize,const std::string& body,uint64_t now,uint64_t deadline) noexcept override {
+        ReapRetiredWinCalls();
         if (call_||!Route(route)||!Bearer(bearer,bearerSize)||body.size()>kBodyMax||deadline<=now) return false;
         try {
             auto p=std::make_shared<WinCall>();p->body=body;p->deadline=std::min(deadline,now+std::min<uint64_t>(10000,deadline-now));
@@ -304,6 +357,7 @@ public:
         } catch (...) { Cancel();return false; }
     }
     CeSignalHttpsState Poll(uint64_t now,CeSignalHttpsReply* out) noexcept override {
+        ReapRetiredWinCalls();
         if (!call_||!out) return CeSignalHttpsState::Failed;
         try {
             auto p=call_;bool failed=false,event=false;DWORD count=0;
@@ -331,10 +385,14 @@ public:
         } catch (...) { Cancel();return CeSignalHttpsState::Failed; }
     }
     void Cancel() noexcept override {
+        ReapRetiredWinCalls();
         if (!call_) return;
         auto p=std::move(call_);HINTERNET request=nullptr;
         { std::lock_guard<std::mutex> lock(p->mutex);p->cancelled=true;request=p->request;p->request=nullptr; }
+        RetainRetiredWinCall(p);
+        p.reset();
         if (request) WinHttpCloseHandle(request);
+        ReapRetiredWinCalls();
     }
 };
 #endif
@@ -545,18 +603,7 @@ public:
             CE_ONLINE_CURL_SET(CURLOPT_FOLLOWLOCATION, 0L);
             CE_ONLINE_CURL_SET(CURLOPT_MAXREDIRS, 0L);
             if (origin_.https) {
-                static const char *const kLinuxCaBundles[] = {
-                    "/etc/ssl/certs/ca-certificates.crt",
-                    "/etc/pki/tls/certs/ca-bundle.crt",
-                    "/etc/ssl/ca-bundle.pem",
-                    "/etc/ssl/cert.pem",
-                };
-                for (const char *bundle : kLinuxCaBundles) {
-                    if (access(bundle, R_OK) == 0) {
-                        CE_ONLINE_CURL_SET(CURLOPT_CAINFO, bundle);
-                        break;
-                    }
-                }
+                if (!ConfigureLinuxCaBundle(easy_)) { ClearHandles(); return false; }
                 CE_ONLINE_CURL_SET(CURLOPT_PROTOCOLS, long(CURLPROTO_HTTPS));
                 CE_ONLINE_CURL_SET(CURLOPT_REDIR_PROTOCOLS, long(CURLPROTO_HTTPS));
                 CE_ONLINE_CURL_SET(CURLOPT_SSL_VERIFYPEER, 1L);
@@ -661,6 +708,7 @@ public:
     bool Begin(CeOnlineHttpMethod method, const char* pathAndQuery,
                const char* bearer, size_t bearerSize,
                const std::string& body, uint64_t now, uint64_t deadline) noexcept override {
+        ReapRetiredWinCalls();
         if (call_ || !OnlinePathValid(pathAndQuery) ||
             !OptionalBearerValid(bearer, bearerSize) || deadline <= now)
             return false;
@@ -740,6 +788,7 @@ public:
     }
 
     CeSignalHttpsState Poll(uint64_t now, CeSignalHttpsReply* out) noexcept override {
+        ReapRetiredWinCalls();
         if (!call_ || !out) return CeSignalHttpsState::Failed;
         try {
             auto p = call_;
@@ -790,6 +839,7 @@ public:
     }
 
     void Cancel() noexcept override {
+        ReapRetiredWinCalls();
         if (!call_) return;
         auto p = std::move(call_);
         HINTERNET request = nullptr;
@@ -799,7 +849,10 @@ public:
             request = p->request;
             p->request = nullptr;
         }
+        RetainRetiredWinCall(p);
+        p.reset();
         if (request) WinHttpCloseHandle(request);
+        ReapRetiredWinCalls();
     }
 };
 #endif
@@ -821,6 +874,8 @@ bool CeShutdownSignalHttps() noexcept {
 #ifndef _WIN32
     if(curlTransports)return false;
     if(curlReady){curl_global_cleanup();curlReady=false;}
+#else
+    ReapRetiredWinCalls();
 #endif
     return true;
 }

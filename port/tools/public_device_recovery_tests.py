@@ -283,7 +283,7 @@ def main():
                                       '/* authored control: retain old blocking retry */'),
             'omit-pending-readiness':('m_bReady = FALSE;\n        recoveryOwner = this;',
                                       'm_bReady = TRUE;\n        recoveryOwner = this;'),
-            'pause-publishes-early':('m_bReady = pauseDepth == 0 && !DeviceRecoveryPending() && presentationFailureOwner != this;',
+            'pause-publishes-early':('m_bReady = pauseDepth == 0 && !DeviceRecoveryPending() && presentationFailureOwner != this && m_pd3dDevice != NULL && deviceObjectsLive;',
                                       'm_bReady = pauseDepth == 0;'),
             'admit-reentrant-recovery':('if (recoveryAttempt) return D3DERR_DEVICELOST;',
                                        '/* authored control: reentrant entry admitted */'),

@@ -436,6 +436,27 @@ void TestSoloAndSplitScreenOutcomeStateMachines() {
 		CHECK(dir.Phase() == CeFlagshipDuelPhase::kFinishedP2Won,
 		      "external MP P2 win syncs director to kFinishedP2Won");
 	}
+
+	// 6. 1P Battle Engine destruction transitions directly to kFinishedDefeat (CGame already
+	//    called DeclareLevelLost) with accurate non-flagship banner and no duplicate declareSoloLost.
+	{
+		CeFlagshipDuelDirector dir;
+		CeFlagshipDuelConfig cfg{};
+		cfg.mode = CeFlagshipDuelMode::kSolo1P;
+		cfg.soloDefeatHoldSec = 0.5f;
+		dir.Reset(cfg);
+		dir.BeginMatch(kVenturer, kFenrir);
+
+		dir.OnSoloPlayerLost();
+		CHECK(dir.Phase() == CeFlagshipDuelPhase::kFinishedDefeat && dir.VenturerAlive(),
+		      "1P player BE loss transitions cleanly to kFinishedDefeat while Venturer remains afloat");
+		CHECK(std::strcmp(CeFlagshipDuelBannerTitle(dir.Phase(), false, dir.VenturerAlive() ? false : true),
+		                  "DEFEAT - BATTLE ENGINE LOST") == 0,
+		      "1P player BE loss banner reports Battle Engine lost");
+		const auto d = dir.Tick(0.25f, 8u);
+		CHECK(!d.declareSoloLost && dir.Phase() == CeFlagshipDuelPhase::kFinishedDefeat,
+		      "1P player BE loss does not double-fire declareSoloLost");
+	}
 }
 
 void TestOneHourSoakBothModes() {
@@ -493,19 +514,27 @@ void TestHudLayoutsAndGlyphSafety() {
 	      "glyph validator rejects unsupported FONT_SMALL punctuation");
 
 	for (bool split2P : {false, true}) {
-		for (CeFlagshipDuelPhase p : {
-			CeFlagshipDuelPhase::kVictoryHold,
-			CeFlagshipDuelPhase::kFinishedVictory,
-			CeFlagshipDuelPhase::kFinishedP1Won,
-			CeFlagshipDuelPhase::kDefeatHold,
-			CeFlagshipDuelPhase::kFinishedDefeat,
-			CeFlagshipDuelPhase::kFinishedP2Won}) {
-			CHECK(CeFlagshipDuelIsFontSmallSafeText(CeFlagshipDuelBannerTitle(p, split2P)),
-			      "banner title is FONT_SMALL safe");
-			CHECK(CeFlagshipDuelIsFontSmallSafeText(CeFlagshipDuelBannerSubtitle(p, split2P)),
-			      "banner subtitle is FONT_SMALL safe");
+		for (bool flagshipDestroyed : {true, false}) {
+			for (CeFlagshipDuelPhase p : {
+				CeFlagshipDuelPhase::kVictoryHold,
+				CeFlagshipDuelPhase::kFinishedVictory,
+				CeFlagshipDuelPhase::kFinishedP1Won,
+				CeFlagshipDuelPhase::kDefeatHold,
+				CeFlagshipDuelPhase::kFinishedDefeat,
+				CeFlagshipDuelPhase::kFinishedP2Won}) {
+				CHECK(CeFlagshipDuelIsFontSmallSafeText(CeFlagshipDuelBannerTitle(p, split2P, flagshipDestroyed)),
+				      "banner title is FONT_SMALL safe");
+				CHECK(CeFlagshipDuelIsFontSmallSafeText(CeFlagshipDuelBannerSubtitle(p, split2P, flagshipDestroyed)),
+				      "banner subtitle is FONT_SMALL safe");
+			}
 		}
 	}
+	CHECK(std::strcmp(CeFlagshipDuelBannerTitle(CeFlagshipDuelPhase::kFinishedP1Won, true, false),
+	                  "PLAYER 1 WINS - P2 OUT OF LIVES") == 0,
+	      "2P P2 lives exhaustion title does not falsely report Fenrir destroyed");
+	CHECK(std::strcmp(CeFlagshipDuelBannerTitle(CeFlagshipDuelPhase::kFinishedP2Won, true, false),
+	                  "PLAYER 2 WINS - P1 OUT OF LIVES") == 0,
+	      "2P P1 lives exhaustion title does not falsely report Venturer lost");
 	for (CeFlagshipDuelAct act : {
 		CeFlagshipDuelAct::kActI_OpeningSalvo,
 		CeFlagshipDuelAct::kActII_BroadsideExchange,
@@ -539,6 +568,12 @@ void TestHudLayoutsAndGlyphSafety() {
 		CHECK(split.stripPanel.y0 > p1CrosshairY + 40.0f * split.uiScale &&
 		      split.stripPanel.y1 < p2CrosshairY - 40.0f * split.uiScale,
 		      "2P split strip clears both P1 and P2 crosshairs");
+
+		const CeFdHudLayout splitVert = CeFlagshipDuelComputeSplitHudLayout(r.w, r.h, 0.8f, 0.6f, false);
+		CHECK(std::fabs(splitVert.stripPanel.y0 - std::floor(10.0f * splitVert.uiScale)) < 0.5f,
+		      "2P vertical split strip anchors at top-center instead of middle vertical seam");
+		CHECK(splitVert.stripPanel.y1 < r.h * 0.5f - 60.0f * splitVert.uiScale,
+		      "2P vertical split strip clears left/right mid-height crosshairs");
 	}
 	CHECK(CeFlagshipDuelWorld::kDuelFogDensity > 0.0f &&
 	      CeFlagshipDuelWorld::kDuelFogDensity <= 0.0012f,
@@ -685,8 +720,11 @@ class CeFlagshipDuelTests(unittest.TestCase):
              "\tcase '[':\n\tcase ']':",
              "\tcase '\\x01':"),
             ("split-hud-off-seam", "ce_flagship_duel.h",
-             "const float topY = seamY - panelH * 0.5f;",
+             "const float topY = horizontalSplit ? (seamY - panelH * 0.5f) : std::floor(10.0f * s);",
              "const float topY = 8.0f * s;"),
+            ("vertical-split-on-middle-seam", "ce_flagship_duel.h",
+             "const float topY = horizontalSplit ? (seamY - panelH * 0.5f) : std::floor(10.0f * s);",
+             "const float topY = seamY - panelH * 0.5f;"),
         ]
 
         self.assertGreaterEqual(len(mutants), 25)
@@ -746,6 +784,16 @@ class CeFlagshipDuelTests(unittest.TestCase):
         self.assertIn("GAME.MPDeclarePlayerWon(2)", fd_cpp)
         self.assertIn("GAME.DeclareLevelWon()", fd_cpp)
         self.assertIn("GAME.DeclareLevelLost(", fd_cpp)
+        self.assertIn("mHorizontalSplitscreen", fd_cpp)
+        overlay_fn = fd_cpp[fd_cpp.index("void PortCeFlagshipDuelDrawOverlay"):]
+        self.assertNotIn("SyncExternalMultiplayerOutcome", overlay_fn,
+                         "render overlay must never mutate sim state")
+        tick_fn = fd_cpp[fd_cpp.index("void PortCeFlagshipDuelTickPre"):fd_cpp.index("void PortCeFlagshipDuelDrawOverlay")]
+        self.assertIn("SyncExternalMultiplayerOutcome", tick_fn)
+        self.assertIn("gDirector.OnSoloPlayerLost()", fd_cpp)
+        level_end_fn = fd_cpp[fd_cpp.index("void PortCeFlagshipDuelLevelEnd"):fd_cpp.index("void PortCeFlagshipDuelUnitSpawn")]
+        self.assertLess(level_end_fn.index("gDirector.Reset("), level_end_fn.index("if (quit == QT_RESTART_LEVEL"),
+                        "PortCeFlagshipDuelLevelEnd must unconditionally reset gDirector before restart/2P branches")
 
         # Ensure Carrier Clash files were never modified or referenced improperly.
         bonus_cpp = (GAME / "ce_bonus.cpp").read_text(encoding="utf-8")

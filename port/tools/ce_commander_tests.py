@@ -342,20 +342,20 @@ def check_placement(files, hooks_text=None):
     assert game.count("PortCeCmdFrame(") == 2, "one declaration and one call"
 
 
-# The ICE link receipt (build.py, write_ice_link_receipt) marks a test build by reading the defines the build was given; it names this module's among the test builds' and defines nothing.
-RECEIPT_READ = re.compile(r'test_build=any\(flag\.startswith\(\([^)]*"-DCE_COMMANDER_TEST"[^)]*\)\)\s+for flag in CE_DEFINES\)')
+# The ICE link receipt (build.py, write_ice_link_receipt) marks a test build via test_build_switches(CE_DEFINES) (which reads TEST_BUILD_SWITCHES) or TEST_KIT.
+RECEIPT_READ = re.compile(r'test_build=bool\(test_build_switches\(CE_DEFINES\)\)\s+or\s+TEST_KIT')
 # The packager's table of test switches (build.py, TEST_BUILD_SWITCHES) also reads the defines a build was given, to mark the build folder as a test build; it defines nothing.
 SWITCH_TABLE_READ = re.compile(r'(?m)^TEST_BUILD_SWITCHES = \(\("-DCE_COMMANDER_TEST", "commander-test"\)')
 
 
 def check_define_sites(build):
-    """Where build.py names CE_COMMANDER_TEST (raises AssertionError): its --commander-test flag is the one place that defines it, and the ICE link receipt reads the defines to mark a test build, and
-    the packager's table of test switches reads them to refuse a test build; no other line mentions it."""
+    """Where build.py names CE_COMMANDER_TEST (raises AssertionError): its --commander-test flag is the one place that defines it, the packager's table of test switches reads it to refuse a test build,
+    and the ICE link receipt delegates to test_build_switches(CE_DEFINES); no other line mentions it."""
     assert build.count("-DCE_COMMANDER_TEST=") == 1 and build.count('CE_DEFINES.append("-DCE_COMMANDER_TEST=1")') == 1, "only build.py's flag defines it"
     assert 'if a.commander_test:\n        CE_DEFINES.append("-DCE_COMMANDER_TEST=1")' in build, "and only where --commander-test was given"
-    assert len(RECEIPT_READ.findall(build)) == 1, "one other mention is the ICE receipt's test of the defines it was given"
+    assert len(RECEIPT_READ.findall(build)) == 1, "the ICE receipt delegates test_build detection to test_build_switches(CE_DEFINES) or TEST_KIT"
     assert len(SWITCH_TABLE_READ.findall(build)) == 1, "the packager's table of test switches names it once"
-    assert len(re.findall(r"CE_COMMANDER_TEST", build)) == 3, "the flag's definition, the receipt's test and the switch table are every mention"
+    assert len(re.findall(r"CE_COMMANDER_TEST", build)) == 2, "the flag's definition and the switch table are every mention"
 
 
 def faithful_differences(alone, without):
@@ -719,9 +719,9 @@ class Mutants(unittest.TestCase):
             "a second definition": build.replace(anchor, '    CE_DEFINES.append("-DCE_COMMANDER_TEST=1")\n' + anchor),
             "the definition outside its flag": build.replace('if a.commander_test:\n        CE_DEFINES.append("-DCE_COMMANDER_TEST=1")',
                                                               'CE_DEFINES.append("-DCE_COMMANDER_TEST=1")'),
-            "a fourth mention": build + "\n# CE_COMMANDER_TEST\n",
+            "a third mention": build + "\n# CE_COMMANDER_TEST\n",
             "the switch table's entry lost": build.replace('(("-DCE_COMMANDER_TEST", "commander-test"), ', '('),
-            "the receipt's test lost": build.replace('"-DCE_NET_TEST_AUTOMATION", "-DCE_COMMANDER_TEST"', '"-DCE_NET_TEST_AUTOMATION"'),
+            "the receipt's test lost": build.replace('test_build=bool(test_build_switches(CE_DEFINES)) or TEST_KIT', 'test_build=False'),
         }
         for name, text in mutants.items():
             with self.subTest(mutant=name):

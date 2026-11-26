@@ -764,13 +764,9 @@ extern "C" bool PortCeLivingSandboxPreloadMeshes(void) {
 		}
 	}
 	for (unsigned i = 0; allVenturerOk && i < CeSandboxWorld::kOptionalMeshCount; ++i) {
-		char meshPath[128] = {};
-		bool exists = false;
 		const char *meshName = CeSandboxWorld::OptionalMeshName(i);
-		std::snprintf(meshPath, sizeof(meshPath), "data\\resources\\meshes\\m_%s.aya", meshName);
 		const int32_t runtimeId = 920 + static_cast<int32_t>(i);
-		if (!VerifyPackedAyaFile(meshPath, &exists) || !exists ||
-		    !LoadRetailMeshFromStandaloneAya(meshName, runtimeId)) {
+		if (!LoadRetailMeshFromStandaloneAya(meshName, runtimeId)) {
 			allVenturerOk = false;
 		}
 	}
@@ -798,11 +794,7 @@ extern "C" bool PortCeLivingSandboxPreloadMeshes(void) {
 			     PreloadRetailMeshTexture(spec.texture);
 		}
 		if (ok) {
-			char meshPath[128] = {};
-			bool exists = false;
-			std::snprintf(meshPath, sizeof(meshPath), "data\\resources\\meshes\\m_%s.aya", spec.mesh);
-			ok = VerifyPackedAyaFile(meshPath, &exists) && exists &&
-			     LoadRetailMeshFromStandaloneAya(spec.mesh, 924 + static_cast<int32_t>(i));
+			ok = LoadRetailMeshFromStandaloneAya(spec.mesh, 924 + static_cast<int32_t>(i));
 		}
 		if (ok) {
 			++supportLoaded;

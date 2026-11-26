@@ -74,71 +74,7 @@
  	mTexture->Deserialize(c);
 --- a/LandscapeTexture.cpp
 +++ b/LandscapeTexture.cpp
-@@ -28,6 +28,9 @@
- SLandscapeTile	CLandscapeTexture::sQueue[50];
- UWORD		CLandscapeTexture::sColours[512 * 512];
- SLandscapeTile	*CLandscapeTexture::sQueueEnd = CLandscapeTexture::sQueue;
-+#ifdef CE_VERSION
-+static bool	sCeDeferLandscapeUpload = false;
-+#endif
- 
- //******************************************************************************************
- // FUNCTION: 0x0048e430
-@@ -179,6 +182,45 @@
- 	for (SINT pass = 0; pass < 2; pass++)
- 	{
- 		dst = sQueue;
-+#ifdef CE_VERSION
-+		SLandscapeTile	batch[50];
-+		SINT	batchCount = 0;
-+		for (SLandscapeTile *src = sQueue; src < sQueueEnd; src++)
-+		{
-+			if (src->mUrgent && ((pass == 0) || (updated + batchCount >= 1)))
-+			{
-+				*dst = *src;
-+				dst++;
-+			}
-+			else
-+			{
-+				batch[batchCount++] = *src;
-+				log[n++] = src->mUrgent ? 'x' : 'X';
-+			}
-+		}
-+		if (batchCount > 0)
-+		{
-+			bool	done[50] = {};
-+			for (SINT i = 0; i < batchCount; i++)
-+			{
-+				if (done[i]) continue;
-+				CLandscapeTexture	*atlas = batch[i].mTexture;
-+				sCeDeferLandscapeUpload = true;
-+				for (SINT j = i; j < batchCount; j++)
-+				{
-+					if (!done[j] && batch[j].mTexture == atlas)
-+					{
-+						done[j] = true;
-+						atlas->UpdateTile(batch[j].mTile);
-+						updated++;
-+					}
-+				}
-+				sCeDeferLandscapeUpload = false;
-+				if (!LANDSCAPE_TEXTURES_MANAGED.mValue && sTexture && atlas->mTexture)
-+					LT.GetDevice()->UpdateTexture(sTexture, atlas->mTexture);
-+			}
-+		}
-+#else
- 		for (SLandscapeTile *src = sQueue; src < sQueueEnd; src++)
- 		{
- 			if (src->mUrgent && ((pass == 0) || (updated >= 1)))
-@@ -193,6 +235,7 @@
- 				log[n++] = src->mUrgent ? 'x' : 'X';
- 			}
- 		}
-+#endif
- 		if ((pass == 0) && (updated >= 1))
- 			break;
- 	}
-@@ -302,7 +345,11 @@
+@@ -302,7 +302,11 @@
  			UWORD	*dst = (UWORD *)lr.pBits;
  			UWORD	first = CDXLandscape::mDamage.mCells[tile];
  			CDamageMark	*m = first ? &CDXLandscape::mDamage.mMarks[first] : NULL;
@@ -150,7 +86,7 @@
  			{
  				SINT	pitch = lr.Pitch / 2;
  				SINT	down = 4 - mLevel;
-@@ -310,7 +357,11 @@
+@@ -310,7 +314,11 @@
  				do
  				{
  					SINT	n = m->mSize - down;
@@ -162,19 +98,7 @@
  						BlendAlpha(dst, pitch, CDXLandscape::mDamage.mTexture->GetLevel(n),
  								   (char)m->mX >> down, (char)m->mY >> down, n, size);
  					m = m->mNext ? &CDXLandscape::mDamage.mMarks[m->mNext] : NULL;
-@@ -318,7 +369,11 @@
- 			}
- 		}
- 		CopyTileToTexture(&r);
-+#ifdef CE_VERSION
-+		if (!LANDSCAPE_TEXTURES_MANAGED.mValue && !sCeDeferLandscapeUpload)
-+#else
- 		if (!LANDSCAPE_TEXTURES_MANAGED.mValue)
-+#endif
- 			LT.GetDevice()->UpdateTexture(sTexture, mTexture);
- 	}
- 	else
-@@ -338,7 +393,11 @@
+@@ -338,7 +346,11 @@
  			UWORD	*dst;
  			dst = (UWORD *)lr.pBits;
  			m = first ? &CDXLandscape::mDamage.mMarks[first] : NULL;
@@ -186,7 +110,7 @@
  			{
  				SINT	pitch = lr.Pitch / 2;
  				SINT	down = 4 - mLevel;
-@@ -346,7 +405,11 @@
+@@ -346,7 +358,11 @@
  				do
  				{
  					SINT	n = m->mSize - down;
@@ -198,19 +122,7 @@
  						BlendAlpha(dst, pitch, CDXLandscape::mDamage.mTexture->GetLevel(n),
  								   (char)m->mX >> down, (char)m->mY >> down, n, size);
  					m = m->mNext ? &CDXLandscape::mDamage.mMarks[m->mNext] : NULL;
-@@ -357,7 +420,11 @@
- 			else
- 				sTexture->UnlockRect(0);
- 		}
-+#ifdef CE_VERSION
-+		if (!LANDSCAPE_TEXTURES_MANAGED.mValue && !sCeDeferLandscapeUpload)
-+#else
- 		if (!LANDSCAPE_TEXTURES_MANAGED.mValue)
-+#endif
- 			LT.GetDevice()->UpdateTexture(sTexture, mTexture);
- 	}
- }
-@@ -478,7 +545,11 @@
+@@ -478,7 +494,11 @@
  			MAP.Unknown47eff0(mLevel, &ENGINE.GetMapTex()[mUnknown30], bits + ofs, pitch / 2, tile, 5, 0, 0, 8, 8);
  			UWORD	first = CDXLandscape::mDamage.mCells[(UWORD)tile];
  			CDamageMark	*m = first ? &CDXLandscape::mDamage.mMarks[first] : NULL;
@@ -222,7 +134,7 @@
  			{
  				SINT	half = lr.Pitch / 2;
  				SINT	down = 4 - mLevel;
-@@ -486,7 +557,11 @@
+@@ -486,7 +506,11 @@
  				do
  				{
  					SINT	n = m->mSize - down;
@@ -236,26 +148,42 @@
  					m = m->mNext ? &CDXLandscape::mDamage.mMarks[m->mNext] : NULL;
 --- a/landscapeib.cpp
 +++ b/landscapeib.cpp
-@@ -21,7 +21,12 @@
+@@ -21,7 +21,20 @@
  	{
  		SINT	i = mLevel * 16 + mEdges;
  		SINT	n = PATCHMANAGER.mOffsets[i + 1] - PATCHMANAGER.mOffsets[i];
 +#ifdef CE_VERSION
-+		SAFE_RELEASE(mIB);
-+		LT.D3D_CreateIndexBuffer(n * 2, D3DUSAGE_WRITEONLY, D3DFMT_INDEX16, D3DPOOL_MANAGED, &mIB);
++		extern bool PortCeLayer();
++		if (PortCeLayer())
++		{
++			SAFE_RELEASE(mIB);
++			LT.D3D_CreateIndexBuffer(n * 2, D3DUSAGE_WRITEONLY, D3DFMT_INDEX16, D3DPOOL_MANAGED, &mIB);
++		}
++		else
++		{
++			LT.D3D_CreateIndexBuffer(n * 2, D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY, D3DFMT_INDEX16, D3DPOOL_DEFAULT, &mIB);
++		}
 +#else
  		LT.D3D_CreateIndexBuffer(n * 2, D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY, D3DFMT_INDEX16, D3DPOOL_DEFAULT, &mIB);
 +#endif
  		mCount = n - 2;
  		UWORD	*p;
  		if (mIB->Lock(0, 0, (void **)&p, D3DLOCK_NOSYSLOCK) >= 0)
-@@ -145,7 +150,12 @@
+@@ -145,7 +158,20 @@
  	GenerateStrips((unsigned short *)tris, count * 3, &groups, &num_groups);
  
  	mCount = groups->numIndices;
 +#ifdef CE_VERSION
-+	SAFE_RELEASE(mIB);
-+	LT.D3D_CreateIndexBuffer(mCount * 2, D3DUSAGE_WRITEONLY, D3DFMT_INDEX16, D3DPOOL_MANAGED, &mIB);
++	extern bool PortCeLayer();
++	if (PortCeLayer())
++	{
++		SAFE_RELEASE(mIB);
++		LT.D3D_CreateIndexBuffer(mCount * 2, D3DUSAGE_WRITEONLY, D3DFMT_INDEX16, D3DPOOL_MANAGED, &mIB);
++	}
++	else
++	{
++		LT.D3D_CreateIndexBuffer(mCount * 2, D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY, D3DFMT_INDEX16, D3DPOOL_DEFAULT, &mIB);
++	}
 +#else
  	LT.D3D_CreateIndexBuffer(mCount * 2, D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY, D3DFMT_INDEX16, D3DPOOL_DEFAULT, &mIB);
 +#endif
@@ -352,7 +280,7 @@
  	mGridColour = 0;
  	Load(number);
  }
-@@ -229,6 +257,13 @@
+@@ -229,6 +257,20 @@
  HRESULT CDXWater::InitDeviceObjects()	// FUNCTION: 0x0055b3a0
  {
  	mGridColour++;
@@ -361,6 +289,13 @@
 +	{
 +		sPixelShader->Release();
 +		sPixelShader = NULL;
++	}
++	if (sShader)
++	{
++		sShader->Release();
++		if (sShader->mRefCount <= 0)
++			delete sShader;
++		sShader = NULL;
 +	}
 +#endif
  	if (LT.m_d3dCaps.PixelShaderVersion >= D3DPS_VERSION(2, 0))
@@ -418,12 +353,19 @@
  }
  
  //******************************************************************************************
-@@ -165,6 +174,9 @@
+@@ -165,6 +174,16 @@
  
  	if (EXTRA_GEFORCE_FX_FEATURES.mValue && (LT.m_d3dCaps.PixelShaderVersion >= D3DPS_VERSION(2, 0)))
  	{
 +#ifdef CE_VERSION
 +		LT.D3D_Release((IUnknown **)&sPixelShader);
++		if (sVertexShader)
++		{
++			sVertexShader->Release();
++			if (sVertexShader->mRefCount <= 0)
++				delete sVertexShader;
++			sVertexShader = NULL;
++		}
 +#endif
  		sVertexShader = CVertexShader::Create("particleshader", (DWORD *)PARTICLE_VERTEX_SHADER_TEXT, 6, NULL, 0, -1);
  		LT.D3D_CreatePixelShader(PARTICLE_PIXEL_SHADER_TEXT, &sPixelShader);
@@ -797,18 +739,32 @@
  			return;
 --- a/pcsoundmanager.cpp
 +++ b/pcsoundmanager.cpp
-@@ -17,6 +17,10 @@
+@@ -17,6 +17,12 @@
  #include	"MessageBox.h"
  #include	"DXMemBuffer.h"
  #include	"FrontEndText.h"
 +#ifdef CE_VERSION
 +#include	"binkapi.h"
 +extern "C" void PortCeSoundBeforeReinit(void) __attribute__((weak));
++extern "C" void PortCeFrontEndVideoBeforeSoundReinit(void) __attribute__((weak));
++extern "C" void PortCeFrontEndVideoAfterSoundReinit(void) __attribute__((weak));
 +#endif
  
  // pcsoundmanager.cpp: Stuart's DirectSound device, as the retail PC build grew it (005167b0..005180a8). His release
  // has an older version of this file; the functions keep his names and order where they survive, and the rest is
-@@ -384,6 +388,10 @@
+@@ -205,6 +211,11 @@
+ 
+ 		if (CLIPARAMS.mSoundBuffers == -1)
+ 		{
++#ifdef CE_VERSION
++			extern bool PortCeLayer();
++			if (PortCeLayer() && mNumChannels < MAX_SOUND_BUFFERS)
++				mNumChannels = MAX_SOUND_BUFFERS;
++#endif
+ 			if (caps.dwFreeHw3DStaticBuffers > (DWORD)mNumChannels)
+ 				mNumChannels = caps.dwFreeHw3DStaticBuffers;
+ 			if ((m3DSoundMethod == 2) && (caps.dwFreeHwMixingStaticBuffers > (DWORD)mNumChannels))
+@@ -384,6 +395,10 @@
  		SAFE_RELEASE(mDSBuffer[i]);
  	}
  
@@ -819,11 +775,37 @@
  	SAFE_RELEASE(mDS);
  
  	SAFE_DELETE(mWaveSoundRead);
-@@ -917,16 +925,26 @@
+@@ -537,6 +552,10 @@
+ 	}
+ 	dsbdesc.lpwfxFormat = (LPWAVEFORMATEX)&pcmwf;
+ 
++#ifdef CE_VERSION
++	if (!SOUND.mDS)
++		return NULL;
++#endif
+ 	if (FAILED(SOUND.mDS->CreateSoundBuffer(&dsbdesc, buffer, NULL)))
+ 		return NULL;
+ 
+@@ -647,6 +666,10 @@
+ 
+ 		// Duplicate the buffer into this sound channel
+ 
++#ifdef CE_VERSION
++		if (!mDS)
++			return;
++#endif
+ 		if (SUCCEEDED(mDS->DuplicateSoundBuffer(s->mDSBuffer,&mDSBuffer[channel])))
+ 		{
+ 			mDSBuffer[channel]->SetVolume(vol);
+@@ -917,6 +940,17 @@
  {
  	TRACE("Killing all DSBuffers for the samples\n");
  
 +#ifdef CE_VERSION
++	if (PortCeFrontEndVideoBeforeSoundReinit)
++	{
++		PortCeFrontEndVideoBeforeSoundReinit();
++	}
 +	if (PortCeSoundBeforeReinit)
 +	{
 +		PortCeSoundBeforeReinit();
@@ -833,16 +815,118 @@
  	DeleteAllSamples();
  	MUSIC.Shutdown();
  	if (GAME.GetMessageBox())
- 		GAME.GetMessageBox()->StopCurrentPlayingSound();
- 
- 	DeviceShutdown();
+@@ -926,6 +960,14 @@
  
  	if (DeviceInit())
  	{
 +#ifdef CE_VERSION
++		mInitialised = TRUE;
 +		BinkSetSoundSystem(BinkOpenDirectSound, (U32)mDS);
++		if (PortCeFrontEndVideoAfterSoundReinit)
++		{
++			PortCeFrontEndVideoAfterSoundReinit();
++		}
 +#endif
  		if (CLIPARAMS.mMusic)
  			MUSIC.Initialise();
  
- 		LoadSampleBank(TRUE);
+@@ -937,6 +979,12 @@
+ 				SOUND.GetSample(s->mName, s->mMusic, TRUE);
+ 		}
+ 	}
++#ifdef CE_VERSION
++	else
++	{
++		mInitialised = FALSE;
++	}
++#endif
+ }
+ 
+ //---------------------------------------------------------------------------
+--- a/DXFrontEndVideo.cpp
++++ b/DXFrontEndVideo.cpp
+@@ -130,11 +130,28 @@
+ } sPendingName;		// 008a97d0	// FUNCTION: 0x005412d0 init:sPendingName
+ 
+ //******************************************************************************************
++#ifdef CE_VERSION
++static bool	sCeFrontEndVideoActive = false;
++static char	sCeFrontEndVideoName[260];
++static int	sCeFrontEndVideoWidth = 128;
++static int	sCeFrontEndVideoHeight = 128;
++static BOOL	sCeFrontEndVideoPreload = FALSE;
++static int	sCeFrontEndVideoSoundTrack = 0;
++#endif
+ void	CDXFrontEndVideo::Open(char *name, int width, int height, BOOL preload, BOOL async, int sound_track)	// FUNCTION: 0x005412e0
+ {
+ 	RADSetMemory(BinkAlloc, BinkFree);
+ 	mWidth = width;
+ 	mHeight = height;
++#ifdef CE_VERSION
++	strncpy(sCeFrontEndVideoName, name ? name : "", sizeof(sCeFrontEndVideoName) - 1);
++	sCeFrontEndVideoName[sizeof(sCeFrontEndVideoName) - 1] = 0;
++	sCeFrontEndVideoWidth = width;
++	sCeFrontEndVideoHeight = height;
++	sCeFrontEndVideoPreload = preload;
++	sCeFrontEndVideoSoundTrack = sound_track;
++	sCeFrontEndVideoActive = (sCeFrontEndVideoName[0] != 0);
++#endif
+ 
+ 	if (mBink || sBinkOpenThread.IsBusy() || sBinkOpenThread.mOpened)
+ 	{
+@@ -283,8 +300,55 @@
+ 	mBink = NULL;
+ 
+ 	sBinkOpenThread.Unlock();
++#ifdef CE_VERSION
++	sCeFrontEndVideoActive = false;
++#endif
+ 	TRACE("done.\n");
+ }
++#ifdef CE_VERSION
++static bool	sCeReopenAfterSoundReinit = false;
++static char	sCeReopenName[260];
++static int	sCeReopenWidth = 128;
++static int	sCeReopenHeight = 128;
++static BOOL	sCeReopenPreload = FALSE;
++static int	sCeReopenSoundTrack = 0;
++
++extern "C" void PortCeFrontEndVideoBeforeSoundReinit(void)
++{
++	sCeReopenAfterSoundReinit = false;
++	sCeReopenName[0] = 0;
++	if (sPendingName[0])
++	{
++		strncpy(sCeReopenName, sPendingName, sizeof(sCeReopenName) - 1);
++		sCeReopenName[sizeof(sCeReopenName) - 1] = 0;
++		sCeReopenWidth = sCeFrontEndVideoWidth;
++		sCeReopenHeight = sCeFrontEndVideoHeight;
++		sCeReopenPreload = sPendingPreload;
++		sCeReopenSoundTrack = sPendingSoundTrack;
++		sCeReopenAfterSoundReinit = true;
++	}
++	else if (sCeFrontEndVideoActive || sBinkOpenThread.IsBusy() || sBinkOpenThread.mOpened)
++	{
++		strncpy(sCeReopenName, sCeFrontEndVideoName, sizeof(sCeReopenName) - 1);
++		sCeReopenName[sizeof(sCeReopenName) - 1] = 0;
++		sCeReopenWidth = sCeFrontEndVideoWidth;
++		sCeReopenHeight = sCeFrontEndVideoHeight;
++		sCeReopenPreload = sCeFrontEndVideoPreload;
++		sCeReopenSoundTrack = sCeFrontEndVideoSoundTrack;
++		sCeReopenAfterSoundReinit = (sCeReopenName[0] != 0);
++	}
++	FEV.CloseVideo();
++}
++
++extern "C" void PortCeFrontEndVideoAfterSoundReinit(void)
++{
++	if (!sCeReopenAfterSoundReinit || !sCeReopenName[0])
++		return;
++	sCeReopenAfterSoundReinit = false;
++	FEV.Open(sCeReopenName, sCeReopenWidth, sCeReopenHeight, sCeReopenPreload, TRUE, sCeReopenSoundTrack);
++	sCeReopenName[0] = 0;
++}
++#endif
+ 
+ //******************************************************************************************
+ int		CDXFrontEndVideo::GetWidth()	// FUNCTION: 0x00541770

@@ -27,7 +27,7 @@ MANIFEST = ROOT / "port/network/PATCHES.txt"
 # Reviewed public replacements that the network guards touch, through host 1863f816 (update after review). 0.1.14: the device recovery code of d3dapp.* is no longer
 # behind CE_NETWORK_OFF (patch 0085 applies in the default build), so these are the default build's text of the files.
 MAIN_REPLACEMENTS = {
-    "d3dapp.cpp": "a9be6777f79e5aa59ee008316a9527b56226a3a6e0e344891b01d9351ca798b4",
+    "d3dapp.cpp": "f076209afcce2e8a6f49ebacf1cad585a49a522f9796744b66bc67928b0802d2",
     "d3dapp.h": "cc0b7513d58804631fdc3ebce96864ba9d9087a48252ee28e4d1ec23a29c84f1",
 }
 CODE = (".c", ".cpp", ".h", ".hpp", ".inl", ".inc")

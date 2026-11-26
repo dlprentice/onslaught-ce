@@ -131,7 +131,7 @@ extern "C" int PortCeChatEvent(const SDL_Event *event) {
     if (!CE_LockstepChatComposing()) {
         if (!down || !Enter(key) || event->key.repeat) return 0;
         SDL_Window *window = SDL_GetWindowFromID(event->key.windowID);
-        if (!window || !CE_LockstepChatBegin()) return 0;
+        if (!window || CE_LockstepChatBegin() != CE_CHAT_OK) return 0;
         if (!SDL_StartTextInput(window)) { CE_LockstepChatCancel(); return 1; }
         text_window = event->key.windowID; last_result = CE_CHAT_OK;
         return 1;

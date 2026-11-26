@@ -48,6 +48,14 @@ unsigned long long PortClockFrames();		// port/platform/common/clock.cpp
 bool PortClockVirtual();
 unsigned long long PortClockPeekNs();
 void PortAudioGuardCheck();			// port/platform/common/audioguard.cpp
+bool PortCeLayer() __attribute__((weak));
+
+static int gAudioFocused = 1;
+
+extern "C" void PortAudioSetFocused(int focused)
+{
+	__atomic_store_n(&gAudioFocused, focused ? 1 : 0, __ATOMIC_RELEASE);
+}
 
 namespace
 {
@@ -220,6 +228,16 @@ struct Params3D
 	bool dirty = false;
 };
 
+struct NotifyIface final : public IDirectSoundNotify
+{
+	Buffer *owner;
+	explicit NotifyIface(Buffer *b) : owner(b) {}
+	HRESULT STDMETHODCALLTYPE QueryInterface(REFIID r, LPVOID *o) override;
+	ULONG STDMETHODCALLTYPE AddRef() override;
+	ULONG STDMETHODCALLTYPE Release() override;
+	HRESULT STDMETHODCALLTYPE SetNotificationPositions(DWORD n, LPCDSBPOSITIONNOTIFY p) override;
+};
+
 struct Buffer final : public IDirectSoundBuffer8
 {
 	LONG refs = 1;
@@ -247,9 +265,10 @@ struct Buffer final : public IDirectSoundBuffer8
 	DWORD numNotes = 0;
 	Buffer3D *b3d = NULL;
 	Listener *listener = NULL;
+	NotifyIface notify;
 	float lastGain[2] = {0, 0};	// the previous mix's gains, ramped to avoid clicks
 
-	Buffer(LPCDSBUFFERDESC d, Data *shared, bool adopt = false)
+	Buffer(LPCDSBUFFERDESC d, Data *shared, bool adopt = false) : notify(this)
 	{
 		flags = d->dwFlags;
 		memset(&format, 0, sizeof(format));
@@ -935,26 +954,21 @@ struct Listener final : public IDirectSound3DListener
 	}
 };
 
-struct NotifyIface final : public IDirectSoundNotify
+HRESULT STDMETHODCALLTYPE NotifyIface::QueryInterface(REFIID r, LPVOID *o) { return owner->QueryInterface(r, o); }
+ULONG STDMETHODCALLTYPE NotifyIface::AddRef() { return owner->AddRef(); }
+ULONG STDMETHODCALLTYPE NotifyIface::Release() { return owner->ReleaseQuiet(); }
+HRESULT STDMETHODCALLTYPE NotifyIface::SetNotificationPositions(DWORD n, LPCDSBPOSITIONNOTIFY p)
 {
-	Buffer *owner;
-	explicit NotifyIface(Buffer *b) : owner(b) {}
-	HRESULT STDMETHODCALLTYPE QueryInterface(REFIID r, LPVOID *o) override { return owner->QueryInterface(r, o); }
-	ULONG STDMETHODCALLTYPE AddRef() override { return owner->AddRef(); }
-	ULONG STDMETHODCALLTYPE Release() override { return owner->ReleaseQuiet(); }
-	HRESULT STDMETHODCALLTYPE SetNotificationPositions(DWORD n, LPCDSBPOSITIONNOTIFY p) override
-	{
-		gMixer.CatchUp();
-		CallLog("Notify.SetNotificationPositions obj=%08lX count=%lu hr=0", P(this), (unsigned long)n);
-		for (DWORD i = 0; i < n; i++)
-			CallLog("  notify[%lu] offset=%lu event=%08lX", (unsigned long)i, (unsigned long)p[i].dwOffset, P(p[i].hEventNotify));
-		SDL_LockMutex(gMixer.lock);
-		owner->numNotes = n < 32 ? n : 32;
-		memcpy(owner->notes, p, owner->numNotes * sizeof(DSBPOSITIONNOTIFY));
-		SDL_UnlockMutex(gMixer.lock);
-		return DS_OK;
-	}
-};
+	gMixer.CatchUp();
+	CallLog("Notify.SetNotificationPositions obj=%08lX count=%lu hr=0", P(this), (unsigned long)n);
+	for (DWORD i = 0; i < n; i++)
+		CallLog("  notify[%lu] offset=%lu event=%08lX", (unsigned long)i, (unsigned long)p[i].dwOffset, P(p[i].hEventNotify));
+	SDL_LockMutex(gMixer.lock);
+	owner->numNotes = n < 32 ? n : 32;
+	memcpy(owner->notes, p, owner->numNotes * sizeof(DSBPOSITIONNOTIFY));
+	SDL_UnlockMutex(gMixer.lock);
+	return DS_OK;
+}
 
 void Buffer::TracePlay()
 {
@@ -1046,10 +1060,7 @@ HRESULT STDMETHODCALLTYPE Buffer::QueryInterface(REFIID riid, LPVOID *out)
 	}
 	else if (SameGuid(riid, IID_IDirectSoundNotify) && (flags & DSBCAPS_CTRLPOSITIONNOTIFY))
 	{
-		NotifyIface *nf = Make<NotifyIface>(this);		// small; freed with the process
-		if (!nf)
-			return E_OUTOFMEMORY;
-		*out = static_cast<IDirectSoundNotify *>(nf);
+		*out = static_cast<IDirectSoundNotify *>(&notify);
 	}
 	else if (SameGuid(riid, IID_IDirectSoundBuffer) || SameGuid(riid, IID_IDirectSoundBuffer8) || SameGuid(riid, IID_IUnknown))
 		*out = static_cast<IDirectSoundBuffer8 *>(this);
@@ -1210,6 +1221,7 @@ void Mixer::Mix(Sint16 *out, int frames)
 		scratchFrames = frames;
 	}
 	memset(scratch, 0, sizeof(float) * 2 * (size_t)frames);
+	const bool focused = __atomic_load_n(&gAudioFocused, __ATOMIC_ACQUIRE) != 0;
 	int musicSpan = 0, filmSpan = 0;
 	for (int v = numVoices - 1; v >= 0; v--)
 	{
@@ -1223,9 +1235,15 @@ void Mixer::Mix(Sint16 *out, int frames)
 		float gain[2];
 		double step;
 		b->Gains(gain, &step);
+		if (!focused && !(b->flags & DSBCAPS_GLOBALFOCUS))
+		{
+			gain[0] = 0.0f;
+			gain[1] = 0.0f;
+		}
 		float g0[2] = {b->lastGain[0] < 0 ? gain[0] : b->lastGain[0], b->lastGain[1] < 0 ? gain[1] : b->lastGain[1]};
 		b->lastGain[0] = gain[0];
 		b->lastGain[1] = gain[1];
+		const bool silentBlock = (g0[0] == 0.0f && g0[1] == 0.0f && gain[0] == 0.0f && gain[1] == 0.0f);
 		int ch = b->format.nChannels;
 		double pos = b->cursor;
 		if (!isfinite(pos) || pos < 0.0)
@@ -1256,41 +1274,44 @@ void Mixer::Mix(Sint16 *out, int frames)
 					break;
 				}
 			}
-			DWORD f0 = (DWORD)pos;
-			float ramp = (float)i / frames;
-			float gl = g0[0] + (gain[0] - g0[0]) * ramp, gr = g0[1] + (gain[1] - g0[1]) * ramp;
-			float sl, sr;
-			double frac = pos - (double)f0;
-			if (step == 1.0 && frac == 0.0)
+			if (!silentBlock)
 			{
-				sl = b->Sample(f0, 0);
-				sr = ch > 1 ? b->Sample(f0, 1) : sl;
-			}
-			else
-			{
-				int phase = isfinite(frac) ? (int)(frac * kPhases + 0.5) : 0;
-				if (phase < 0)
-					phase = 0;
-				else if (phase > kPhases)
-					phase = kPhases;
-				const float *k = gKernel[phase];
-				sl = sr = 0;
-				for (int t = 0; t < kTaps; t++)
+				DWORD f0 = (DWORD)pos;
+				float ramp = (float)i / frames;
+				float gl = g0[0] + (gain[0] - g0[0]) * ramp, gr = g0[1] + (gain[1] - g0[1]) * ramp;
+				float sl, sr;
+				double frac = pos - (double)f0;
+				if (step == 1.0 && frac == 0.0)
 				{
-					long f = (long)f0 + t - (kTaps / 2 - 1);
-					if (f < 0 || f >= (long)total)
-					{
-						if (!b->looping)
-							continue;
-						f = ((f % (long)total) + (long)total) % (long)total;
-					}
-					float l = b->Sample((DWORD)f, 0);
-					sl += k[t] * l;
-					sr += k[t] * (ch > 1 ? b->Sample((DWORD)f, 1) : l);
+					sl = b->Sample(f0, 0);
+					sr = ch > 1 ? b->Sample(f0, 1) : sl;
 				}
+				else
+				{
+					int phase = isfinite(frac) ? (int)(frac * kPhases + 0.5) : 0;
+					if (phase < 0)
+						phase = 0;
+					else if (phase > kPhases)
+						phase = kPhases;
+					const float *k = gKernel[phase];
+					sl = sr = 0;
+					for (int t = 0; t < kTaps; t++)
+					{
+						long f = (long)f0 + t - (kTaps / 2 - 1);
+						if (f < 0 || f >= (long)total)
+						{
+							if (!b->looping)
+								continue;
+							f = ((f % (long)total) + (long)total) % (long)total;
+						}
+						float l = b->Sample((DWORD)f, 0);
+						sl += k[t] * l;
+						sr += k[t] * (ch > 1 ? b->Sample((DWORD)f, 1) : l);
+					}
+				}
+				scratch[2 * i] += sl * gl;
+				scratch[2 * i + 1] += sr * gr;
 			}
-			scratch[2 * i] += sl * gl;
-			scratch[2 * i + 1] += sr * gr;
 			pos += step;
 		}
 		// Every voice starts at this block's frame zero; only its end can shorten that prefix. Max per-role
@@ -1301,6 +1322,8 @@ void Mixer::Mix(Sint16 *out, int frames)
 			if (b->mediaKind == PORT_SESSION_MUSIC && i > musicSpan) musicSpan = i;
 			if (b->mediaKind == PORT_SESSION_FILM && i > filmSpan) filmSpan = i;
 		}
+		if (!b->looping && pos >= (double)total)
+			ended = true;
 		if (pos >= total && b->looping)
 		{
 			pos = fmod(pos, (double)total);
@@ -1823,6 +1846,17 @@ struct Sound final : public IDirectSound8
 		c->dwMinSecondarySampleRate = DSBFREQUENCY_MIN;
 		c->dwMaxSecondarySampleRate = DSBFREQUENCY_MAX;
 		c->dwPrimaryBuffers = 1;
+		if (PortCeLayer && PortCeLayer())
+		{
+			c->dwMaxHwMixingAllBuffers = 64;
+			c->dwMaxHwMixingStaticBuffers = 64;
+			c->dwFreeHwMixingAllBuffers = 64;
+			c->dwFreeHwMixingStaticBuffers = 64;
+			c->dwMaxHw3DAllBuffers = 64;
+			c->dwMaxHw3DStaticBuffers = 64;
+			c->dwFreeHw3DAllBuffers = 64;
+			c->dwFreeHw3DStaticBuffers = 64;
+		}
 		return DS_OK;
 	}
 	HRESULT STDMETHODCALLTYPE DuplicateSoundBuffer(LPDIRECTSOUNDBUFFER src, LPDIRECTSOUNDBUFFER *out) override

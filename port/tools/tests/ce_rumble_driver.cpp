@@ -164,7 +164,7 @@ int main(int argc, char **argv) {
     CHECK(Attach(test != "no-motor"));
     if (test == "two-pads") CHECK(Attach(true));
     CHECK(SUCCEEDED(LT.InitDirectInput(reinterpret_cast<HWND>(1))));
-    CHECK(LT.mJoypads == (test == "two-pads" ? 2 : 1));
+    CHECK(LT.mJoypads == ((test == "two-pads" || BindableGamepadTriggers()) ? 2 : 1));
     CPlayer player; CBattleEngine engine; engine.mPlayer = &player;
     if (test == "hit" || test == "fenced") {
         engine.AddShockShake(0.0005f);

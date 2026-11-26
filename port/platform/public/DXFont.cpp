@@ -327,10 +327,11 @@ IDirect3DTexture9	*BuildCrispTexture(CDXBitmapFont *font, bool *loggedFailure)
 		return NULL;
 	}
 	const DWORD		began = GetTickCount();
-	D3DLOCKED_RECT	in;
-	if (FAILED(src->LockRect(0, &in, NULL, D3DLOCK_READONLY)) || !in.pBits)
+	D3DLOCKED_RECT	in = {};
+	HRESULT			inHr = src->LockRect(0, &in, NULL, D3DLOCK_READONLY);
+	if (FAILED(inHr) || !in.pBits)
 	{
-		if (in.pBits)
+		if (SUCCEEDED(inHr))
 			src->UnlockRect(0);
 		if (!*loggedFailure)
 		{
@@ -353,10 +354,11 @@ IDirect3DTexture9	*BuildCrispTexture(CDXBitmapFont *font, bool *loggedFailure)
 		}
 		return NULL;
 	}
-	D3DLOCKED_RECT	out;
-	if (FAILED(dst->LockRect(0, &out, NULL, 0)) || !out.pBits)
+	D3DLOCKED_RECT	out = {};
+	HRESULT			outHr = dst->LockRect(0, &out, NULL, 0);
+	if (FAILED(outHr) || !out.pBits)
 	{
-		if (out.pBits)
+		if (SUCCEEDED(outHr))
 			dst->UnlockRect(0);
 		src->UnlockRect(0);
 		dst->Release();
@@ -435,6 +437,14 @@ void	ReleaseCrispTexture(const CDXBitmapFont *font)
 			return;
 		}
 }
+}
+
+extern "C" void	PortCeCrispFontsDeleteDeviceObjects(void)
+{
+	for (int i = 0; i < gNumCrisp; i++)
+		if (gCrispFonts[i].texture)
+			gCrispFonts[i].texture->Release();
+	gNumCrisp = 0;
 }
 
 CDXBitmapFont::CDXBitmapFont()
@@ -876,21 +886,23 @@ BOOL	CDXBitmapFont::IsValid()
 // The debug font's cells hold only plain ASCII: accented lower-case letters draw as their plain capitals.
 int		CDXBitmapDebugFont::RemapChar(WCHAR c)
 {
+	if (c < 32)
+		return 0;
 	if (c < 0x80)
 		return c - 32;
 	if (c >= 0xe0 && c <= 0xe5)
-		return 'A';
+		return 'A' - 32;
 	if (c == 0xe7)
-		return 'C';
+		return 'C' - 32;
 	if (c >= 0xe8 && c <= 0xeb)
-		return 'E';
+		return 'E' - 32;
 	if (c >= 0xec && c <= 0xef)
-		return 'I';
+		return 'I' - 32;
 	if (c == 0xf1)
-		return 'N';
+		return 'N' - 32;
 	if (c >= 0xf2 && c <= 0xf6)
-		return 'O';
+		return 'O' - 32;
 	if (c >= 0xf9 && c <= 0xfc)
-		return 'U';
+		return 'U' - 32;
 	return 0;
 }

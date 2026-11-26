@@ -64,6 +64,7 @@ DRIVER_CPP = r"""
 #include <thread>
 #include <vector>
 #include <enet/enet.h>
+#include <monocypher.h>
 
 #if defined(CE_NETWORK_ICE)
 #include <juice/juice.h>
@@ -1094,7 +1095,246 @@ void TestGuestPreAuthHandshakeTimeoutAndRelayFallback() {
     Check(bad_seat_guest->LastError() == CeStarError::SlotRejected && !bad_seat_guest->IsIceFailed(),
           "wrong-seat STUN ICE refusal sets CeStarError::SlotRejected and does NOT trigger TURN retry");
 }
+
+void TestDetachGuestIceBridgeReapsPendingPeer() {
+    Check(enet_initialize() == 0, "enet_initialize for pending-peer reap test");
+    struct EnetGuard { ~EnetGuard() { enet_deinitialize(); } } enet_guard;
+
+    const auto secret = MakeSecret(0x55);
+    const auto compat = MakeCompat(0x77);
+    juice_config_t jcfg{};
+    jcfg.bind_address = "127.0.0.1";
+
+    // max_guests = 1 with long 10s handshake timeout: stale pending peer would stall fallback for 10s if not reaped!
+    CeStarConfig hcfg;
+    hcfg.role = CeStarRole::Host;
+    hcfg.bind_ipv4 = "127.0.0.1";
+    hcfg.bind_port = 0;
+    hcfg.use_ice = true;
+    hcfg.max_guests = 1;
+    hcfg.local_seat = 0;
+    hcfg.local_sim_slot = 0;
+    hcfg.match_secret = secret;
+    hcfg.compatibility = compat;
+    hcfg.handshake_timeout_ms = 10000;
+    auto host = CeStarTransport::Create(hcfg);
+    Check(bool(host) && host->AttachGuestIceBridge(1, jcfg, false), "reap-test host created");
+    if (!host) return;
+
+    ENetAddress raw_addr{};
+    enet_address_set_host_ip(&raw_addr, "127.0.0.1");
+    raw_addr.port = 0;
+    ENetHost* raw_client = enet_host_create(&raw_addr, 1, 3, 0, 0);
+    auto raw_ice = raw_client ? CeIceBridge::Create(raw_client, jcfg, false) : nullptr;
+    Check(raw_client != nullptr && bool(raw_ice), "raw unauth client + ICE created");
+    if (!raw_client || !raw_ice) {
+        if (raw_client) enet_host_destroy(raw_client);
+        return;
+    }
+
+    std::string h_sdp, r_sdp;
+    Check(WaitUntil([&] {
+        if (h_sdp.empty()) host->GetGuestLocalIceDescription(1, h_sdp);
+        if (r_sdp.empty()) raw_ice->LocalDescription(r_sdp);
+        return !h_sdp.empty() && !r_sdp.empty();
+    }, 3000), "gathered SDPs for pending-peer reap test");
+    Check(host->SetGuestRemoteIceDescription(1, r_sdp) && raw_ice->SetRemoteDescription(h_sdp),
+          "exchanged SDPs for pending-peer reap test");
+
+    bool raw_connected = false;
+    bool enet_started = false;
+    Check(WaitUntil([&] {
+        raw_ice->Pump();
+        if (!enet_started && raw_ice->Ready()) {
+            enet_host_connect(raw_client, &raw_ice->LocalAddress(), 3, 0);
+            enet_started = true;
+        }
+        ENetEvent eev{};
+        while (enet_host_service(raw_client, &eev, 0) > 0) {
+            if (eev.type == ENET_EVENT_TYPE_CONNECT) raw_connected = true;
+            else if (eev.type == ENET_EVENT_TYPE_RECEIVE) enet_packet_destroy(eev.packet);
+        }
+        host->Poll(NowMs());
+        return raw_connected;
+    }, 3000), "raw client completed ENet CONNECT (occupying sole host peer slot without Hello)");
+    host->Poll(NowMs());
+
+    // Detach slot 1 ICE bridge (simulating STUN -> TURN switch) and immediately attach a real Guest!
+    raw_ice.reset();
+    enet_host_destroy(raw_client);
+    host->DetachGuestIceBridge(1);
+    Check(host->AttachGuestIceBridge(1, jcfg, false), "reattached host ICE bridge after detach");
+
+    CeStarConfig gcfg;
+    gcfg.role = CeStarRole::Guest;
+    gcfg.use_ice = true;
+    gcfg.max_guests = 1;
+    gcfg.local_seat = 1;
+    gcfg.local_sim_slot = 1;
+    gcfg.match_secret = secret;
+    gcfg.compatibility = compat;
+    gcfg.handshake_timeout_ms = 3000;
+    auto guest = CeStarTransport::Create(gcfg);
+    Check(bool(guest) && guest->AttachHostIceBridge(jcfg, false), "recovery guest attached ICE bridge");
+    if (!guest) return;
+
+    std::string h2_sdp, g2_sdp;
+    Check(WaitUntil([&] {
+        if (h2_sdp.empty()) host->GetGuestLocalIceDescription(1, h2_sdp);
+        if (g2_sdp.empty()) guest->GetLocalIceDescription(g2_sdp);
+        return !h2_sdp.empty() && !g2_sdp.empty();
+    }, 3000), "gathered recovery SDPs for reap test");
+    Check(host->SetGuestRemoteIceDescription(1, g2_sdp) && guest->SetRemoteIceDescription(h2_sdp),
+          "exchanged recovery SDPs for reap test");
+    Check(WaitUntil([&] {
+        const uint64_t now = NowMs();
+        host->Poll(now);
+        guest->Poll(now);
+        return guest->IsAuthenticated() && host->ActiveGuestCount() == 1;
+    }, 2500), "DetachGuestIceBridge immediately freed stale pending ENet peer slot (no 10s stall)");
+}
 #endif
+
+void TestHardeningAndAuthenticatedRebindGuard() {
+    Check(enet_initialize() == 0, "enet_initialize for hardening test");
+    struct EnetGuard { ~EnetGuard() { enet_deinitialize(); } } enet_guard;
+
+    const auto secret = MakeSecret(0x31);
+    const auto compat = MakeCompat(0x62);
+
+    CeStarConfig hcfg;
+    hcfg.role = CeStarRole::Host;
+    hcfg.bind_ipv4 = "127.0.0.1";
+    hcfg.bind_port = 0;
+    hcfg.max_guests = 2;
+    hcfg.local_seat = 0;
+    hcfg.local_sim_slot = 0;
+    hcfg.match_secret = secret;
+    hcfg.compatibility = compat;
+    hcfg.expected_guests = {{1, 1}, {2, 2}};
+    auto host = CeStarTransport::Create(hcfg);
+    Check(bool(host) && host->LocalPort() != 0, "hardening test host created");
+    if (!host) return;
+
+    // 1. Raw compressed ENet datagram & oversized (>1200B) datagram rejected in InterceptCallback!
+    ENetSocket udp = enet_socket_create(ENET_SOCKET_TYPE_DATAGRAM);
+    Check(udp != ENET_SOCKET_NULL, "raw UDP socket created");
+    if (udp != ENET_SOCKET_NULL) {
+        ENetAddress dst{};
+        enet_address_set_host_ip(&dst, "127.0.0.1");
+        dst.port = host->LocalPort();
+        const uint32_t before = host->RejectedPackets();
+        uint8_t compressed[16]{};
+        compressed[0] = 0x40u; // ENET_PROTOCOL_HEADER_FLAG_COMPRESSED (0x4000 BE)
+        compressed[1] = 0x00u;
+        ENetBuffer b1{};
+        b1.data = compressed;
+        b1.dataLength = sizeof(compressed);
+        enet_socket_send(udp, &dst, &b1, 1);
+
+        std::vector<uint8_t> oversized(1300, 0x01u);
+        ENetBuffer b2{};
+        b2.data = oversized.data();
+        b2.dataLength = oversized.size();
+        enet_socket_send(udp, &dst, &b2, 1);
+
+        Check(WaitUntil([&] {
+            host->Poll(NowMs());
+            return host->RejectedPackets() >= before + 2u;
+        }, 1500), "compressed and oversized (>1200B) ENet datagrams rejected by intercept");
+        enet_socket_destroy(udp);
+    }
+
+    // 2. Authenticated guest sending a second valid Hello claiming empty slot 2 MUST be rejected (L3-P0-3).
+    ENetHost* raw_client = enet_host_create(nullptr, 1, 3, 0, 0);
+    Check(raw_client != nullptr, "raw ENet client created for rebind guard test");
+    if (!raw_client) return;
+    ENetAddress dst{};
+    enet_address_set_host_ip(&dst, "127.0.0.1");
+    dst.port = host->LocalPort();
+    ENetPeer* peer = enet_host_connect(raw_client, &dst, 3, 0);
+    Check(peer != nullptr, "raw client connecting to host");
+
+    auto send_hello = [&](uint16_t slot, uint8_t nonce_seed) {
+        uint8_t hello_nonce[16]{};
+        uint8_t client_nonce[32]{};
+        for (size_t i = 0; i < 16; ++i) hello_nonce[i] = static_cast<uint8_t>(nonce_seed + i);
+        for (size_t i = 0; i < 32; ++i) client_nonce[i] = static_cast<uint8_t>(nonce_seed ^ (i + 5));
+        std::vector<uint8_t> body;
+        body.insert(body.end(), client_nonce, client_nonce + 32);
+        body.insert(body.end(), compat.begin(), compat.end());
+        uint8_t zero32[32]{};
+        body.insert(body.end(), zero32, zero32 + 32);
+        body.push_back(static_cast<uint8_t>(slot >> 8));
+        body.push_back(static_cast<uint8_t>(slot & 0xFFu));
+        body.push_back(static_cast<uint8_t>(slot >> 8));
+        body.push_back(static_cast<uint8_t>(slot & 0xFFu));
+        std::vector<uint8_t> frame;
+        CeStarWire::EncodeFrame(CeStarMsgType::Hello, body.data(), body.size(), frame);
+
+        std::vector<uint8_t> wire(28 + frame.size() + 16);
+        wire[0] = 0x43; wire[1] = 0x45; wire[2] = 0x53; wire[3] = 0x31; // "CES1"
+        wire[4] = 0x01; // kFlagHandshake
+        wire[5] = 0x00; // kChannelControl
+        wire[6] = static_cast<uint8_t>(slot >> 8);
+        wire[7] = static_cast<uint8_t>(slot & 0xFFu);
+        wire[8] = 0; wire[9] = 0; wire[10] = 0; wire[11] = 1; // seq = 1
+        std::memcpy(wire.data() + 12, hello_nonce, 16);
+
+        uint8_t aead_nonce[24]{};
+        std::memcpy(aead_nonce, hello_nonce, 16);
+        aead_nonce[16] = 0x01;
+        aead_nonce[17] = 0x00;
+        aead_nonce[18] = static_cast<uint8_t>(slot >> 8);
+        aead_nonce[19] = static_cast<uint8_t>(slot & 0xFFu);
+        aead_nonce[23] = 1;
+        crypto_aead_lock(wire.data() + 28, wire.data() + 28 + frame.size(),
+                         secret.data(), aead_nonce, wire.data(), 28, frame.data(), frame.size());
+        ENetPacket* pkt = enet_packet_create(wire.data(), wire.size(), ENET_PACKET_FLAG_RELIABLE);
+        enet_peer_send(peer, 0, pkt);
+        enet_host_flush(raw_client);
+    };
+
+    bool connected = false;
+    Check(WaitUntil([&] {
+        ENetEvent eev{};
+        while (enet_host_service(raw_client, &eev, 0) > 0) {
+            if (eev.type == ENET_EVENT_TYPE_CONNECT) connected = true;
+            else if (eev.type == ENET_EVENT_TYPE_RECEIVE) enet_packet_destroy(eev.packet);
+        }
+        host->Poll(NowMs());
+        return connected;
+    }, 2000), "raw client ENet connected");
+
+    send_hello(1, 0x10);
+    Check(WaitUntil([&] {
+        ENetEvent eev{};
+        while (enet_host_service(raw_client, &eev, 0) > 0) {
+            if (eev.type == ENET_EVENT_TYPE_RECEIVE) enet_packet_destroy(eev.packet);
+        }
+        host->Poll(NowMs());
+        return host->ActiveGuestCount() == 1;
+    }, 2000), "raw client authenticated as slot 1");
+
+    const uint32_t rej_before = host->RejectedPackets();
+    // Attempt to rebind the SAME authenticated ENetPeer* onto empty slot 2!
+    send_hello(2, 0x90);
+    Check(WaitUntil([&] {
+        ENetEvent eev{};
+        while (enet_host_service(raw_client, &eev, 0) > 0) {
+            if (eev.type == ENET_EVENT_TYPE_RECEIVE) enet_packet_destroy(eev.packet);
+        }
+        host->Poll(NowMs());
+        return host->RejectedPackets() > rej_before;
+    }, 1500), "second Hello on already-authenticated peer rejected");
+
+    CeStarPeerInfo s1{}, s2{};
+    Check(host->GetPeerInfo(1, s1) && s1.authenticated &&
+          host->GetPeerInfo(2, s2) && !s2.authenticated &&
+          host->ActiveGuestCount() == 1,
+          "authenticated slot 1 preserved and slot 2 NOT hijacked by second Hello");
+    enet_host_destroy(raw_client);
+}
 
 } // namespace
 
@@ -1103,9 +1343,11 @@ int main() {
     TestFourPeerDirectStarSession();
     TestStartBarrierSilenceKeepalive();
     TestChatRateLimitAndQueueIsolation();
+    TestHardeningAndAuthenticatedRebindGuard();
 #if defined(CE_NETWORK_ICE)
     TestMultiSlotIceLoopbackMultiplexing();
     TestGuestPreAuthHandshakeTimeoutAndRelayFallback();
+    TestDetachGuestIceBridgeReapsPendingPeer();
 #endif
     std::printf("STAR_TRANSPORT_TESTS checks=%d failures=%d\n", gChecks, gFails);
     return gFails == 0 ? 0 : 1;

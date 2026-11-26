@@ -11,7 +11,7 @@ FakePlatform PLATFORM;
 FakeFrontend FRONTEND;
 namespace {
 CeTextChat::Owner owner;
-bool active = false, start_ok = true;
+bool active = false, start_ok = true, begin_ok = true;
 unsigned starts = 0, stops = 0, submits = 0, checks = 0, failures = 0;
 uint64_t clock_ms = 100;
 uint32_t epoch = 1;
@@ -52,7 +52,10 @@ extern "C" bool SDL_StartTextInput(SDL_Window*) { ++starts; return start_ok; }
 extern "C" bool SDL_StopTextInput(SDL_Window*) { ++stops; return true; }
 extern "C" int CE_LockstepChatAvailable(void) { return active && owner.State().open; }
 extern "C" int CE_LockstepChatComposing(void) { return CE_LockstepChatAvailable() && owner.State().composing; }
-extern "C" int CE_LockstepChatBegin(void) { return CE_LockstepChatAvailable() && owner.BeginCompose() == CeTextChat::Result::Ok; }
+extern "C" int CE_LockstepChatBegin(void) {
+    if (!CE_LockstepChatAvailable() || !begin_ok) return CE_CHAT_CLOSED;
+    return owner.BeginCompose() == CeTextChat::Result::Ok ? CE_CHAT_OK : CE_CHAT_CLOSED;
+}
 extern "C" uint32_t CE_LockstepChatAppend(const uint8_t* text, uint32_t size) { return Result(owner.Append(text, size)); }
 extern "C" uint32_t CE_LockstepChatBackspace(void) { return Result(owner.Backspace()); }
 extern "C" uint32_t CE_LockstepChatSubmit(void) {
@@ -92,6 +95,10 @@ int main() {
     Check(SendKey(SDL_SCANCODE_RETURN) == 0, "menu-enter-not-owned");
     drawn.clear(); PortCeChatRender(); Check(drawn.empty(), "menu-has-no-chat-overlay");
     FRONTEND.running = false;
+    begin_ok = false;
+    Check(SendKey(SDL_SCANCODE_RETURN) == 0 && !owner.State().composing && starts == 0,
+          "begin-closed-refuses-composer");
+    begin_ok = true;
     Check(SendKey(SDL_SCANCODE_RETURN) == 1 && owner.State().composing && starts == 1,
           "enter-opens-real-composer");
     const unsigned before_submit = submits, before_stop = stops;

@@ -31,8 +31,9 @@
 
 namespace
 {
-char gGameDir[MAX_PATH];
-char gUserDir[MAX_PATH];
+const size_t kRootRoom = 4096;
+char gGameDir[kRootRoom];
+char gUserDir[kRootRoom];
 bool gRootsValid;
 bool gUserInsideGame;
 
@@ -54,30 +55,94 @@ size_t TrimSepLen(const char *s, bool dropRoot)
 	return len;
 }
 
-// True when `inner` is `outer` or lies beneath it. Fails closed when a path cannot be canonicalized.
-bool Inside(const char *inner, const char *outer)
+bool PrefixInside(const WCHAR *fa, DWORD la, const WCHAR *fb, DWORD lb)
 {
-	const DWORD room = MAX_PATH * 2;
-	WCHAR a[room], b[room], fa[room], fb[room];
-	if (!inner || !*inner || !outer || !*outer ||
-		!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, inner, -1, a, room) ||
-		!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, outer, -1, b, room))
-		return true;
-	DWORD la = GetFullPathNameW(a, room, fa, NULL), lb = GetFullPathNameW(b, room, fb, NULL);
-	if (!la || la >= room || !lb || lb >= room)
-		return true;
 	while (lb > 3 && fb[lb - 1] == L'\\')
-		fb[--lb] = 0;
+		--lb;
 	if (la < lb || CompareStringOrdinal(fa, (int)lb, fb, (int)lb, TRUE) != CSTR_EQUAL)
 		return false;
-	return fa[lb] == 0 || fa[lb] == L'\\' || fb[lb - 1] == L'\\';
+	return la == lb || fa[lb] == L'\\' || fb[lb - 1] == L'\\';
+}
+
+bool FinalPathIfExists(const WCHAR *path, WCHAR *out, DWORD room, DWORD *outLen)
+{
+	HANDLE h = CreateFileW(path, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+						   OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+	if (h == INVALID_HANDLE_VALUE)
+		return false;
+	DWORD n = GetFinalPathNameByHandleW(h, out, room, VOLUME_NAME_DOS | FILE_NAME_NORMALIZED);
+	CloseHandle(h);
+	if (!n || n >= room)
+		return false;
+	*outLen = n;
+	return true;
+}
+
+// True when `inner` is `outer` or lies beneath it. Resolves existing directory junctions/symlinks too, and fails closed
+// when a path cannot be canonicalized.
+bool Inside(const char *inner, const char *outer)
+{
+	const DWORD room = 4096;
+	WCHAR *buf = (WCHAR *)malloc(sizeof(WCHAR) * room * 6);
+	if (!buf)
+		return true;
+	WCHAR *a = buf, *b = buf + room, *fa = buf + room * 2, *fb = buf + room * 3, *ca = buf + room * 4, *cb = buf + room * 5;
+	if (!inner || !*inner || !outer || !*outer ||
+		!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, inner, -1, a, (int)room) ||
+		!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, outer, -1, b, (int)room))
+	{
+		free(buf);
+		return true;
+	}
+	DWORD la = GetFullPathNameW(a, room, fa, NULL), lb = GetFullPathNameW(b, room, fb, NULL);
+	if (!la || la >= room || !lb || lb >= room)
+	{
+		free(buf);
+		return true;
+	}
+	if (PrefixInside(fa, la, fb, lb))
+	{
+		free(buf);
+		return true;
+	}
+	DWORD cla = 0, clb = 0;
+	bool hasA = FinalPathIfExists(fa, ca, room, &cla);
+	bool hasB = FinalPathIfExists(fb, cb, room, &clb);
+	if (hasA && hasB)
+	{
+		bool inside = PrefixInside(ca, cla, cb, clb);
+		free(buf);
+		return inside;
+	}
+	// If `inner` does not exist yet, resolve its nearest existing ancestor to catch junctions above it.
+	if (!hasA && hasB)
+	{
+		WCHAR parent[4096];
+		wcsncpy(parent, fa, room - 1);
+		parent[room - 1] = 0;
+		for (;;)
+		{
+			WCHAR *slash = wcsrchr(parent, L'\\');
+			if (!slash || slash <= parent + 2)
+				break;
+			*slash = 0;
+			if (FinalPathIfExists(parent, ca, room, &cla))
+			{
+				bool inside = PrefixInside(ca, cla, cb, clb);
+				free(buf);
+				return inside;
+			}
+		}
+	}
+	free(buf);
+	return false;
 }
 
 bool MakeDirs(const char *path)
 {
 	if (!path || !*path)
 		return false;
-	char tmp[MAX_PATH * 3];
+	char tmp[kRootRoom + MAX_PATH * 2];
 	int written = snprintf(tmp, sizeof(tmp), "%s", path);
 	if (written <= 0 || (size_t)written >= sizeof(tmp))
 		return false;
@@ -228,7 +293,7 @@ int Resolve(const char *game_path, Mode mode, char *out, size_t n)
 			return out[0] = 0, -1;
 		return 0;
 	}
-	char rel[MAX_PATH], user[MAX_PATH * 2], game[MAX_PATH * 2];
+	char rel[MAX_PATH], user[kRootRoom + MAX_PATH], game[kRootRoom + MAX_PATH];
 	if (!Relative(game_path, rel, sizeof(rel)))
 		return -1;
 	int uw = snprintf(user, sizeof(user), "%s\\%s", gUserDir, rel);
@@ -256,7 +321,7 @@ int Resolve(const char *game_path, Mode mode, char *out, size_t n)
 		if (char *slash = strrchr(parent, '\\'))
 		{
 			*slash = 0;
-			char gparent[MAX_PATH * 3], uparent[MAX_PATH * 3];
+			char gparent[kRootRoom + MAX_PATH * 2], uparent[kRootRoom + MAX_PATH * 2];
 			int gpw = snprintf(gparent, sizeof(gparent), "%s\\%s", gGameDir, parent);
 			int upw = snprintf(uparent, sizeof(uparent), "%s\\%s", gUserDir, parent);
 			if (gpw <= 0 || (size_t)gpw >= sizeof(gparent) || upw <= 0 || (size_t)upw >= sizeof(uparent))
@@ -272,7 +337,7 @@ int Resolve(const char *game_path, Mode mode, char *out, size_t n)
 // mod's copy replace it (platform/common/mods.h); the writable folder's copy of a file still wins over a mod.
 bool ModMayReplace(const char *game_path, const char *resolved)
 {
-	char rel[MAX_PATH], game[MAX_PATH * 2];
+	char rel[MAX_PATH], game[kRootRoom + MAX_PATH];
 	if (!PortModsActive() || Absolute(game_path) || !Relative(game_path, rel, sizeof(rel)))
 		return false;
 	snprintf(game, sizeof(game), "%s\\%s", gGameDir, rel);
@@ -287,7 +352,7 @@ HANDLE ModRead(const char *game_path, const char *resolved)
 
 int CopyOnWrite(const char *game_path, char *out, size_t n)
 {
-	char read[MAX_PATH * 2];
+	char read[kRootRoom + MAX_PATH];
 	if (Resolve(game_path, READ, read, sizeof(read)) != 0)
 		return -1;
 	if (Resolve(game_path, WRITE, out, n) != 0)

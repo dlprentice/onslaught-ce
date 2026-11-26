@@ -151,6 +151,7 @@ static ShellApplication *shell;
 #define CONSOLE shellConsole
 #define mMsg lastMessage
 #define sPortQuitRequested (shellOrdinary && quitCount)
+extern "C" void PortCeDeleteGpuCaches(void) {}
 #include "public_device_recovery_shell.h"
 #undef sPortQuitRequested
 #undef mMsg

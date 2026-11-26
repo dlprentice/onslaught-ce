@@ -187,7 +187,7 @@ class MenuMouse(unittest.TestCase):
         cmdmap = CMDMAP.read_text()
         self.assertIn("bool PortCeCmdMapOpen() { return gOpen || gOpening; }", cmdmap)
         self.assertIn("\tgOpening = true;\n\tShutdownMouse();", cmdmap)
-        self.assertIn("\tgOpening = false;\n\tif (!strategic) { GAME.GetController(0)->SetToControl(&gSink); }", cmdmap)
+        self.assertIn("\tgOpening = false;\n\tif (CCONTROLLER *controller = GAME.GetController(0)) controller->SetToControl(&gSink);", cmdmap)
 
 
 if __name__ == "__main__":

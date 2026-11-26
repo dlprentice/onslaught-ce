@@ -29,7 +29,6 @@ IDirect3DTexture9 *gTextures[CE_PLAYUNIT_TEX_COUNT] = {};
 bool gBadAsset[CE_PLAYUNIT_TEX_COUNT] = {};
 unsigned gRetryCooldown[CE_PLAYUNIT_TEX_COUNT] = {};
 bool gLoggedFail[CE_PLAYUNIT_TEX_COUNT] = {};
-bool gAtexitRegistered = false;
 
 uint64_t CurrentDeviceGen()
 {
@@ -65,11 +64,6 @@ IDirect3DTexture9 *Ensure(IDirect3DDevice9 *device, CePlayUnitTexId id)
 		ReleaseAll();
 		gDevice = device;
 		gDeviceGen = gen;
-	}
-	if (!gAtexitRegistered)
-	{
-		gAtexitRegistered = true;
-		atexit(ReleaseAll);
 	}
 	if (gTextures[idx])
 		return gTextures[idx];
@@ -132,6 +126,11 @@ IDirect3DTexture9 *Ensure(IDirect3DDevice9 *device, CePlayUnitTexId id)
 
 } // namespace CePlayUnitTextures
 
+extern "C" void PortCePlayUnitTexturesDeleteDeviceObjects(void)
+{
+	CePlayUnitTextures::ReleaseAll();
+}
+
 #else
 #include "ce_playunit_textures.h"
 namespace CePlayUnitTextures
@@ -139,4 +138,6 @@ namespace CePlayUnitTextures
 IDirect3DTexture9 *Ensure(IDirect3DDevice9 *, CePlayUnitTexId) { return 0; }
 void ReleaseAll() {}
 } // namespace CePlayUnitTextures
+
+extern "C" void PortCePlayUnitTexturesDeleteDeviceObjects(void) {}
 #endif

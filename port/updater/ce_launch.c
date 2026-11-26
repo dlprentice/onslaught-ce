@@ -1313,8 +1313,10 @@ static int user_inside_game(const char *user, const char *game)
 	if (!user || !*user || !game || !*game) return 0;
 #ifdef _WIN32
 	WCHAR a[PATHN], b[PATHN], fa[PATHN], fb[PATHN];
-	if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, user, -1, a, PATHN) ||
-		!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, game, -1, b, PATHN))
+	UINT cp = GetACP();
+	DWORD flags = cp == CP_UTF8 ? MB_ERR_INVALID_CHARS : 0;
+	if (!MultiByteToWideChar(cp, flags, user, -1, a, PATHN) ||
+		!MultiByteToWideChar(cp, flags, game, -1, b, PATHN))
 		return 1;
 	DWORD la = GetFullPathNameW(a, PATHN, fa, NULL), lb = GetFullPathNameW(b, PATHN, fb, NULL);
 	if (!la || la >= PATHN || !lb || lb >= PATHN) return 1;
@@ -1510,28 +1512,51 @@ static int ascii_iends(const char *s, const char *suffix)
 #define START_CAP (4u << 20)
 static void json_start_files(FILE *f, const char *dir, const char *rel, int *first, size_t *total)
 {
-	char names[256][256];
-	int count = 0;
+	size_t cap = 64, count = 0;
+	char (*names)[256] = (char (*)[256])malloc(cap * sizeof *names);
+	if (!names) return;
 #ifdef _WIN32
 	char pattern[PATHN];
 	snprintf(pattern, sizeof pattern, "%s\\*", dir);
 	WIN32_FIND_DATAA fd;
 	HANDLE h = FindFirstFileA(pattern, &fd);
-	if (h == INVALID_HANDLE_VALUE) return;
+	if (h == INVALID_HANDLE_VALUE) { free(names); return; }
 	do
-		if (count < 256 && strlen(fd.cFileName) < 256) snprintf(names[count++], 256, "%s", fd.cFileName);
+	{
+		if (strlen(fd.cFileName) >= 256) continue;
+		if (count == cap)
+		{
+			if (cap >= 4096) break;
+			size_t ncap = cap * 2;
+			char (*grown)[256] = (char (*)[256])realloc(names, ncap * sizeof *names);
+			if (!grown) break;
+			names = grown; cap = ncap;
+		}
+		snprintf(names[count++], 256, "%s", fd.cFileName);
+	}
 	while (FindNextFileA(h, &fd));
 	FindClose(h);
 #else
 	DIR *d = opendir(dir);
-	if (!d) return;
+	if (!d) { free(names); return; }
 	struct dirent *e;
 	while ((e = readdir(d)))
-		if (count < 256 && strlen(e->d_name) < 256) snprintf(names[count++], 256, "%s", e->d_name);
+	{
+		if (strlen(e->d_name) >= 256) continue;
+		if (count == cap)
+		{
+			if (cap >= 4096) break;
+			size_t ncap = cap * 2;
+			char (*grown)[256] = (char (*)[256])realloc(names, ncap * sizeof *names);
+			if (!grown) break;
+			names = grown; cap = ncap;
+		}
+		snprintf(names[count++], 256, "%s", e->d_name);
+	}
 	closedir(d);
 #endif
-	qsort(names, (size_t)count, sizeof names[0], (int (*)(const void *, const void *))strcmp);
-	for (int i = 0; i < count; i++)
+	qsort(names, count, sizeof names[0], (int (*)(const void *, const void *))strcmp);
+	for (size_t i = 0; i < count; i++)
 	{
 		const char *nm = names[i];
 		if (!strcmp(nm, ".") || !strcmp(nm, "..")) continue;
@@ -1585,6 +1610,7 @@ static void json_start_files(FILE *f, const char *dir, const char *rel, int *fir
 		}
 		free(data);
 	}
+	free(names);
 }
 
 /* Any directory entry, including a dangling link, occupies a recording name. An inspection error is also occupied. */
@@ -1990,6 +2016,7 @@ int main(int argc, char **argv)
 	/* The historical in-place swap helper's entry point is refused before anything else, whatever version is active. */
 	static const char *const options[] = {"--version", "--no-update-check", "--update-only", "--rollback", "--record",
 		"--no-record", "--report"};
+	int pre_rollback = 0;
 	for (int i = 1; i < argc; i++)
 	{
 		if (!strcmp(argv[i], "--apply"))
@@ -1997,13 +2024,16 @@ int main(int argc, char **argv)
 			fprintf(stderr, "Onslaught CE: --apply was refused before accessing installation, user or update paths.\n");
 			return 2;
 		}
+		if (!strcmp(argv[i], "--rollback")) pre_rollback = 1;
 		int known = 0;	/* the option parser below stops at the first other argument: game arguments start there */
 		for (size_t k = 0; k < sizeof options / sizeof *options; ++k) known |= !strcmp(argv[i], options[k]);
 		if (!known) break;
 	}
-	/* The base folder's launcher hands over to the active updated version (versions/, ce_update_v2.h). */
+	/* The base folder's launcher hands over to the active updated version (versions/, ce_update_v2.h),
+	 * except for --rollback which base handles directly so a broken active version cannot block recovery. */
 	init_here();
 	upd_find_root();
+	if (!pre_rollback)
 	{
 		int status = 0;
 		if (upd_start_active(argc, argv, 0, &status)) return status;

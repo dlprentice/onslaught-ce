@@ -1,25 +1,109 @@
 --- a/PCMemoryCard.cpp
 +++ b/PCMemoryCard.cpp
-@@ -25,4 +25,6 @@
+@@ -24,6 +24,25 @@
+ extern "C" unsigned PortSaveLookupUtf16(const void *, int *);
  extern "C" unsigned PortSaveReserveUtf8(const char *);
  #endif
 +// Port 0117: a career is written whole and replaced atomically (port/platform/common/save_replace.h); 0 is success.
 +extern "C" int PortReplaceUserFile(const char *game_path, const void *data, unsigned size, const char *what);
++#if defined(CE_VERSION) || !defined(_WIN32)
++// Port 0117: track a freshly created 0-byte reservation so a failed WriteSave cleans it up instead of leaving a broken .bes.
++static char sFreshReservePath[MAX_PATH];
++static int PortSaveFinishWrite(CPCMemoryCard *card, int cardNo, int save, WCHAR *name, const char *path, int replaced)
++{
++	if (sFreshReservePath[0] && strcmp(sFreshReservePath, path) == 0)
++	{
++		sFreshReservePath[0] = 0;
++		if (replaced != 0)
++			card->DeleteSave(cardNo, save, name);
++	}
++	return replaced == 0 ? MCE_SUCCESS : 1;
++}
++#define PORT_SAVE_WRITE_CALL(expr) PortSaveFinishWrite(this, card, save, name, path, (expr))
++#else
++#define PORT_SAVE_WRITE_CALL(expr) expr == 0 ? MCE_SUCCESS : 1
++#endif
  #ifndef _WIN32
  // Port 0101: Linux career names. A UTF-8 file name of code page 1252 characters reaches the game as those characters (so
-@@ -281,5 +283,9 @@
+ // a Linux career named for the latete cheat has the 0xEA its code compares), and a career name with such characters is
+@@ -260,6 +279,9 @@
+ 	if (error) { SetLastError(error); return MCE_FAILURE; }
+ 	if (index != -1)
+ 	{
++#ifdef CE_VERSION
++		sFreshReservePath[0] = 0;
++#endif
+ 		if (save) *save = index;
+ 		// Admission reserves the existing slot, without opening or truncating its file. WriteSave owns writing.
+ 		return allowed_overwrite ? MCE_SUCCESS : MCE_FILEEXISTS;
+@@ -278,6 +300,9 @@
+ 	}
+ 	error = PortSaveLookupUtf16(name, &index);
+ 	if (error || index == -1) { SetLastError(error ? error : 2); return MCE_FAILURE; }
++#ifdef CE_VERSION
++	snprintf(sFreshReservePath, sizeof(sFreshReservePath), "%s", path);
++#endif
+ 	if (save) *save = index;
+ 	return MCE_SUCCESS;
+ #else
+@@ -303,7 +328,15 @@
+ 		}
  	}
  
 -	f = fopen(path, "wb");
 +	// Port 0117: an existing career is admitted as it is. The retail fopen "wb" cut it to nothing here, before the new bytes
 +	// existed; WriteSave now replaces it as a whole. Only a name nobody has gets an empty file, created exclusively.
++	BOOL freshReserve = FALSE;
 +	f = fopen(path, "rb");
 +	if (!f)
++	{
 +		f = fopen(path, "wbx");
++		freshReserve = (f != NULL);
++	}
  	if (f)
  	{
-@@ -348,14 +354,6 @@
- 	strcat(path, SAVE_EXTENSION);
+ 		fclose(f);
+@@ -318,7 +351,11 @@
+ 			{
+ 				index++;
+ 				if (!NextSave())
++				{
++					if (freshReserve)
++						DeleteSave(card, -1, name);
+ 					return 1;
++				}
+ 				strcpy(buffer, sFindData.name);
+ 				buffer[strlen(buffer) - 4] = 0;
+ 			}
+@@ -331,8 +368,14 @@
+ 				_findclose(sFindHandle);
+ 				sFindHandle = -1;
+ 			}
++			if (freshReserve)
++				snprintf(sFreshReservePath, sizeof(sFreshReservePath), "%s", path);
++			else
++				sFreshReservePath[0] = 0;
+ 			return(MCE_SUCCESS);
+ 		}
++		if (freshReserve)
++			DeleteSave(card, -1, name);
+ 	}
+ 	return 1;
+ #endif
+@@ -352,6 +395,10 @@
+ 	if (!PortSaveBuildPath(PortSaveFile(name), path, sizeof(path)))	// port 0101
+ 		return MCE_FAILURE;
+ #endif
++#if defined(CE_VERSION) || !defined(_WIN32)
++	if (sFreshReservePath[0] && strcmp(sFreshReservePath, path) == 0)
++		sFreshReservePath[0] = 0;
++#endif
+ 	return DeleteFile(path) ? MCE_SUCCESS : 1;
+ }
+ 
+@@ -368,16 +415,8 @@
+ 	if (!PortSaveBuildPath(PortSaveFile(name), path, sizeof(path)))	// port 0101
+ 		return MCE_FAILURE;
  #endif
 -	FILE *f = fopen(path, "wb");
 -	if (f)
@@ -32,9 +116,10 @@
 -	}
 -	return 1;
 +	// Port 0117: the whole career or nothing. The retail fopen "wb" cut the old file short first, so any failure lost it.
-+	return PortReplaceUserFile(path, data, datasize, "career") == 0 ? MCE_SUCCESS : 1;
++	return PORT_SAVE_WRITE_CALL(PortReplaceUserFile(path, data, datasize, "career"));
  }
  
+ // retail: a complete read closes the file twice
 --- a/FEPOptions.cpp
 +++ b/FEPOptions.cpp
 @@ -11,4 +11,5 @@

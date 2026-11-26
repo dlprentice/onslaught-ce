@@ -619,12 +619,12 @@ CeOnlineLobbyClient::~CeOnlineLobbyClient() {
 }
 
 bool CeOnlineLobbyClient::IsValidMapId(uint32_t map) noexcept {
-    return map == 100 || (map >= 850 && map <= 866);
+    return map >= 850 && map <= 866 && map != 858;
 }
 
 bool CeOnlineLobbyClient::IsValidMode(const std::string& mode) noexcept {
     return mode == "coop_defence" || mode == "coop_skirmish" ||
-           mode == "versus_2v2" || mode == "tutorial";
+           mode == "versus_2v2";
 }
 
 bool CeOnlineLobbyClient::IsValidSafeId(const std::string& id) noexcept {
@@ -698,7 +698,7 @@ bool CeOnlineLobbyClient::BeginAuthenticate(const CeOnlineProfile& profile, cons
                                             const std::string& content_id, uint64_t now_ms,
                                             uint64_t timeout_ms) {
     if (!profile.Loaded() || !CeOnlineProfile::IsValidCallsign(profile.Callsign()) ||
-        !IsPrintableAscii(build_id, 1, 64) ||
+        !IsPrintableAscii(build_id, 1, 32) ||
         (!content_id.empty() && !IsLowerHex(content_id, 64)))
         return false;
     CeOnlineJson::ObjectBuilder jb;
@@ -719,7 +719,7 @@ bool CeOnlineLobbyClient::BeginAuthenticate(const CeOnlineProfile& profile, cons
 bool CeOnlineLobbyClient::BeginListLobbies(const CeOnlineListLobbiesReq& req, uint64_t now_ms,
                                            uint64_t timeout_ms) {
     if (req.limit < 1 || req.limit > 32 ||
-        !IsSafeQueryParam(req.build_id, 64) ||
+        !IsSafeQueryParam(req.build_id, 32) ||
         !IsSafeQueryParam(req.content_id, 64))
         return false;
     std::string path = "/ce-lobby/v1/lobbies?cursor=" + std::to_string(req.cursor) +
@@ -733,14 +733,14 @@ bool CeOnlineLobbyClient::BeginListLobbies(const CeOnlineListLobbiesReq& req, ui
 
 bool CeOnlineLobbyClient::BeginCreateLobby(const CeOnlineCreateLobbyReq& req, uint64_t now_ms,
                                            uint64_t timeout_ms) {
-    if (!IsPrintableAscii(req.name, 1, 48) || !IsValidMode(req.mode) || !IsValidMapId(req.map) ||
+    if (!IsPrintableAscii(req.name, 1, 40) || !IsValidMode(req.mode) || !IsValidMapId(req.map) ||
         req.max_seats < 2 || req.max_seats > CE_ONLINE_WIRE_MAX_SLOTS ||
         (req.topology == "star_lockstep" && req.max_seats > CE_ONLINE_MAX_MATCH_SLOTS) ||
         (req.visibility != "public" && req.visibility != "unlisted") ||
         !IsPrintableAscii(req.password, 0, 64) ||
-        !IsPrintableAscii(req.build_id, 1, 64) ||
+        !IsPrintableAscii(req.build_id, 1, 32) ||
         (!req.content_id.empty() && !IsLowerHex(req.content_id, 64)) ||
-        !IsPrintableAscii(req.be_cfg, 0, 64))
+        !IsPrintableAscii(req.be_cfg, 0, 32))
         return false;
     CeOnlineJson::ObjectBuilder jb;
     jb.AddString("name", req.name);
@@ -792,9 +792,9 @@ bool CeOnlineLobbyClient::BeginPollRoom(const std::string& room_id, uint64_t sin
 bool CeOnlineLobbyClient::BeginJoinRoom(const std::string& room_id, const CeOnlineJoinRoomReq& req,
                                         uint64_t now_ms, uint64_t timeout_ms) {
     if (!IsValidSafeId(room_id) || !IsPrintableAscii(req.password, 0, 64) ||
-        !IsPrintableAscii(req.build_id, 1, 64) ||
+        !IsPrintableAscii(req.build_id, 1, 32) ||
         (!req.content_id.empty() && !IsLowerHex(req.content_id, 64)) ||
-        !IsPrintableAscii(req.be_cfg, 0, 64))
+        !IsPrintableAscii(req.be_cfg, 0, 32))
         return false;
     CeOnlineJson::ObjectBuilder jb;
     jb.AddString("password", req.password);
@@ -826,7 +826,7 @@ bool CeOnlineLobbyClient::BeginUpdateRoom(const std::string& room_id, const CeOn
         any = true;
     }
     if (req.has_be_cfg) {
-        if (!IsPrintableAscii(req.be_cfg, 0, 64)) return false;
+        if (!IsPrintableAscii(req.be_cfg, 0, 32)) return false;
         jb.AddString("be_cfg", req.be_cfg);
         any = true;
     }
@@ -849,7 +849,7 @@ bool CeOnlineLobbyClient::BeginUpdateRoom(const std::string& room_id, const CeOn
         any = true;
     }
     if (req.has_name) {
-        if (!IsPrintableAscii(req.name, 1, 48)) return false;
+        if (!IsPrintableAscii(req.name, 1, 40)) return false;
         jb.AddString("name", req.name);
         any = true;
     }

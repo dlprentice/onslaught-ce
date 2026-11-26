@@ -456,6 +456,7 @@ void EnforceFlagshipSeparation(CUnit *venturer, CUnit *fenrir) {
 }
 
 bool BeginModeCommon(CeFlagshipDuelMode mode) {
+	if (gArmed) return false;
 	gLoadRefused = false;
 	gPendingReturn = false;
 	gPendingNotice = false;
@@ -534,17 +535,34 @@ void EmitHullBarsToBatch(LPDIRECT3DDEVICE9 dev, const CeFdHudLayout &layout,
 	(void)s;
 }
 
-void RenderOutcomeBanner(LPDIRECT3DDEVICE9 dev, CDXBitmapFont *font, const CeFdHudLayout &layout) {
+// Read-only display phase for CE_HOOK_RENDER: bridges the single render frame
+// between an external CGame state transition during WORLD.Move and the next
+// PortCeFlagshipDuelTickPre without ever mutating gDirector from render.
+CeFlagshipDuelPhase EffectiveDisplayPhase(EGameState gs) {
 	const CeFlagshipDuelPhase phase = gDirector.Phase();
-	const bool split2P = gDirector.IsSplitScreen2P();
-	const char *title = CeFlagshipDuelBannerTitle(phase, split2P);
-	const char *sub = CeFlagshipDuelBannerSubtitle(phase, split2P);
-	if (!title || !title[0]) return;
+	if (gDirector.IsSplitScreen2P()) {
+		if (gs == GAME_STATE_PLAYER_1_WON && phase != CeFlagshipDuelPhase::kFinishedP2Won)
+			return CeFlagshipDuelPhase::kFinishedP1Won;
+		if (gs == GAME_STATE_PLAYER_2_WON && phase != CeFlagshipDuelPhase::kFinishedP1Won)
+			return CeFlagshipDuelPhase::kFinishedP2Won;
+	} else if (gs == GAME_STATE_LEVEL_LOST && phase == CeFlagshipDuelPhase::kRunning) {
+		return CeFlagshipDuelPhase::kFinishedDefeat;
+	}
+	return phase;
+}
 
-	const float s = layout.uiScale;
+void RenderOutcomeBanner(LPDIRECT3DDEVICE9 dev, CDXBitmapFont *font,
+                         const CeFdHudLayout &layout, CeFlagshipDuelPhase phase) {
+	const bool split2P = gDirector.IsSplitScreen2P();
 	const bool p1SideWon = (phase == CeFlagshipDuelPhase::kVictoryHold ||
 	                        phase == CeFlagshipDuelPhase::kFinishedVictory ||
 	                        phase == CeFlagshipDuelPhase::kFinishedP1Won);
+	const bool flagshipDestroyed = p1SideWon ? !gDirector.FenrirAlive() : !gDirector.VenturerAlive();
+	const char *title = CeFlagshipDuelBannerTitle(phase, split2P, flagshipDestroyed);
+	const char *sub = CeFlagshipDuelBannerSubtitle(phase, split2P, flagshipDestroyed);
+	if (!title || !title[0]) return;
+
+	const float s = layout.uiScale;
 	const unsigned topBg = p1SideWon ? 0xE60B2638u : 0xE62C0E0Cu;
 	const unsigned botBg = p1SideWon ? 0xEE061420u : 0xEE180606u;
 	const unsigned accent = p1SideWon ? 0xF43CE4FFu : 0xF4F04E1Au;
@@ -700,6 +718,7 @@ extern "C" void PortCeFlagshipDuelLevelBegin(int level) {
 extern "C" void PortCeFlagshipDuelLevelEnd(int level, int quit) {
 	if (!gArmed || level != PortCeFlagshipDuelActiveLevel()) return;
 	gP0StasisApplied = false;
+	gDirector.Reset(CeFlagshipDuelConfig{});
 	if (quit == QT_RESTART_LEVEL && !gLoadRefused) {
 		PortCeFlagshipDuelMarkRetryReset();
 	} else if (gMode == CeFlagshipDuelMode::kSplitScreen2P) {
@@ -707,7 +726,6 @@ extern "C" void PortCeFlagshipDuelLevelEnd(int level, int quit) {
 	} else {
 		gArmed = false;
 		ClearCareerSnapshot();
-		gDirector.Reset(CeFlagshipDuelConfig{});
 		PortCeFlagshipDuelDropWorld();
 	}
 }
@@ -725,6 +743,15 @@ extern "C" void PortCeFlagshipDuelUnitSpawn(CUnit *unit, CInitThing *init) {
 extern "C" void PortCeFlagshipDuelUnitDestroyed(CUnit *unit) {
 	if (!PortCeFlagshipDuelActive() || !gDirector.IsRunning() || !unit) return;
 	if (unit->IsA(THING_TYPE_COMPONENT)) return;
+
+	if (!gDirector.IsSplitScreen2P() && unit->IsA(THING_TYPE_BATTLE_ENGINE)) {
+		const bool drivingOther = gP0StasisApplied || IsP0DrivingOtherUnit();
+		CPlayer *p0 = GAME.GetPlayer(0);
+		if (!drivingOther && p0 && p0->GetBattleEngine() == unit) {
+			gDirector.OnSoloPlayerLost();
+		}
+		return;
+	}
 
 	const CeEntityHandle h = CeEntityHandleLookup(unit);
 	if (h != kCeEntityHandleInvalid) {
@@ -756,6 +783,8 @@ extern "C" void PortCeFlagshipDuelTickPre(void) {
 		gDirector.SyncExternalMultiplayerOutcome(
 			gs == GAME_STATE_PLAYER_1_WON,
 			gs == GAME_STATE_PLAYER_2_WON);
+	} else if (gs == GAME_STATE_LEVEL_LOST && gDirector.Phase() == CeFlagshipDuelPhase::kRunning) {
+		gDirector.OnSoloPlayerLost();
 	}
 
 	if (GAME.IsPaused() || gs != GAME_STATE_PLAYING) return;
@@ -916,7 +945,7 @@ extern "C" void PortCeFlagshipDuelDrawHud(CPlayer *player, int viewpoint) {
 
 	if (phase == CeFlagshipDuelPhase::kVictoryHold ||
 	    phase == CeFlagshipDuelPhase::kDefeatHold) {
-		RenderOutcomeBanner(dev, font, layout);
+		RenderOutcomeBanner(dev, font, layout, phase);
 	}
 
 	RestoreHudDeviceState();
@@ -941,6 +970,8 @@ extern "C" void PortCeFlagshipDuelDrawOverlay(void) {
 	const float vh = float(PLATFORM.GetWindowHeight());
 	if (vw <= 64.0f || vh <= 64.0f) return;
 
+	const CeFlagshipDuelPhase phase = EffectiveDisplayPhase(gs);
+
 	if (!gDirector.IsSplitScreen2P()) {
 		if (!endState) return;
 		const CeFdHudLayout layout = CeFlagshipDuelComputeHudLayout(
@@ -948,19 +979,19 @@ extern "C" void PortCeFlagshipDuelDrawOverlay(void) {
 			gDirector.VenturerHealthFrac(),
 			gDirector.FenrirHealthFrac(),
 			false);
-		RenderOutcomeBanner(dev, font, layout);
+		RenderOutcomeBanner(dev, font, layout, phase);
 		RestoreHudDeviceState();
 		return;
 	}
 
-	gDirector.SyncExternalMultiplayerOutcome(
-		gs == GAME_STATE_PLAYER_1_WON,
-		gs == GAME_STATE_PLAYER_2_WON);
-
+	struct CeFdGameSplitAccess : CGame {
+		static bool Horizontal() { return static_cast<const CGame &>(GAME).*(&CeFdGameSplitAccess::mHorizontalSplitscreen); }
+	};
 	const CeFdHudLayout layout = CeFlagshipDuelComputeSplitHudLayout(
 		vw, vh,
 		gDirector.VenturerHealthFrac(),
-		gDirector.FenrirHealthFrac());
+		gDirector.FenrirHealthFrac(),
+		CeFdGameSplitAccess::Horizontal());
 	const float s = layout.uiScale;
 	const bool dangerPulse = (int(EVENT_MANAGER.GetTime() * 4.0f) & 1) != 0;
 
@@ -990,12 +1021,11 @@ extern "C" void PortCeFlagshipDuelDrawOverlay(void) {
 	std::snprintf(rightBuf, sizeof(rightBuf), "%d%% FENRIR P2", fPct);
 	DrawAsciiSmallRight(font, layout.fenrirBarOuter.x1, textY, labelScale, 0xFFFFD4C0u, rightBuf, barW);
 
-	const CeFlagshipDuelPhase phase = gDirector.Phase();
 	if (phase == CeFlagshipDuelPhase::kVictoryHold ||
 	    phase == CeFlagshipDuelPhase::kDefeatHold ||
 	    phase == CeFlagshipDuelPhase::kFinishedP1Won ||
 	    phase == CeFlagshipDuelPhase::kFinishedP2Won) {
-		RenderOutcomeBanner(dev, font, layout);
+		RenderOutcomeBanner(dev, font, layout, phase);
 	}
 
 	RestoreHudDeviceState();

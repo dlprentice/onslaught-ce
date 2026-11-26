@@ -28,7 +28,15 @@ def anchor_text(network):
 
 
 FAKE_GAME = """#pragma once
-struct FakeGame { bool multiplayer = false; bool IsMultiplayer() { return multiplayer; } };
+struct FakeGame {
+	bool multiplayer = false;
+	bool IsMultiplayer() { return multiplayer; }
+protected:
+	bool mHorizontalSplitscreen = true;
+public:
+	void SetHorizontalSplitscreen(bool v) { mHorizontalSplitscreen = v; }
+};
+typedef FakeGame CGame;
 extern FakeGame GAME;
 """
 FAKE_ENGINE = """#pragma once
@@ -76,7 +84,7 @@ def static_checks():
     if scale.count(eligible) < 2:
         fail("the HUD scale's scopes no longer use the viewpoint test that PortHudAnchored mirrors")
     inset = (PORT / "patches/0043-widescreen-hud-inset.patch").read_text()
-    if inset.count("PortHudInset(float(PLATFORM.GetWindowWidth()))") != 6:
+    if inset.count("PortHudInset(ceObjW)") != 6 or "const float ceObjW = (PortCeLayer() && mViewportWidth > 0.f) ? mViewportWidth : (float)PLATFORM.GetWindowWidth();" not in inset:
         fail("the objective panel's six explicit inset terms changed (they follow PortHudBegin's decision)")
     if inset.count("PortHudBegin(portHudOffset, float(GetViewportForViewpoint(0)->Width))") != 2:
         fail("patch 0043's two PortHudBegin calls changed")
@@ -86,8 +94,9 @@ def static_checks():
 # One-line weakenings; each must make the executed driver fail on its own, in at least one of its three ini modes (the static checks above are not consulted): (name, file, old, new)
 MUTANTS = (
     ("splitscreen not tested", "port/game/ce_hud_anchor.cpp", "return (GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() != 1) ? 1 : 0;", "return GAME.IsMultiplayer() ? 1 : 0;"),
-    ("camera aspect ignores single viewport", "port/game/ce_hud_anchor.cpp", "return (GAME.IsMultiplayer() && vp != 1 && vp != 3 && vp != 4) ? 1 : 0;", "return GAME.IsMultiplayer() ? 1 : 0;"),
-    ("camera aspect squashes quad split", "port/game/ce_hud_anchor.cpp", "vp != 1 && vp != 3 && vp != 4", "vp != 1"),
+    ("camera aspect ignores single viewport", "port/game/ce_hud_anchor.cpp", "if (!GAME.IsMultiplayer() || vp == 1 || vp == 3 || vp == 4)\n\t\treturn 0;", "if (!GAME.IsMultiplayer())\n\t\treturn 0;"),
+    ("camera aspect squashes quad split", "port/game/ce_hud_anchor.cpp", "vp == 1 || vp == 3 || vp == 4", "vp == 1"),
+    ("camera aspect ignores vertical split", "port/game/ce_hud_anchor.cpp", "return CeGameSplitAccess::Horizontal() ? 1 : 2;", "return 1;"),
     ("faithful layer bypasses retail split", "port/game/ce_hud_anchor.cpp", "if (!PortCeLayer())\n\t\treturn GAME.IsMultiplayer() ? 1 : 0;\n\treturn (GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() != 1)", "if (false)\n\t\treturn GAME.IsMultiplayer() ? 1 : 0;\n\treturn (GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() != 1)"),
     ("viewpoints not tested", "port/game/ce_hud_anchor.cpp", " && ENGINE.GetNumViewpoints() == 1", ""),
     ("the ini's default is off", "port/platform/common/hud_scale.cpp", 'CE_SettingGetBool("hud_anchor", 1)', 'CE_SettingGetBool("hud_anchor", 0)'),
@@ -98,7 +107,8 @@ MUTANTS = (
     ("the original size takes the corners with it", "port/platform/common/hud_scale.cpp", "if (!Enabled())\n\t\treturn false;\n\tif (sAnchorIni < 0)", "if (!Enabled() || !ScaleWanted())\n\t\treturn false;\n\tif (sAnchorIni < 0)"),
     ("never anchored", "BLOCK", "gHudAnchored = PortHudAnchored() != 0;", "gHudAnchored = false;"),
     ("always anchored", "BLOCK", "gHudAnchored = PortHudAnchored() != 0;", "gHudAnchored = true;"),
-    ("the inset ignores the answer", "BLOCK", "return gActive && !gHudAnchored ?", "return gActive ?"),
+    ("the inset ignores the answer", "BLOCK", "return gActive && !gHudAnchored && !gHudNarrowViewport ?", "return gActive && !gHudNarrowViewport ?"),
+    ("the inset ignores narrow vertical split", "BLOCK", "return gActive && !gHudAnchored && !gHudNarrowViewport ?", "return gActive && !gHudAnchored ?"),
     ("the offset loses the shift", "BLOCK", "\treturn shifted;", "\treturn offset;"),
 )
 

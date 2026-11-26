@@ -3,26 +3,41 @@
 import { bodyBytes, fields, integer, nowSeconds, require, strictJson, verifyPermit } from "./worker.mjs";
 
 const UDP = new Set(["turn:turn.cloudflare.com:3478?transport=udp", "turn:turn.cloudflare.com:443?transport=udp"]);
-const OTHER_TURN = new Set(["turn:turn.cloudflare.com:3478?transport=tcp", "turn:turn.cloudflare.com:80?transport=tcp",
-  "turns:turn.cloudflare.com:5349?transport=tcp", "turns:turn.cloudflare.com:443?transport=tcp"]);
-const STUN = new Set(["stun:stun.cloudflare.com:3478", "stun:stun.cloudflare.com:443"]);
+const OTHER_TURN = new Set([
+  "turn:turn.cloudflare.com:53?transport=udp",
+  "turn:turn.cloudflare.com:3478?transport=tcp",
+  "turn:turn.cloudflare.com:80?transport=tcp",
+  "turn:turn.cloudflare.com:443?transport=tcp",
+  "turns:turn.cloudflare.com:5349?transport=tcp",
+  "turns:turn.cloudflare.com:443?transport=tcp",
+]);
+const STUN = new Set([
+  "stun:stun.cloudflare.com:3478",
+  "stun:stun.cloudflare.com:443",
+  "stun:stun.cloudflare.com:53",
+]);
 
 export function providerLease(value, masterToken) {
   fields(value, ["iceServers"]);
-  require(Array.isArray(value.iceServers) && value.iceServers.length >= 1 && value.iceServers.length <= 8);
+  const entries = Array.isArray(value.iceServers)
+    ? value.iceServers
+    : (value.iceServers && typeof value.iceServers === "object" ? [value.iceServers] : null);
+  require(Array.isArray(entries) && entries.length >= 1 && entries.length <= 16);
   const retained = [], seen = new Set();
-  for (const entry of value.iceServers) {
+  for (const entry of entries) {
+    require(entry && typeof entry === "object" && !Array.isArray(entry));
     const credentialed = Object.hasOwn(entry, "username") || Object.hasOwn(entry, "credential");
     fields(entry, credentialed ? ["urls", "username", "credential"] : ["urls"]);
-    require(Array.isArray(entry.urls) && entry.urls.length >= 1 && entry.urls.length <= 8 &&
-      new Set(entry.urls).size === entry.urls.length && entry.urls.every(v => typeof v === "string"));
-    if (!credentialed) { require(entry.urls.every(url => STUN.has(url))); continue; }
+    const urls = typeof entry.urls === "string" ? [entry.urls] : entry.urls;
+    require(Array.isArray(urls) && urls.length >= 1 && urls.length <= 16 &&
+      new Set(urls).size === urls.length && urls.every(v => typeof v === "string"));
+    if (!credentialed) { require(urls.every(url => STUN.has(url))); continue; }
     require([entry.username, entry.credential].every(v => typeof v === "string" && /^[!-~]{1,513}$/.test(v)));
-    require(entry.urls.every(url => UDP.has(url) || OTHER_TURN.has(url)));
-    for (const url of entry.urls) {
+    require(!entry.username.includes(masterToken) && !entry.credential.includes(masterToken));
+    require(urls.every(url => STUN.has(url) || UDP.has(url) || OTHER_TURN.has(url)));
+    for (const url of urls) {
       if (!UDP.has(url)) continue;
       require(!seen.has(url)); seen.add(url);
-      require(!entry.username.includes(masterToken) && !entry.credential.includes(masterToken));
       retained.push({ urls: [url], username: entry.username, credential: entry.credential });
     }
   }

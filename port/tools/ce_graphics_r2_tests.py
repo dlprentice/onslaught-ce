@@ -549,7 +549,9 @@ struct CUMTexture {
     }
 };
 
-struct CUnit {};
+struct CBoundingBox { struct { float X, Y, Z; } mAxes; };
+struct CUnit { CBoundingBox *GetBoundingBox() { return nullptr; } };
+bool PortRecording() { return false; }
 struct ActiveReader {
     CUnit *p = nullptr;
     void SetReader(CUnit *u) { p = u; }
@@ -983,7 +985,8 @@ class GraphicsR2Tests(unittest.TestCase):
 
     def test_patches_0367_and_0368_leave_faithful_build_unchanged(self):
         hook_sites = tuple(sorted(p.name for p in (ROOT / "port/patches").glob("03[01][0-9]-ce-hook-*.patch")))
-        later = ("0381-ce-perf-surf-museum-fixes.patch", *hook_sites)
+        post_380 = tuple(sorted(p.name for p in (ROOT / "port/patches").glob("03[89][0-9]-*.patch")))
+        later = (*post_380, *hook_sites)
         with tempfile.TemporaryDirectory(prefix="r2-patch-") as td:
             base = Path(td)
             files_367 = ("DXEngine.cpp", "DXLandscape.cpp", "DXWater.cpp", "State.cpp", "game.cpp", "renderinfo.cpp")

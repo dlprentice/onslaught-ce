@@ -298,6 +298,15 @@ public:
 		}
 	}
 
+	// Handles 1P solo Battle Engine destruction (GAME.DeclarePlayerDead() transitions
+	// to GAME_STATE_LEVEL_LOST while Venturer may still be afloat).
+	void OnSoloPlayerLost() {
+		if (IsSplitScreen2P() || mPhase != CeFlagshipDuelPhase::kRunning)
+			return;
+		mPhase = CeFlagshipDuelPhase::kFinishedDefeat;
+		mHoldRemainingSec = 0.0f;
+	}
+
 	void UpdateFlagshipHealth(float venturerFrac, float fenrirFrac) {
 		const float vClamped = mVenturerAlive ? Clamp01(venturerFrac) : 0.0f;
 		const float fClamped = mFenrirAlive ? Clamp01(fenrirFrac) : 0.0f;
@@ -713,13 +722,14 @@ inline CeFdHudLayout CeFlagshipDuelComputeHudLayout(
 	return l;
 }
 
-// 2P split-screen tactical seam strip: centered directly on the horizontal
-// split divider (Y = windowH * 0.5f) inside the clear center channel between
-// left target/radar panels and right weapon/battleline panels, so neither P1's
-// nor P2's crosshair or cockpit HUD is occluded.
+// 2P split-screen tactical strip: in horizontal split-screen, centered on the
+// horizontal split divider (Y = windowH * 0.5f) between side HUD panels; in
+// vertical split-screen, anchored across the top of the vertical seam so neither
+// player's reticle (at Y = windowH * 0.5f) is covered.
 inline CeFdHudLayout CeFlagshipDuelComputeSplitHudLayout(
 	float windowW, float windowH,
-	float venturerFrac, float fenrirFrac) {
+	float venturerFrac, float fenrirFrac,
+	bool horizontalSplit = true) {
 	CeFdHudLayout l{};
 	const float rawScale = windowH / 480.0f;
 	l.uiScale = (rawScale < 0.85f) ? 0.85f : ((rawScale > 4.5f) ? 4.5f : rawScale);
@@ -731,7 +741,7 @@ inline CeFdHudLayout CeFlagshipDuelComputeSplitHudLayout(
 	const float desiredW = 336.0f * s;
 	const float panelW = (maxSafeW < desiredW && maxSafeW > 240.0f * s) ? maxSafeW : desiredW;
 	const float panelH = 28.0f * s;
-	const float topY = seamY - panelH * 0.5f;
+	const float topY = horizontalSplit ? (seamY - panelH * 0.5f) : std::floor(10.0f * s);
 
 	l.stripPanel = {cx - panelW * 0.5f, topY, cx + panelW * 0.5f, topY + panelH};
 
@@ -793,33 +803,55 @@ inline const char *CeFlagshipDuelActTitle(CeFlagshipDuelAct act) {
 	}
 }
 
-inline const char *CeFlagshipDuelBannerTitle(CeFlagshipDuelPhase phase, bool split2P) {
+inline const char *CeFlagshipDuelBannerTitle(
+	CeFlagshipDuelPhase phase, bool split2P, bool flagshipDestroyed = true) {
 	switch (phase) {
 	case CeFlagshipDuelPhase::kVictoryHold:
 	case CeFlagshipDuelPhase::kFinishedVictory:
 	case CeFlagshipDuelPhase::kFinishedP1Won:
-		return split2P ? "PLAYER 1 WINS - FENRIR DESTROYED" : "VICTORY - FENRIR DESTROYED";
+		if (split2P) {
+			return flagshipDestroyed
+				? "PLAYER 1 WINS - FENRIR DESTROYED"
+				: "PLAYER 1 WINS - P2 OUT OF LIVES";
+		}
+		return "VICTORY - FENRIR DESTROYED";
 	case CeFlagshipDuelPhase::kDefeatHold:
 	case CeFlagshipDuelPhase::kFinishedDefeat:
 	case CeFlagshipDuelPhase::kFinishedP2Won:
-		return split2P ? "PLAYER 2 WINS - VENTURER LOST" : "DEFEAT - F.S. VENTURER LOST";
+		if (split2P) {
+			return flagshipDestroyed
+				? "PLAYER 2 WINS - VENTURER LOST"
+				: "PLAYER 2 WINS - P1 OUT OF LIVES";
+		}
+		return flagshipDestroyed
+			? "DEFEAT - F.S. VENTURER LOST"
+			: "DEFEAT - BATTLE ENGINE LOST";
 	default:
 		return "";
 	}
 }
 
-inline const char *CeFlagshipDuelBannerSubtitle(CeFlagshipDuelPhase phase, bool split2P) {
+inline const char *CeFlagshipDuelBannerSubtitle(
+	CeFlagshipDuelPhase phase, bool split2P, bool flagshipDestroyed = true) {
 	switch (phase) {
 	case CeFlagshipDuelPhase::kVictoryHold:
 	case CeFlagshipDuelPhase::kFinishedVictory:
 		return "F.S. Venturer holds the 888 archipelago.";
 	case CeFlagshipDuelPhase::kFinishedP1Won:
-		return split2P ? "Forseti flagship Venturer holds the strait." : "";
+		if (!split2P) return "";
+		return flagshipDestroyed
+			? "Forseti flagship Venturer holds the strait."
+			: "Player 2 ran out of Battle Engine lives.";
 	case CeFlagshipDuelPhase::kDefeatHold:
 	case CeFlagshipDuelPhase::kFinishedDefeat:
-		return "Muspell flagship Fenrir broke the Forseti line.";
+		return flagshipDestroyed
+			? "Muspell flagship Fenrir broke the Forseti line."
+			: "Your Battle Engine was destroyed in action.";
 	case CeFlagshipDuelPhase::kFinishedP2Won:
-		return split2P ? "Muspell flagship Fenrir commands the sea." : "";
+		if (!split2P) return "";
+		return flagshipDestroyed
+			? "Muspell flagship Fenrir commands the sea."
+			: "Player 1 ran out of Battle Engine lives.";
 	default:
 		return "";
 	}

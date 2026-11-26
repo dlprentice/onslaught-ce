@@ -236,7 +236,8 @@ public:
 
 	HRESULT RestoreDeviceObjects() override
 	{
-		if (!mTextures[0] && !mCreateFailed)
+		mCreateFailed = false;
+		if (!mTextures[0])
 			return InitDeviceObjects();
 		return S_OK;
 	}

@@ -65,6 +65,19 @@ if __name__=='__main__':
  hall=(ROOT/'port/game/ce_museum_hall.cpp').read_text()
  if 'HouseLightReset();' not in hall or 'StepHouseLight(gHouseLight, target, steps, GAME.IsPaused()' not in hall:
   raise SystemExit('FAIL: CeMuseumHallClear must reset house lights and HouseLight must hold while paused')
+ if 'jambLo' not in cinema or 'headerLo = 5.06f' not in cinema or '(kBack - kFront) * 0.5f - 0.32f' not in cinema:
+  raise SystemExit('FAIL: Screening Room acoustic linings must trim cleanly outside Portal 6 jambs and proscenium wall')
+ if 'g.current = kMatCinemaSconce;' not in cinema or 'g.current = kMatMuspellGlow;' in cinema:
+  raise SystemExit('FAIL: Screening Room wall sconces must use kMatCinemaSconce so they dim during film playback')
+ if 'Point(a,bottom,kCurtainValleyLow),Point(a,top,kCurtainValleyHigh)' not in cinema:
+  raise SystemExit('FAIL: Screening Room curtain fold quads must face (0, -1, 0) into the room')
+ if 'kConsoleX + 0.13f' not in cinema or '1.11f,.18f' not in cinema:
+  raise SystemExit('FAIL: Cinema console pedestal must center under casing (kConsoleX+0.13) with cap flush at z=1.29')
+ if 'const float z = ground + kScreenZ;' not in cinema:
+  raise SystemExit('FAIL: CinemaScreen must offset screen Z by ground floor elevation')
+ panel=(ROOT/'port/game/ce_museum_cinema_panel.inc').read_text()
+ if 'LT.SRS(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);' not in panel or 'LT.SetModulate(0);' not in panel:
+  raise SystemExit('FAIL: CinemaPanelDraw must restore D3D9 depth/cull/alpha/modulate render states on exit')
  out=ROOT/'local-data'/'museum-cinema-tests';out.mkdir(exist_ok=True,parents=True)
  with tempfile.TemporaryDirectory(dir=out) as root:
   d=Path(root);(d/'test.cpp').write_text(TEST)

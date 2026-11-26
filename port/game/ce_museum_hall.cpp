@@ -67,6 +67,7 @@ enum Material {
     kMatPierCap, kMatPierBase, kMatPierLine, kMatCinemaCap, kMatCinemaBase, kMatScreenIdle,
     kMatWater, kMatForsetiTrim, kMatMuspellTrim,
     kMatMuspellIron, kMatMuspellWall, kMatForsetiGlow, kMatMuspellGlow, kMatWarmGlow, kMatAquaGlow, kMatCinemaGlow,
+    kMatCinemaSconce,
     kMatCount
 };
 
@@ -125,6 +126,7 @@ const MaterialSpec kMaterials[kMatCount] = {
     {CE_MUSEUM_TEX_COUNT,           1.0f, 0xfffff2cf, 0.92f, 0.82f, 0.58f, 0.60f, 0.55f, 0.40f, 20.0f, 0.00f, true},  // warm architectural cove glow
     {CE_MUSEUM_TEX_COUNT,           1.0f, 0xff62e8f6, 0.22f, 0.80f, 0.92f, 0.70f, 0.95f, 1.00f, 32.0f, 0.00f, true},  // reflecting-pool aqua rim glow
     {CE_MUSEUM_TEX_COUNT,           1.0f, 0xffffb844, 1.00f, 0.67f, 0.16f, 0.00f, 0.00f, 0.00f,  1.0f, 0.00f, true},  // cinema warm amber-gold strip
+    {CE_MUSEUM_TEX_COUNT,           1.0f, 0xffffa644, 1.00f, 0.50f, 0.12f, 0.90f, 0.55f, 0.20f, 20.0f, 0.00f, true},  // cinema warm amber wall sconces
 };
 
 // The warm charcoal a screening-room surface keeps under full house lights (added to its emissive, scaled by
@@ -183,7 +185,6 @@ struct Gallery {
     SignTexVertex signVerts[kPortalSignVertCap];
     uint16_t signIndices[kPortalSignIdxCap];
     unsigned signVertCount, signIdxCount;
-    IDirect3DTexture9 *texture[kMatCount];
     Material current;
     bool hasCentre;
     float centre[3];
@@ -246,6 +247,9 @@ struct HallGpuBuffers {
     IDirect3DIndexBuffer9 *headlandIb;
     unsigned headlandVertCount;
     unsigned headlandIdxCount;
+    IDirect3DStateBlock9 *stateBlock;
+    IDirect3DDevice9 *stateBlockDevice;
+    uint64_t stateBlockGen;
 };
 static HallGpuBuffers gHallGpu = {};
 
@@ -271,7 +275,6 @@ static IDirect3DTexture9 *gSkyCubeTex[5] = {};
 static IDirect3DDevice9 *gFactionTexDevice = NULL;
 static uint64_t gFactionTexDeviceGen = 0u;
 static CeMuseumTour::Wing gCurrentWing = CeMuseumTour::kWingCourtyard;
-static CeMuseumTour::Wing gAnticipatedWing = CeMuseumTour::kWingCourtyard;
 static bool gWingAnnounced = false;
 static double gLastStepClock = 0.0;
 static bool gHasStepClock = false;
@@ -565,8 +568,10 @@ static uint32_t AddLitVertex(float x, float y, float z, float nx, float ny, floa
     const float ax = std::fabs(nx), ay = std::fabs(ny), az = std::fabs(nz);
     const float scale = 1.0f / kMaterials[m].repeat;
     const DWORD tint = kMaterials[m].tint;
+    const CeMuseumTexId tid = kMaterials[m].tex;
+    const bool hasTex = (tid < CE_MUSEUM_TEX_COUNT) && (CeMuseumTextures::Get(tid) != NULL);
     DWORD baseCol;
-    if (!gPtr->texture[m]) baseCol = CeMuseumExhibition::Shade(sourceCol, kMaterials[m].unbakedGlow ? 100u : 76u);
+    if (!hasTex) baseCol = CeMuseumExhibition::Shade(sourceCol, kMaterials[m].unbakedGlow ? 100u : 76u);
     else if (tint) baseCol = tint;
     else baseCol = sourceCol;
 
@@ -1246,7 +1251,7 @@ void RunnerStripY(float cx, float y0, float y1, float halfW, float floorZ) {
 
 void TurntablePlinth(float cx, float cy, float half, float topZ, float floorZ,
                      bool tiered = false, Material accentGlow = kMatCount, Material bodyMat = kMatPlinth) {
-    AddContactShadow(cx, cy, half, half, tiered ? 1.55f : 1.05f, floorZ, 0.036f, tiered ? 0.54f : 0.48f);
+    AddContactShadow(cx, cy, half, half, tiered ? 1.55f : 1.05f, floorZ, tiered ? 0.048f : 0.036f, tiered ? 0.54f : 0.48f);
     if (tiered) {
         // Monumental Courtyard Hero Dais: ceremonial octagonal mosaic inlay + 4-step stone/brass plinth + corner lantern bollards!
         LocalFloorGrid(cx - half - 1.15f, cy - half - 1.15f, cx + half + 1.15f, cy + half + 1.15f, 0.044f, floorZ, kMatInlay, 2.0f, 0xffc8d0d8);
@@ -1372,8 +1377,8 @@ static void AddPortalSignboard(float wallX, float wallY, float cz,
 static void BuildAllPortalSignboards(float floorZ) {
     const float w = CeMuseumExhibition::kWallHalf;
     // Portal 0 (y = 20.0, clearH = 7.5): Courtyard <-> Grand Atrium
-    // Courtyard face fits cleanly below the FE_BEA_Title2 recessed slate frieze (z = 8.54..11.96).
-    AddPortalSignboard(  0.0f, 20.0f - w, 8.22f,  0.0f, -1.0f, 3.52f, 0.44f, floorZ, CE_MUSEUM_SIGN_ATRIUM);
+    // Courtyard face fits cleanly between architrave top (7.96) and FE_BEA_Title2 frieze bottom (8.54).
+    AddPortalSignboard(  0.0f, 20.0f - w, 8.25f,  0.0f, -1.0f, 3.52f, 0.44f, floorZ, CE_MUSEUM_SIGN_ATRIUM);
     AddPortalSignboard(  0.0f, 20.0f + w, 8.40f,  0.0f,  1.0f, 5.12f, 0.64f, floorZ, CE_MUSEUM_SIGN_COURTYARD);
     // Portal 1 (y = 52.0, clearH = 8.0): Grand Atrium <-> Aviation & Naval Hangar
     AddPortalSignboard(  0.0f, 52.0f - w, 8.90f,  0.0f, -1.0f, 5.12f, 0.64f, floorZ, CE_MUSEUM_SIGN_HANGAR);
@@ -1391,8 +1396,9 @@ static void BuildAllPortalSignboards(float floorZ) {
     AddPortalSignboard( 16.0f - w, 24.0f, 5.82f, -1.0f,  0.0f, 4.16f, 0.52f, floorZ, CE_MUSEUM_SIGN_CONCEPT_ART);
     AddPortalSignboard( 16.0f + w, 24.0f, 5.82f,  1.0f,  0.0f, 4.16f, 0.52f, floorZ, CE_MUSEUM_SIGN_ATRIUM);
     // Portal 6 (x = +40.0, y [11.7..17.3], clearH = 4.6): Concept Art Gallery <-> Screening Room
+    // East face mounts proud of the Screening Room's 0.28 m interior west acoustic lining (x = 40.58).
     AddPortalSignboard( 40.0f - w, 14.5f, 5.42f, -1.0f,  0.0f, 4.16f, 0.52f, floorZ, CE_MUSEUM_SIGN_SCREENING);
-    AddPortalSignboard( 40.0f + w, 14.5f, 5.42f,  1.0f,  0.0f, 4.16f, 0.52f, floorZ, CE_MUSEUM_SIGN_CONCEPT_ART);
+    AddPortalSignboard( 40.0f + w + 0.28f, 14.5f, 5.42f,  1.0f,  0.0f, 4.16f, 0.52f, floorZ, CE_MUSEUM_SIGN_CONCEPT_ART);
 }
 
 void BuildGrandComplex(float floorZ) {
@@ -1564,9 +1570,10 @@ void BuildGrandComplex(float floorZ) {
     LocalFloorGrid( 5.20f, 30.04f,  5.50f, 41.96f, 0.062f, floorZ, kMatTrim, 3.0f, kBrass);
     // Inner octagonal honed marble rotunda medallion around the Archive Centerpiece Pedestal
     LocalOctagonTier(0.0f, 36.0f, 4.25f, 0.02f, 0.068f, floorZ, kMatPlinth, 0xffeef2f5, true);
-    // Cardinal brass compass beams radiating across the rotunda medallion
+    // Cardinal brass compass beams radiating across the rotunda medallion (split N-S arm cleanly around E-W arm)
     LocalFloorGrid(-5.0f, 35.72f, 5.0f, 36.28f, 0.076f, floorZ, kMatTrim, 2.5f, kBrass);
-    LocalFloorGrid(-0.28f, 30.24f, 0.28f, 41.76f, 0.076f, floorZ, kMatTrim, 2.5f, kBrass);
+    LocalFloorGrid(-0.28f, 30.24f, 0.28f, 35.72f, 0.076f, floorZ, kMatTrim, 2.5f, kBrass);
+    LocalFloorGrid(-0.28f, 36.28f, 0.28f, 41.76f, 0.076f, floorZ, kMatTrim, 2.5f, kBrass);
 
     // Flush, non-overlapping floor runners connecting Rotunda to ALL 6 Atrium portals (unified 1.45 m spine!)
     RunnerStripY(0.0f, 20.00f, 29.74f, 1.45f, floorZ);      // South -> Courtyard (flush 1.45 m at y = 20.0!)
@@ -1590,18 +1597,11 @@ void BuildGrandComplex(float floorZ) {
     TurntablePlinth(-5.4f, 48.0f, 1.25f, 0.95f, floorZ, false, kMatForsetiGlow, kMatPlinth);
     TurntablePlinth( 5.4f, 48.0f, 1.25f, 0.95f, floorZ, false, kMatWarmGlow, kMatPlinth);
 
-    // Grounded soft contact shadows under all 4 glass-domed living tabletop battle diorama tables
-    for (unsigned di = 0; di < CeMuseumDiorama::kDioramaCount; ++di) {
-        const CeMuseumDiorama::DioramaSpec &ds = CeMuseumDiorama::kDioramas[di];
-        AddContactShadow(ds.localX, ds.localY, CeMuseumDiorama::kTableRadius, CeMuseumDiorama::kTableRadius,
-                         1.15f, floorZ, 0.042f, 0.52f);
-    }
-
     // Sleek relocated West Entrance Flank Directory Console at (kDirectoryX = -5.4, kDirectoryY = 26.8)
     {
         const float dx = CeMuseumTour::kDirectoryX;
         const float dy = CeMuseumTour::kDirectoryY;
-        AddContactShadow(dx, dy, 1.65f, 0.35f, 0.72f, floorZ, 0.036f, 0.46f);
+        AddContactShadow(dx, dy, 1.65f, 0.35f, 0.72f, floorZ, 0.048f, 0.46f);
         LocalFloorGrid(dx - 1.95f, dy - 0.65f, dx + 1.95f, dy + 0.65f, 0.044f, floorZ, kMatInlay, 2.0f, 0xffd0d6dc);
         LocalBox(dx - 1.60f, dy - 0.32f, 0.04f, dx + 1.60f, dy + 0.32f, 0.18f, floorZ, kMatPierBase, kSlate);
         LocalBox(dx - 1.46f, dy - 0.22f, 0.18f, dx + 1.46f, dy + 0.22f, 0.98f, floorZ, kMatStand, kSlate);
@@ -1639,8 +1639,13 @@ void BuildGrandComplex(float floorZ) {
     LocalBox(-7.82f, 28.3f, 13.12f, -7.66f, 43.7f, 13.38f, floorZ, kMatWarmGlow, kLight);
     LocalBox( 7.66f, 28.3f, 13.12f,  7.82f, 43.7f, 13.38f, floorZ, kMatWarmGlow, kLight);
     for (float pos = -4.0f; pos <= 4.1f; pos += 4.0f) {
-        LocalBox(-7.9f, 36.0f + pos - 0.14f, 13.8f, 7.9f, 36.0f + pos + 0.14f, 14.35f, floorZ, kMatTrim, kBrass, true);
-        LocalBox(pos - 0.14f, 28.1f, 13.8f, pos + 0.14f, 43.9f, 14.35f, floorZ, kMatTrim, kBrass, true);
+        LocalBox(-7.8f, 36.0f + pos - 0.14f, 13.8f, 7.8f, 36.0f + pos + 0.14f, 14.35f, floorZ, kMatTrim, kBrass, true);
+        const float segY[5] = {28.2f, 31.86f, 35.86f, 39.86f, 43.8f};
+        for (unsigned s = 0u; s < 4u; ++s) {
+            const float y0 = (s == 0u) ? segY[0] : (segY[s] + 0.28f);
+            const float y1 = segY[s + 1u];
+            LocalBox(pos - 0.14f, y0, 13.8f, pos + 0.14f, y1, 14.35f, floorZ, kMatTrim, kBrass, true);
+        }
     }
     AddGlassQuad(-7.8f, 28.2f, 14.15f, 0x26dff2ff,  7.8f, 28.2f, 14.15f, 0x38fff3d6,
                   7.8f, 43.8f, 14.15f, 0x26d8eeff, -7.8f, 43.8f, 14.15f, 0x20c8e4fc, floorZ);
@@ -1726,13 +1731,13 @@ void BuildGrandComplex(float floorZ) {
     LocalBox(-44.0f + w, 52.0f,     0.0f, -20.0f - w, 52.0f + w, 10.5f, floorZ, kMatWall);
     LocalBox(-44.0f - w, 30.0f - w, 0.0f, -44.0f + w, 52.0f + w, 10.5f, floorZ, kMatWall);
 
-    // Sculpted Forseti steel-blue architraves, crisp slate wainscot & luminous cyan cove light strips
-    LocalBox(-43.6f, 30.32f, 6.25f, -16.4f, 30.58f, 7.25f, floorZ, kMatForsetiTrim);
-    LocalBox(-43.6f, 51.42f, 6.25f, -16.4f, 51.68f, 7.25f, floorZ, kMatForsetiTrim);
-    LocalBox(-43.68f, 30.4f, 6.25f, -43.42f, 51.6f, 7.25f, floorZ, kMatForsetiTrim);
-    LocalBox(-43.5f, 30.34f, 6.06f, -16.5f, 30.62f, 6.24f, floorZ, kMatForsetiGlow, 0xff78ecff);
-    LocalBox(-43.5f, 51.38f, 6.06f, -16.5f, 51.66f, 6.24f, floorZ, kMatForsetiGlow, 0xff78ecff);
-    LocalBox(-43.66f, 30.5f, 6.06f, -43.38f, 51.5f, 6.24f, floorZ, kMatForsetiGlow, 0xff78ecff);
+    // Sculpted Forseti steel-blue architraves, crisp slate wainscot & luminous cyan cove light strips (mitered corners)
+    LocalBox(-43.68f, 30.32f, 6.25f, -16.4f, 30.58f, 7.25f, floorZ, kMatForsetiTrim);
+    LocalBox(-43.68f, 51.42f, 6.25f, -16.4f, 51.68f, 7.25f, floorZ, kMatForsetiTrim);
+    LocalBox(-43.68f, 30.58f, 6.25f, -43.42f, 51.42f, 7.25f, floorZ, kMatForsetiTrim);
+    LocalBox(-43.66f, 30.34f, 6.06f, -16.5f, 30.62f, 6.24f, floorZ, kMatForsetiGlow, 0xff78ecff);
+    LocalBox(-43.66f, 51.38f, 6.06f, -16.5f, 51.66f, 6.24f, floorZ, kMatForsetiGlow, 0xff78ecff);
+    LocalBox(-43.66f, 30.62f, 6.06f, -43.38f, 51.38f, 6.24f, floorZ, kMatForsetiGlow, 0xff78ecff);
     LocalBox(-43.6f, 30.32f, 0.02f, -16.4f, 30.50f, 0.72f, floorZ, kMatPier);
     LocalBox(-43.6f, 51.50f, 0.02f, -16.4f, 51.68f, 0.72f, floorZ, kMatPier);
     LocalBox(-43.5f, 30.34f, 0.72f, -16.5f, 30.54f, 0.84f, floorZ, kMatForsetiGlow, 0xff78ecff);
@@ -1757,10 +1762,10 @@ void BuildGrandComplex(float floorZ) {
     DressedColumn(-43.45f, 35.4f, 0.36f, 10.5f, floorZ, kMatForsetiTrim, kMatTrim);
     DressedColumn(-43.45f, 46.6f, 0.36f, 10.5f, floorZ, kMatForsetiTrim, kMatTrim);
     LocalBox(-43.68f, 35.8f, 0.02f, -43.36f, 46.2f, 6.06f, floorZ, kMatPier, kSlate);
-    LocalBox(-43.38f, 36.1f, 0.85f, -43.26f, 36.32f, 5.85f, floorZ, kMatForsetiGlow, 0xff78ecff);
-    LocalBox(-43.38f, 45.68f, 0.85f, -43.26f, 45.90f, 5.85f, floorZ, kMatForsetiGlow, 0xff78ecff);
-    LocalBox(-43.38f, 36.3f, 5.72f, -43.26f, 45.7f, 5.92f, floorZ, kMatForsetiGlow, 0xff78ecff);
-    LocalBox(-43.38f, 36.3f, 0.85f, -43.26f, 45.7f, 1.05f, floorZ, kMatForsetiGlow, 0xff78ecff);
+    LocalBox(-43.38f, 36.10f, 0.85f, -43.26f, 36.32f, 5.92f, floorZ, kMatForsetiGlow, 0xff78ecff);
+    LocalBox(-43.38f, 45.68f, 0.85f, -43.26f, 45.90f, 5.92f, floorZ, kMatForsetiGlow, 0xff78ecff);
+    LocalBox(-43.38f, 36.32f, 5.72f, -43.26f, 45.68f, 5.92f, floorZ, kMatForsetiGlow, 0xff78ecff);
+    LocalBox(-43.38f, 36.32f, 0.85f, -43.26f, 45.68f, 1.05f, floorZ, kMatForsetiGlow, 0xff78ecff);
 
     // Forseti Ceiling strictly within [-44..-16] x [30..52] with central skylight clerestory spine
     Ceiling(floorZ, -44.0f, 30.0f, -16.0f, 39.2f, 10.5f, kMatCeiling);
@@ -1821,13 +1826,13 @@ void BuildGrandComplex(float floorZ) {
     LocalBox(20.0f + w, 52.0f,     0.0f, 44.0f - w, 52.0f + w, 10.5f, floorZ, kMatMuspellWall);
     LocalBox(44.0f - w, 30.0f - w, 0.0f, 44.0f + w, 52.0f + w, 10.5f, floorZ, kMatMuspellWall);
 
-    // Heavy riveted bronze-iron fascia + molten-amber forge strips along North, South, and East apse walls
-    LocalBox(16.4f, 30.32f, 5.95f, 43.6f, 30.72f, 7.30f, floorZ, kMatMuspellTrim);
-    LocalBox(16.4f, 51.28f, 5.95f, 43.6f, 51.68f, 7.30f, floorZ, kMatMuspellTrim);
-    LocalBox(43.28f, 30.4f, 5.95f, 43.68f, 51.6f, 7.30f, floorZ, kMatMuspellTrim);
-    LocalBox(16.5f, 30.36f, 5.74f, 43.5f, 30.76f, 5.94f, floorZ, kMatMuspellGlow, 0xffff9a38);
-    LocalBox(16.5f, 51.24f, 5.74f, 43.5f, 51.64f, 5.94f, floorZ, kMatMuspellGlow, 0xffff9a38);
-    LocalBox(43.24f, 30.5f, 5.74f, 43.64f, 51.5f, 5.94f, floorZ, kMatMuspellGlow, 0xffff9a38);
+    // Heavy riveted bronze-iron fascia + molten-amber forge strips along North, South, and East apse walls (mitered corners)
+    LocalBox(16.4f, 30.32f, 5.95f, 43.68f, 30.72f, 7.30f, floorZ, kMatMuspellTrim);
+    LocalBox(16.4f, 51.28f, 5.95f, 43.68f, 51.68f, 7.30f, floorZ, kMatMuspellTrim);
+    LocalBox(43.28f, 30.72f, 5.95f, 43.68f, 51.28f, 7.30f, floorZ, kMatMuspellTrim);
+    LocalBox(16.5f, 30.36f, 5.74f, 43.64f, 30.76f, 5.94f, floorZ, kMatMuspellGlow, 0xffff9a38);
+    LocalBox(16.5f, 51.24f, 5.74f, 43.64f, 51.64f, 5.94f, floorZ, kMatMuspellGlow, 0xffff9a38);
+    LocalBox(43.24f, 30.76f, 5.74f, 43.64f, 51.24f, 5.94f, floorZ, kMatMuspellGlow, 0xffff9a38);
     LocalBox(16.5f, 30.34f, 0.68f, 43.5f, 30.56f, 0.84f, floorZ, kMatMuspellGlow, 0xffff9a38);
     LocalBox(16.5f, 51.44f, 0.68f, 43.5f, 51.66f, 0.84f, floorZ, kMatMuspellGlow, 0xffff9a38);
     LocalBox(16.4f, 30.32f, 0.02f, 43.6f, 30.52f, 0.68f, floorZ, kMatMuspellIron);
@@ -1889,7 +1894,8 @@ void BuildGrandComplex(float floorZ) {
         LocalOctagonTier(0.0f, 65.0f, 3.15f, 0.02f, 0.056f, floorZ, kMatPlinth, 0xffeef2f5, true);
         LocalOctagonTier(0.0f, 65.0f, 1.40f, 0.02f, 0.064f, floorZ, kMatInlay, 0xffc6d0d8, true);
         LocalFloorGrid(-3.0f, 64.86f, 3.0f, 65.14f, 0.068f, floorZ, kMatTrim, 2.0f, kBrass);
-        LocalFloorGrid(-0.14f, 62.0f, 0.14f, 68.0f, 0.068f, floorZ, kMatTrim, 2.0f, kBrass);
+        LocalFloorGrid(-0.14f, 62.0f, 0.14f, 64.86f, 0.068f, floorZ, kMatTrim, 2.0f, kBrass);
+        LocalFloorGrid(-0.14f, 65.14f, 0.14f, 68.0f, 0.068f, floorZ, kMatTrim, 2.0f, kBrass);
 
         const float chevY[3] = {54.4f, 57.2f, 71.4f};
         for (unsigned ci = 0; ci < 3u; ++ci) {
@@ -1927,11 +1933,11 @@ void BuildGrandComplex(float floorZ) {
     LocalBox( 20.0f - w, 52.0f,     0.0f,  20.0f + w, 78.0f - w, 15.5f, floorZ, kMatWall);
     LocalBox(-20.0f - w, 78.0f - w, 0.0f,  20.0f + w, 78.0f + w, 15.5f, floorZ, kMatWall);
 
-    LocalBox(-19.70f, 52.3f, 0.02f, -19.52f, 77.7f, 0.85f, floorZ, kMatPierBase, kSlate);
-    LocalBox( 19.52f, 52.3f, 0.02f,  19.70f, 77.7f, 0.85f, floorZ, kMatPierBase, kSlate);
+    LocalBox(-19.70f, 52.3f, 0.02f, -19.52f, 77.52f, 0.85f, floorZ, kMatPierBase, kSlate);
+    LocalBox( 19.52f, 52.3f, 0.02f,  19.70f, 77.52f, 0.85f, floorZ, kMatPierBase, kSlate);
     LocalBox(-19.70f, 77.52f, 0.02f,  19.70f, 77.70f, 0.85f, floorZ, kMatPierBase, kSlate);
-    LocalBox(-19.68f, 52.3f, 0.85f, -19.48f, 77.7f, 0.96f, floorZ, kMatTrim, kBrass);
-    LocalBox( 19.48f, 52.3f, 0.85f,  19.68f, 77.7f, 0.96f, floorZ, kMatTrim, kBrass);
+    LocalBox(-19.68f, 52.3f, 0.85f, -19.48f, 77.48f, 0.96f, floorZ, kMatTrim, kBrass);
+    LocalBox( 19.48f, 52.3f, 0.85f,  19.68f, 77.48f, 0.96f, floorZ, kMatTrim, kBrass);
     LocalBox(-19.68f, 77.48f, 0.85f,  19.68f, 77.68f, 0.96f, floorZ, kMatTrim, kBrass);
     // Symmetrical brushed-brass & warm cove upper architectural friezes on both West & East Hangar walls
     LocalBox(-19.65f, 52.5f, 9.6f, -19.45f, 77.5f, 10.4f, floorZ, kMatTrim, kBrass);
@@ -1946,8 +1952,8 @@ void BuildGrandComplex(float floorZ) {
     Ceiling(floorZ,  -9.0f, 76.0f,   9.0f, 78.0f, 15.5f, kMatCeiling);
     LocalBox(-9.3f, 53.7f, 14.9f, -8.8f, 76.3f, 16.2f, floorZ, kMatPier, kSlate, true);
     LocalBox( 8.8f, 53.7f, 14.9f,  9.3f, 76.3f, 16.2f, floorZ, kMatPier, kSlate, true);
-    LocalBox(-9.0f, 53.7f, 14.9f,  9.0f, 54.2f, 16.2f, floorZ, kMatPier, kSlate, true);
-    LocalBox(-9.0f, 75.8f, 14.9f,  9.0f, 76.3f, 16.2f, floorZ, kMatPier, kSlate, true);
+    LocalBox(-8.8f, 53.7f, 14.9f,  8.8f, 54.2f, 16.2f, floorZ, kMatPier, kSlate, true);
+    LocalBox(-8.8f, 75.8f, 14.9f,  8.8f, 76.3f, 16.2f, floorZ, kMatPier, kSlate, true);
     LocalBox(-8.9f, 54.2f, 14.82f, -8.72f, 75.8f, 15.02f, floorZ, kMatWarmGlow, kLight);
     LocalBox( 8.72f, 54.2f, 14.82f,  8.9f, 75.8f, 15.02f, floorZ, kMatWarmGlow, kLight);
     LocalBox(-4.5f - 0.14f, 54.0f, 15.35f, -4.5f + 0.14f, 76.0f, 15.75f, floorZ, kMatTrim, kBrass, true);
@@ -2038,7 +2044,7 @@ void BuildGrandComplex(float floorZ) {
     const float ny[4] = {58.2f, 62.7f, 67.2f, 71.7f};
     for (unsigned i = 0; i < 4; ++i) {
         LocalBox(11.3f, ny[i] - 1.15f, 0.28f, 14.7f, ny[i] + 1.15f, 0.65f, floorZ, kMatPierBase, kSlate);
-        LocalBox(11.24f, ny[i] - 1.21f, 0.56f, 14.76f, ny[i] + 1.21f, 0.65f, floorZ, kMatTrim, kBrass);
+        LocalBox(11.24f, ny[i] - 1.21f, 0.56f, 14.76f, ny[i] + 1.21f, 0.62f, floorZ, kMatTrim, kBrass);
     }
 
     // North Relative Scale Alcove: architectural monument elevation grid + backlit top light trough!
@@ -2059,7 +2065,7 @@ void BuildGrandComplex(float floorZ) {
         LocalBox( 5.45f, 77.30f, hz - 0.08f,  6.22f, 77.42f, hz + 0.08f, floorZ, kMatWarmGlow, kLight);
     }
     LocalBox(-5.4f, 73.9f, 0.02f, 5.4f, 76.7f, 0.55f, floorZ, kMatPlinth, 0xffdde2e6);
-    LocalBox(-5.44f, 73.86f, 0.48f, 5.44f, 76.74f, 0.55f, floorZ, kMatTrim, kBrass);
+    LocalBox(-5.44f, 73.86f, 0.48f, 5.44f, 76.74f, 0.52f, floorZ, kMatTrim, kBrass);
     LocalBox(-5.25f, 76.56f, 0.55f, 5.25f, 76.72f, 0.65f, floorZ, kMatWarmGlow, kLight);
 
     // Twin Monumental Flanking Hangar Faction Standards on North Wall (official retail Forseti/Muspell emblems render inside!)
@@ -2511,7 +2517,7 @@ static void LoadFactionTextures(IDirect3DDevice9 *dev) {
                    loaded, static_cast<unsigned>(kFactionTexCount), skyLoaded);
 }
 
-static void ReleaseHallGpuBuffers() {
+static void ReleaseHallGeometryBuffers() {
     if (gHallGpu.litVb)        { gHallGpu.litVb->Release();        gHallGpu.litVb = NULL; }
     if (gHallGpu.litIb)        { gHallGpu.litIb->Release();        gHallGpu.litIb = NULL; }
     if (gHallGpu.shadowVb)     { gHallGpu.shadowVb->Release();     gHallGpu.shadowVb = NULL; }
@@ -2520,13 +2526,16 @@ static void ReleaseHallGpuBuffers() {
     if (gHallGpu.glassIb)      { gHallGpu.glassIb->Release();      gHallGpu.glassIb = NULL; }
     if (gHallGpu.portalSignVb) { gHallGpu.portalSignVb->Release(); gHallGpu.portalSignVb = NULL; }
     if (gHallGpu.portalSignIb) { gHallGpu.portalSignIb->Release(); gHallGpu.portalSignIb = NULL; }
+    gHallGpu.device = NULL;
+    gHallGpu.deviceGen = 0u;
+    gHallGpu.attempted = false;
+}
+
+static void ReleaseOceanGpuBuffers() {
     if (gHallGpu.oceanVb)      { gHallGpu.oceanVb->Release();      gHallGpu.oceanVb = NULL; }
     if (gHallGpu.oceanIb)      { gHallGpu.oceanIb->Release();      gHallGpu.oceanIb = NULL; }
     if (gHallGpu.headlandVb)   { gHallGpu.headlandVb->Release();   gHallGpu.headlandVb = NULL; }
     if (gHallGpu.headlandIb)   { gHallGpu.headlandIb->Release();   gHallGpu.headlandIb = NULL; }
-    gHallGpu.device = NULL;
-    gHallGpu.deviceGen = 0u;
-    gHallGpu.attempted = false;
     gHallGpu.oceanDevice = NULL;
     gHallGpu.oceanDeviceGen = 0u;
     gHallGpu.oceanAttempted = false;
@@ -2534,6 +2543,32 @@ static void ReleaseHallGpuBuffers() {
     gHallGpu.oceanIdxCount = 0;
     gHallGpu.headlandVertCount = 0;
     gHallGpu.headlandIdxCount = 0;
+}
+
+static void ReleaseHallStateBlock() {
+    if (gHallGpu.stateBlock) { gHallGpu.stateBlock->Release(); gHallGpu.stateBlock = NULL; }
+    gHallGpu.stateBlockDevice = NULL;
+    gHallGpu.stateBlockGen = 0u;
+}
+
+static IDirect3DStateBlock9 *EnsureHallStateBlock(IDirect3DDevice9 *dev) {
+    if (!dev) return NULL;
+    const uint64_t gen = CurrentMuseumDeviceGen();
+    if (gHallGpu.stateBlock && (gHallGpu.stateBlockDevice != dev || gHallGpu.stateBlockGen != gen))
+        ReleaseHallStateBlock();
+    if (!gHallGpu.stateBlock) {
+        if (SUCCEEDED(dev->CreateStateBlock(D3DSBT_ALL, &gHallGpu.stateBlock)) && gHallGpu.stateBlock) {
+            gHallGpu.stateBlockDevice = dev;
+            gHallGpu.stateBlockGen = gen;
+        }
+    }
+    return gHallGpu.stateBlock;
+}
+
+static void ReleaseHallGpuBuffers() {
+    ReleaseHallGeometryBuffers();
+    ReleaseOceanGpuBuffers();
+    ReleaseHallStateBlock();
 }
 
 static bool UploadManagedVb(IDirect3DDevice9 *dev, const void *data, unsigned bytes,
@@ -2577,7 +2612,7 @@ static void EnsureHallGpuBuffers(IDirect3DDevice9 *dev) {
     const uint64_t gen = CurrentMuseumDeviceGen();
     if (gHallGpu.attempted && gHallGpu.device == dev && gHallGpu.deviceGen == gen) return;
     if (gHallGpu.device && (gHallGpu.device != dev || gHallGpu.deviceGen != gen)) {
-        ReleaseHallGpuBuffers();
+        ReleaseHallGeometryBuffers();
         FindMaterials();
     }
     gHallGpu.device = dev;
@@ -2802,17 +2837,12 @@ static void FindMaterials() {
     if (!gPtr) return;
     IDirect3DDevice9 *dev = LT.GetDevice();
     CeMuseumTextures::LoadAll(dev);
-    for (unsigned m = 0; m < kMatCount; ++m) {
-        const CeMuseumTexId tid = kMaterials[m].tex;
-        gPtr->texture[m] = tid < CE_MUSEUM_TEX_COUNT ? CeMuseumTextures::Get(tid) : NULL;
-    }
-    LoadFactionTextures(dev);
+    const uint64_t gen = CurrentMuseumDeviceGen();
+    if (dev && (gFactionTexDevice != dev || gFactionTexDeviceGen != gen))
+        LoadFactionTextures(dev);
 }
 
 static void ReleaseMaterials() {
-    if (gPtr) {
-        for (unsigned m = 0; m < kMatCount; ++m) gPtr->texture[m] = NULL;
-    }
     ReleaseFactionTextures();
     CeMuseumTextures::ReleaseAll();
 }
@@ -2859,7 +2889,6 @@ void CeMuseumHallClear() {
     gExhibitionVisitor = CeMuseumExhibition::Vec2{};
     gGrandMode = false;
     gCurrentWing = CeMuseumTour::kWingCourtyard;
-    gAnticipatedWing = CeMuseumTour::kWingCourtyard;
     gWingAnnounced = false;
     gHasStepClock = false;
     gDirHit = {false, -1};
@@ -2999,24 +3028,6 @@ void CeMuseumHallVisitor(float x, float y) {
         if (dt > 0.25f) dt = 0.25f;
         if (!(dt > 0.0f)) dt = 0.0f;
 
-        // Anticipate the adjacent 3D wing when standing near an Atrium portal (with 2 m spatial
-        // hysteresis so hovering on the threshold never oscillates) while capping residency to one wing.
-        CeMuseumTour::Wing turntableWing = wing;
-        if (wing == CeMuseumTour::kWingAtrium) {
-            if (gExhibitionVisitor.y >= 45.0f ||
-                (gAnticipatedWing == CeMuseumTour::kWingHangar && gExhibitionVisitor.y >= 43.0f))
-                turntableWing = CeMuseumTour::kWingHangar;
-            else if ((gExhibitionVisitor.x >= 9.5f ||
-                      (gAnticipatedWing == CeMuseumTour::kWingMuspell && gExhibitionVisitor.x >= 7.5f)) &&
-                     gExhibitionVisitor.y >= 32.0f)
-                turntableWing = CeMuseumTour::kWingMuspell;
-            else if ((gExhibitionVisitor.x <= -9.5f ||
-                      (gAnticipatedWing == CeMuseumTour::kWingForseti && gExhibitionVisitor.x <= -7.5f)) &&
-                     gExhibitionVisitor.y >= 32.0f)
-                turntableWing = CeMuseumTour::kWingForseti;
-        }
-        gAnticipatedWing = turntableWing;
-
         // Convert world view ray to visitor-local coordinates (Z positive upward) for ray-pick fixtures
         float eyeX = gExhibitionVisitor.x, eyeY = gExhibitionVisitor.y, eyeZ = 1.70f;
         float aimX = 0.0f, aimY = 1.0f, aimZ = 0.0f;
@@ -3031,7 +3042,7 @@ void CeMuseumHallVisitor(float x, float y) {
 
         const bool paused = GAME.IsPaused();
         const bool cinemaPlaying = Cinema::s.inRoom && Cinema::s.phase == Cinema::Playing;
-        CeMuseumTurntable::RuntimeUpdate(turntableWing, dt, paused, eyeX, eyeY, eyeZ, aimX, aimY, aimZ);
+        CeMuseumTurntable::RuntimeUpdate(wing, dt, paused, eyeX, eyeY, eyeZ, aimX, aimY, aimZ);
         CeMuseumArt::RuntimeSetAim(eyeX, eyeY, eyeZ, aimX, aimY, aimZ);
         CeMuseumArt::RuntimeUpdate(wing);
         CeMuseumDiorama::RuntimeUpdate(wing, dt, paused, eyeX, eyeY, eyeZ, aimX, aimY, aimZ);
@@ -3369,17 +3380,10 @@ static void EnsureOceanGpuBuffers(IDirect3DDevice9 *dev) {
     if (!dev) return;
     const uint64_t gen = CurrentMuseumDeviceGen();
     if (gHallGpu.oceanAttempted && gHallGpu.oceanDevice == dev && gHallGpu.oceanDeviceGen == gen) return;
-    if (gHallGpu.oceanVb)    { gHallGpu.oceanVb->Release();    gHallGpu.oceanVb = NULL; }
-    if (gHallGpu.oceanIb)    { gHallGpu.oceanIb->Release();    gHallGpu.oceanIb = NULL; }
-    if (gHallGpu.headlandVb) { gHallGpu.headlandVb->Release(); gHallGpu.headlandVb = NULL; }
-    if (gHallGpu.headlandIb) { gHallGpu.headlandIb->Release(); gHallGpu.headlandIb = NULL; }
+    ReleaseOceanGpuBuffers();
     gHallGpu.oceanDevice = dev;
     gHallGpu.oceanDeviceGen = gen;
     gHallGpu.oceanAttempted = true;
-    gHallGpu.oceanVertCount = 0;
-    gHallGpu.oceanIdxCount = 0;
-    gHallGpu.headlandVertCount = 0;
-    gHallGpu.headlandIdxCount = 0;
 
     // 7 concentric rings from directly beneath the seaside cliff out to r = 230m horizon fade-out.
     // oceanZ = 5.5 m below visitor eye grounds the coastal courtyard terrace over the sunlit bay.
@@ -3518,9 +3522,8 @@ extern "C" void PortCeMuseumAuthoredBackdrop() {
     if (gFactionTexDevice != dev || gFactionTexDeviceGen != CurrentMuseumDeviceGen()) LoadFactionTextures(dev);
     EnsureOceanGpuBuffers(dev);
 
-    IDirect3DStateBlock9 *saved = NULL;
-    if (FAILED(dev->CreateStateBlock(D3DSBT_ALL, &saved)) || !saved) return;
-    if (FAILED(saved->Capture())) { saved->Release(); return; }
+    IDirect3DStateBlock9 *saved = EnsureHallStateBlock(dev);
+    if (!saved || FAILED(saved->Capture())) return;
 
     D3DMATRIX world = {}, view = {}, proj = {};
     world._11 = world._22 = world._33 = world._44 = 1.0f;
@@ -3670,7 +3673,6 @@ extern "C" void PortCeMuseumAuthoredBackdrop() {
     dev->SetRenderState(D3DRS_RANGEFOGENABLE, FALSE);
 
     saved->Apply();
-    saved->Release();
     CeMuseumRestoreEngineRenderState();
 }
 
@@ -3736,15 +3738,68 @@ static void SetupMuseumLightRig(IDirect3DDevice9 *dev) {
     for (DWORD i = 3; i < 8; ++i) dev->LightEnable(i, FALSE);
 }
 
+// Draw translucent skylight panes & golden rotunda sunbeam curtains strictly AFTER all opaque
+// hall fixtures, framed canvases, dioramas, Archive Pedestal, and rotating 3D exhibits!
+static void DrawHallGlassPass(IDirect3DDevice9 *dev) {
+    if (!gPtr || !dev || !gPtr->glassVertCount || gPtr->glassIdxCount < 3u) return;
+    IDirect3DStateBlock9 *saved = EnsureHallStateBlock(dev);
+    if (!saved || FAILED(saved->Capture())) return;
+    D3DMATRIX world = {}, view = {}, projection = {};
+    world._11 = world._22 = world._33 = world._44 = 1.0f;
+    RENDERINFO.GetView(&view);
+    RENDERINFO.GetProjection(&projection);
+    dev->SetVertexShader(0);
+    dev->SetPixelShader(0);
+    dev->SetTransform(D3DTS_WORLD, &world);
+    dev->SetTransform(D3DTS_VIEW, &view);
+    dev->SetTransform(D3DTS_PROJECTION, &projection);
+    dev->SetTexture(0, 0);
+    dev->SetTexture(1, 0);
+    dev->SetRenderState(D3DRS_LIGHTING, FALSE);
+    dev->SetRenderState(D3DRS_SPECULARENABLE, FALSE);
+    dev->SetRenderState(D3DRS_FOGENABLE, FALSE);
+    dev->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE);
+    dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+    dev->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+    dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+    dev->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+    dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+    dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+    const float noneBias = 0.0f;
+    dev->SetRenderState(D3DRS_DEPTHBIAS, *reinterpret_cast<const DWORD *>(&noneBias));
+    dev->SetRenderState(D3DRS_SLOPESCALEDEPTHBIAS, *reinterpret_cast<const DWORD *>(&noneBias));
+    dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+    dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+    dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+    dev->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
+    dev->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+    dev->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+    dev->SetFVF(D3DFVF_XYZ | D3DFVF_DIFFUSE);
+    if (gHallGpu.glassVb && gHallGpu.glassIb) {
+        dev->SetStreamSource(0, gHallGpu.glassVb, 0, sizeof(OverlayVertex));
+        dev->SetIndices(gHallGpu.glassIb);
+        dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, gPtr->glassVertCount, 0,
+                                  gPtr->glassIdxCount / 3u);
+    } else {
+        dev->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST, 0u, gPtr->glassVertCount,
+                                    gPtr->glassIdxCount / 3u, gPtr->glassIndices,
+                                    D3DFMT_INDEX16, gPtr->glassVerts, sizeof(OverlayVertex));
+    }
+    dev->SetStreamSource(0, NULL, 0, 0);
+    dev->SetIndices(NULL);
+    saved->Apply();
+    CeMuseumRestoreEngineRenderState();
+}
+
 extern "C" void PortCeMuseumHallDraw() {
     if (!gPtr || !gPtr->valid || gMirrorPass || !PortCeMuseumVisitActive()) return;
     IDirect3DDevice9 *dev=LT.GetDevice();
     if (!dev) return;
     EnsureHallGpuBuffers(dev);
 
-    IDirect3DStateBlock9 *saved=0;
-    if (FAILED(dev->CreateStateBlock(D3DSBT_ALL,&saved)) || !saved) return;
-    if (FAILED(saved->Capture())) { saved->Release(); return; }
+    IDirect3DStateBlock9 *saved = EnsureHallStateBlock(dev);
+    if (!saved || FAILED(saved->Capture())) return;
     D3DMATRIX world={},view,projection;
     world._11=world._22=world._33=world._44=1;
     RENDERINFO.GetView(&view); RENDERINFO.GetProjection(&projection);
@@ -3789,15 +3844,18 @@ extern "C" void PortCeMuseumHallDraw() {
         dev->SetIndices(gHallGpu.litIb);
     }
     const float house = HouseLight();
+    const float glowDim = 0.15f + 0.85f * house;
     for (unsigned m = 0; m < kMatCount; ++m) {
         if (!gPtr->triCount[m] || gPtr->minVert[m] > gPtr->maxVert[m]) continue;
-        IDirect3DTexture9 *texture = gPtr->texture[m];
+        const CeMuseumTexId tid = kMaterials[m].tex;
+        IDirect3DTexture9 *texture = tid < CE_MUSEUM_TEX_COUNT ? CeMuseumTextures::Get(tid) : NULL;
         dev->SetTexture(0,texture);
         dev->SetTextureStageState(0,D3DTSS_COLOROP,texture ? D3DTOP_MODULATE : D3DTOP_SELECTARG1);
         dev->SetTextureStageState(0,D3DTSS_COLORARG1,texture ? D3DTA_TEXTURE : D3DTA_DIFFUSE);
         dev->SetTextureStageState(0,D3DTSS_COLORARG2,D3DTA_DIFFUSE);
+        const bool cinemaGlow = (m == kMatCinemaGlow || m == kMatCinemaSconce);
         const float quiet = texture ? kMaterials[m].quiet : 0.0f;
-        const float light = CinemaMaterial(m) ? HouseShade(m, house) : 1.0f;
+        const float light = CinemaMaterial(m) ? HouseShade(m, house) : (cinemaGlow ? glowDim : 1.0f);
         auto toByte = [](float x) -> unsigned {
             int v = static_cast<int>(Clamp01(x) * 255.0f);
             return v < 0 ? 0u : (v > 255 ? 255u : static_cast<unsigned>(v));
@@ -3823,9 +3881,10 @@ extern "C" void PortCeMuseumHallDraw() {
         }
         dev->SetTextureStageState(stage,D3DTSS_COLOROP,D3DTOP_DISABLE);
         dev->SetTextureStageState(stage,D3DTSS_ALPHAOP,D3DTOP_DISABLE);
-        material.Emissive.r = kMaterials[m].emissiveR;
-        material.Emissive.g = kMaterials[m].emissiveG;
-        material.Emissive.b = kMaterials[m].emissiveB;
+        const float emissiveScale = cinemaGlow ? glowDim : 1.0f;
+        material.Emissive.r = kMaterials[m].emissiveR * emissiveScale;
+        material.Emissive.g = kMaterials[m].emissiveG * emissiveScale;
+        material.Emissive.b = kMaterials[m].emissiveB * emissiveScale;
         // Idle house lights: the screening room's seats, carpet and lining keep a warm charcoal floor of
         // their own instead of sinking to black where the hall's sun rig cannot reach. It goes with the
         // house lights as a film starts (house 1 -> 0), so the dark of a showing stays dark.
@@ -3835,18 +3894,18 @@ extern "C" void PortCeMuseumHallDraw() {
             material.Emissive.g += glow.g * house;
             material.Emissive.b += glow.b * house;
         }
-        material.Specular.r = kMaterials[m].specR;
-        material.Specular.g = kMaterials[m].specG;
-        material.Specular.b = kMaterials[m].specB;
+        material.Specular.r = kMaterials[m].specR * emissiveScale;
+        material.Specular.g = kMaterials[m].specG * emissiveScale;
+        material.Specular.b = kMaterials[m].specB * emissiveScale;
         material.Specular.a = 1.0f;
         material.Power = kMaterials[m].specPower;
-        const bool hasSpec = (kMaterials[m].specR > 0.0f || kMaterials[m].specG > 0.0f || kMaterials[m].specB > 0.0f);
+        const bool hasSpec = (material.Specular.r > 0.0f || material.Specular.g > 0.0f || material.Specular.b > 0.0f);
         dev->SetRenderState(D3DRS_SPECULARENABLE, hasSpec ? TRUE : FALSE);
         dev->SetMaterial(&material);
         // Depth-bias flat floor inlays and emissive strips only — never 3D brass trim frames!
         const bool isInlay = (m == kMatInlay || m == kMatNumeral ||
                               m == kMatForsetiGlow || m == kMatMuspellGlow || m == kMatWarmGlow || m == kMatAquaGlow ||
-                              m == kMatCinemaGlow);
+                              m == kMatCinemaGlow || m == kMatCinemaSconce);
         const float bias = isInlay ? -0.00002f : 0.0f, slope = isInlay ? -1.0f : 0.0f;
         dev->SetRenderState(D3DRS_DEPTHBIAS,*reinterpret_cast<const DWORD *>(&bias));
         dev->SetRenderState(D3DRS_SLOPESCALEDEPTHBIAS,*reinterpret_cast<const DWORD *>(&slope));
@@ -3892,27 +3951,6 @@ extern "C" void PortCeMuseumHallDraw() {
         }
     }
 
-    // Translucent sunlit skylight glass panes & subtle golden rotunda sunbeam curtains
-    if (gPtr->glassVertCount && gPtr->glassIdxCount >= 3u) {
-        const float noneBias = 0.0f;
-        dev->SetRenderState(D3DRS_DEPTHBIAS, *reinterpret_cast<const DWORD *>(&noneBias));
-        dev->SetRenderState(D3DRS_SLOPESCALEDEPTHBIAS, *reinterpret_cast<const DWORD *>(&noneBias));
-        dev->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
-        dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
-        dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
-        dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
-        if (gHallGpu.glassVb && gHallGpu.glassIb) {
-            dev->SetStreamSource(0, gHallGpu.glassVb, 0, sizeof(OverlayVertex));
-            dev->SetIndices(gHallGpu.glassIb);
-            dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, gPtr->glassVertCount, 0,
-                                      gPtr->glassIdxCount / 3u);
-        } else {
-            dev->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST, 0u, gPtr->glassVertCount,
-                                        gPtr->glassIdxCount / 3u, gPtr->glassIndices,
-                                        D3DFMT_INDEX16, gPtr->glassVerts, sizeof(OverlayVertex));
-        }
-    }
-
     dev->SetStreamSource(0, NULL, 0, 0);
     dev->SetIndices(NULL);
     const float none = 0.0f;
@@ -3935,12 +3973,26 @@ extern "C" void PortCeMuseumHallDraw() {
         CeArchivePedestal::RuntimeDraw(gGrandFloorZ, false);
 #endif
     }
-    saved->Apply(); saved->Release();
+    saved->Apply();
     CeMuseumRestoreEngineRenderState();
 
     // Render all 45 resident rotating 3D Goodie exhibits via CMESHRENDERER inside its own state guard.
     if (gGrandMode) {
         CeMuseumTurntable::RuntimeDraw(gGrandFloorZ);
     }
+
+    // Translucent skylight panes & golden rotunda sunbeam curtains blend cleanly OVER opaque fixtures & 3D exhibits.
+    DrawHallGlassPass(dev);
+}
+
+extern "C" void PortCeMuseumHallDeleteDeviceObjects(void) {
+    if (Cinema::s.texture) {
+        Cinema::s.texture->Release();
+        Cinema::s.texture = 0;
+    }
+    Cinema::s.textureDevice = 0;
+    Cinema::s.textureDeviceGen = 0;
+    ReleaseHallGpuBuffers();
+    ReleaseMaterials();
 }
 #endif

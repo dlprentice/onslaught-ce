@@ -25,6 +25,7 @@
 #include <cstring>
 
 extern "C" bool PortCeGoodieFiles(int goodie, const char **mesh, const char **picture, WCHAR *title);
+extern "C" uint64_t PortCeD3dDeviceGeneration(void) __attribute__((weak));
 
 namespace CeMuseumTurntable {
 namespace {
@@ -115,6 +116,37 @@ BankState gBank = {};
 LoadedGoodie gLoaded[kManifestCount] = {};
 ResidencyHysteresis gHysteresis = {};
 bool gAllPreloaded = false;
+IDirect3DStateBlock9 *gStateBlock = NULL;
+IDirect3DDevice9 *gStateBlockDevice = NULL;
+uint64_t gStateBlockGen = 0u;
+
+uint64_t CurrentTurntableDeviceGen() {
+    return PortCeD3dDeviceGeneration ? PortCeD3dDeviceGeneration() : 0u;
+}
+
+void ReleaseTurntableStateBlock() {
+    if (gStateBlock) {
+        IDirect3DStateBlock9 *savedState = gStateBlock;
+        gStateBlock = NULL;
+        savedState->Release();
+    }
+    gStateBlockDevice = NULL;
+    gStateBlockGen = 0u;
+}
+
+IDirect3DStateBlock9 *EnsureTurntableStateBlock(IDirect3DDevice9 *dev) {
+    if (!dev) return NULL;
+    const uint64_t gen = CurrentTurntableDeviceGen();
+    if (gStateBlock && (gStateBlockDevice != dev || gStateBlockGen != gen))
+        ReleaseTurntableStateBlock();
+    if (!gStateBlock) {
+        if (SUCCEEDED(dev->CreateStateBlock(D3DSBT_ALL, &gStateBlock)) && gStateBlock) {
+            gStateBlockDevice = dev;
+            gStateBlockGen = gen;
+        }
+    }
+    return gStateBlock;
+}
 
 bool FileReadable(const char *path) {
     if (!path || !*path) return false;
@@ -344,12 +376,14 @@ void AppendStudIndicator(StudVertex *batch, unsigned &used, unsigned cap,
 } // namespace
 
 void RuntimeInit() {
+    ReleaseTurntableStateBlock();
     FreeAllSlots();
     Reset(&gBank);
     EnsureAllSlotsLoaded();
 }
 
 void RuntimeShutdown() {
+    ReleaseTurntableStateBlock();
     FreeAllSlots();
     Reset(&gBank);
 }
@@ -425,10 +459,9 @@ void RuntimeDraw(float floorZ) {
     }
     if (!anyResident) return;
 
-    // Share one D3D9 state block for both brass control studs and resident 3D Goodie meshes.
-    IDirect3DStateBlock9 *savedState = NULL;
-    if (FAILED(dev->CreateStateBlock(D3DSBT_ALL, &savedState)) || !savedState) return;
-    if (FAILED(savedState->Capture())) { savedState->Release(); return; }
+    // Reuse one cached D3D9 state block for both brass control studs and resident 3D Goodie meshes.
+    IDirect3DStateBlock9 *savedState = EnsureTurntableStateBlock(dev);
+    if (!savedState || FAILED(savedState->Capture())) return;
 
     // 1. Draw interactive brass control studs (simple unlit geometry)
     {
@@ -473,7 +506,6 @@ void RuntimeDraw(float floorZ) {
     // 2. Render each resident 3D Goodie mesh inside the same state guard
     if (!anyMesh) {
         savedState->Apply();
-        savedState->Release();
         CeMuseumRestoreEngineRenderState();
         return;
     }
@@ -574,9 +606,11 @@ void RuntimeDraw(float floorZ) {
         rot.MakeRotationF(gBank.slots[i].yawRad, 0.0f, sp.bankRad);
         FMatrix scaledOri = rot * scale;
 
-        // Place bounding box bottom cleanly on top of the plinth (native Z counts downward!).
+        // Place rotated bounding box bottom cleanly on top of the plinth / flight pylon (native Z counts downward!).
         const float lowestZ = box->mOrigin.Z + box->mAxes.Z;
-        const float halfH = box->mAxes.Z * scale;
+        const float halfH = (std::fabs(rot.Row[2].X) * box->mAxes.X +
+                             std::fabs(rot.Row[2].Y) * box->mAxes.Y +
+                             std::fabs(rot.Row[2].Z) * box->mAxes.Z) * scale;
         const FVector localCentre(box->mOrigin.X, box->mOrigin.Y, lowestZ - box->mAxes.Z);
         const FVector offset = scaledOri * localCentre;
 
@@ -608,7 +642,6 @@ void RuntimeDraw(float floorZ) {
     CMESHRENDERER::SetRenderMode(modeWas);
 
     savedState->Apply();
-    savedState->Release();
     LT.InvalidateAllStates();
     RENDERINFO.SetAmbient(savedAmbient);
     for (SINT li = 0; li < 8; ++li) {
@@ -636,6 +669,10 @@ void RuntimeDraw(float floorZ) {
 }
 
 } // namespace CeMuseumTurntable
+
+extern "C" void PortCeMuseumTurntableDeleteDeviceObjects(void) {
+    CeMuseumTurntable::ReleaseTurntableStateBlock();
+}
 #else
 #include "ce_museum_turntable.h"
 namespace CeMuseumTurntable {

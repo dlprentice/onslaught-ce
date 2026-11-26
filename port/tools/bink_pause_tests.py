@@ -20,14 +20,14 @@ DRIVER = ROOT / "port/tools/tests/bink_pause_driver.cpp"
 
 MUTANTS = [
     # the old behaviour, piece by piece
-    ("resume-plays-an-ended-sound", "\t\tif (v->pausedPlaying)\n\t\t\tv->sound->Play(0, 0, 0);", "\t\tif (v->sound)\n\t\t\tv->sound->Play(0, 0, 0);"),
+    ("resume-plays-an-ended-sound", "\t\tif (v->pausedPlaying)\n\t\t{\n\t\t\tHRESULT resumed = v->sound->Play(0, 0, 0);", "\t\tif (v->sound)\n\t\t{\n\t\t\tHRESULT resumed = v->sound->Play(0, 0, 0);"),
     ("held-clock-reads-the-ended-cursor", "(v->paused && v->pausedPlaying)", "v->paused"),
     ("pause-stops-nothing", "\t\tif (v->pausedPlaying)\n\t\t\tv->sound->Stop();", "\t\tif (false)\n\t\t\tv->sound->Stop();"),
-    ("resume-plays-nothing", "\t\tif (v->pausedPlaying)\n\t\t\tv->sound->Play(0, 0, 0);", "\t\tif (false)\n\t\t\tv->sound->Play(0, 0, 0);"),
+    ("resume-plays-nothing", "\t\tif (v->pausedPlaying)\n\t\t{\n\t\t\tHRESULT resumed = v->sound->Play(0, 0, 0);\n\t\t\tDWORD st = 0;\n\t\t\tv->sound->GetStatus(&st);\n\t\t\tv->soundFailed = FAILED(resumed) || !(st & DSBSTATUS_PLAYING);\n\t\t}", "\t\tif (false)\n\t\t\tv->sound->Play(0, 0, 0);"),
     ("held-clock-runs-on", "\tif (v->paused)\n\t{\n\t\tLARGE_INTEGER f;", "\tif (false)\n\t{\n\t\tLARGE_INTEGER f;"),
     ("resume-forgets-the-hold", "\t\tv->start.QuadPart += now.QuadPart - v->pausedAt.QuadPart;", ""),
     ("pause-not-remembered", "\t\tv->pausedPlaying = (status & DSBSTATUS_PLAYING) != 0;", "\t\tv->pausedPlaying = false;"),
-    ("pause-repeats", "if (!v || !v->started || (pause != 0) == v->paused)", "if (!v || !v->started)"),
+    ("pause-repeats", "if (!v || (pause != 0) == v->paused)", "if (!v)"),
     ("wait-ignores-the-clock", "\treturn Clock(v) < (waiting - 1) / v->fps ? 1 : 0;", "\treturn 0;"),
 ]
 

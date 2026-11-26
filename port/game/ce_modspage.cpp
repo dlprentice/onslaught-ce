@@ -264,6 +264,8 @@ bool		sInDraw = false;			// inside mList->Render: defer Act()/Focus()/Bind() so 
 bool		sPendingAct = false;
 int			sPendingRow = -1;
 int			sPendingAction = CEMA_NONE;
+CePs2ImportStatus	sPs2ImportStatus = {CE_PS2_IMPORT_IDLE, 0, "", ""};
+CePs2ImportPickStatus	sPs2PickStatus = {CE_PS2_PICK_IDLE, "", "", ""};
 
 void	Act(int row, int action);		// below: what a row's choice does
 void	FlushPendingAct()
@@ -516,10 +518,13 @@ public:
 	void	Open()
 	{
 		ClearPendingAct();
-		CePs2ImportPickStatus pick{};
-		CePs2ImportPickPoll(&pick);
-		if (pick.state != CE_PS2_PICK_OPEN)
+		CePs2ImportPickPoll(&sPs2PickStatus);
+		if (sPs2PickStatus.state != CE_PS2_PICK_OPEN)
+		{
 			CePs2ImportPickEnter();
+			CePs2ImportPickPoll(&sPs2PickStatus);
+		}
+		CePs2ImportPoll(&sPs2ImportStatus);
 		sModel.Read();
 		mPageIndex = 0;
 		mList->mSelected = 0;
@@ -531,6 +536,7 @@ public:
 	{
 		ClearPendingAct();
 		CePs2ImportPickLeave();
+		sPs2PickStatus = {CE_PS2_PICK_IDLE, "", "", ""};
 		sActive = false;
 		CFrontEnd::PlaySound(FES_BACK);
 	}
@@ -792,16 +798,12 @@ void	OpenFolder()
 const char	*BusyPs2Text()
 {
 	static char stageBuf[128];
-	CePs2ImportStatus ws{};
-	CePs2ImportPoll(&ws);
-	if (ws.state == CE_PS2_IMPORT_RUNNING)
+	if (sPs2ImportStatus.state == CE_PS2_IMPORT_RUNNING)
 	{
-		snprintf(stageBuf, sizeof stageBuf, "%s", ws.stage[0] ? ws.stage : "Reading PS2 disc image...");
+		snprintf(stageBuf, sizeof stageBuf, "%s", sPs2ImportStatus.stage[0] ? sPs2ImportStatus.stage : "Reading PS2 disc image...");
 		return stageBuf;
 	}
-	CePs2ImportPickStatus ps{};
-	CePs2ImportPickPoll(&ps);
-	if (ps.state == CE_PS2_PICK_OPEN)
+	if (sPs2PickStatus.state == CE_PS2_PICK_OPEN)
 		return kCeModsPs2Picking;
 	return NULL;
 }
@@ -815,24 +817,30 @@ void	StartPs2Import()
 		PortCeShowMessage(kCeModsOff);
 		return;
 	}
+	CePs2ImportPoll(&sPs2ImportStatus);
+	CePs2ImportPickPoll(&sPs2PickStatus);
 	if (BusyPs2Text())
 		return;
 	CePs2ImportPickOpen();
+	CePs2ImportPickPoll(&sPs2PickStatus);
 }
 
 void	PollPs2Import()
 {
 	CePs2ImportPickStatus ps{};
 	CePs2ImportPickPoll(&ps);
+	sPs2PickStatus = ps;
 	if (ps.state == CE_PS2_PICK_CANCELLED)
 	{
 		CePs2ImportPickAck();
+		sPs2PickStatus.state = CE_PS2_PICK_IDLE;
 	}
 	else if (ps.state == CE_PS2_PICK_ERROR)
 	{
 		if (!FEMESSBOX.BeingDisplayed())
 		{
 			CePs2ImportPickAck();
+			sPs2PickStatus.state = CE_PS2_PICK_IDLE;
 			char safe[256];
 			CeModText(safe, sizeof safe, ps.message[0] ? ps.message : kCeModsNoFileManager, Shown);
 			PortCeShowMessage(safe[0] ? safe : kCeModsNoFileManager);
@@ -841,14 +849,18 @@ void	PollPs2Import()
 	else if (ps.state == CE_PS2_PICK_READY)
 	{
 		CePs2ImportPickAck();
+		sPs2PickStatus.state = CE_PS2_PICK_IDLE;
 		CePs2ImportStart(ps.path, PortGameDir(), PortUserDir());
+		CePs2ImportPoll(&sPs2ImportStatus);
 	}
 
 	CePs2ImportStatus ws{};
 	CePs2ImportPoll(&ws);
+	sPs2ImportStatus = ws;
 	if (ws.state == CE_PS2_IMPORT_DONE && !FEMESSBOX.BeingDisplayed())
 	{
 		CePs2ImportAck();
+		sPs2ImportStatus.state = CE_PS2_IMPORT_IDLE;
 		sModel.Read();
 		const int imported = sModel.RowOf("flagship-duel-ps2");
 		if (imported >= 0)
@@ -861,6 +873,7 @@ void	PollPs2Import()
 	else if (ws.state == CE_PS2_IMPORT_FAILED && !FEMESSBOX.BeingDisplayed())
 	{
 		CePs2ImportAck();
+		sPs2ImportStatus.state = CE_PS2_IMPORT_IDLE;
 		sMenu->Bind();
 		char safe[256];
 		CeModText(safe, sizeof safe, ws.error, Shown);
@@ -869,6 +882,7 @@ void	PollPs2Import()
 	else if (ws.state == CE_PS2_IMPORT_CANCELLED)
 	{
 		CePs2ImportAck();
+		sPs2ImportStatus.state = CE_PS2_IMPORT_IDLE;
 	}
 }
 
@@ -922,6 +936,8 @@ void	PortCeModsPageProcess()
 	FlushPendingAct();
 	if (Active())
 		PollPs2Import();
+	else
+		CePs2ImportPoll(&sPs2ImportStatus);
 	if (sMenu)
 		sMenu->mTurned = false;
 }
@@ -964,6 +980,8 @@ void	PortCeModsPageShutdown()
 	ClearPendingAct();
 	CePs2ImportPickLeave();
 	CePs2ImportCancel();
+	sPs2ImportStatus = {CE_PS2_IMPORT_IDLE, 0, "", ""};
+	sPs2PickStatus = {CE_PS2_PICK_IDLE, "", "", ""};
 	SAFE_DELETE(sMenu);
 	sActive = false;
 	sDetailsUp = false;

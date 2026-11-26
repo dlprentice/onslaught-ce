@@ -155,7 +155,7 @@ bool PrepareResources()
 {
     gAttempted = true;
     if (gNumViews <= 0 || !LT.GetDevice()) return false;
-    const unsigned maxAtlas = CeTerrainMaxAtlasSize(LT.m_d3dCaps.MaxTextureWidth, LT.m_d3dCaps.MaxTextureHeight);
+    const unsigned maxAtlas = CeTerrainMaxAtlasSize(LT.m_d3dCaps.MaxTextureWidth, LT.m_d3dCaps.MaxTextureHeight, gNumViews);
     if (maxAtlas < 1024u) {
         PortSessionLog(PORT_SESSION_VIDEO, false,
             "terrain-textures skipped: device MaxTexture=%ux%u below 1024",

@@ -207,6 +207,18 @@ struct CeOnlineWireInput {
         return (b & 0x7f800000u) != 0x7f800000u;
     }
 
+    // Matches native_actions[] in ce_network_world.cpp: strictly whitelisted gameplay actions in canonical order.
+    static unsigned ActionRank(uint32_t button) {
+        static const uint32_t kNativeActions[] = {
+            25u, 27u, 26u, 28u, 29u, 30u, 31u, 32u, 59u, 33u, 19u, 18u, 20u, 16u, 17u, 21u
+        };
+        for (size_t i = 0; i < sizeof(kNativeActions) / sizeof(kNativeActions[0]); ++i) {
+            if (kNativeActions[i] == button)
+                return (unsigned)(i + 1u);
+        }
+        return 0u;
+    }
+
     static bool FromWorldInput(const CE_WorldInput &in, CeOnlineWireInput *out) {
         if (!out) return false;
         out->Clear();
@@ -230,9 +242,13 @@ struct CeOnlineWireInput {
         out->ground_yaw_bits = yawBits;
         out->ground_pitch_bits = pitchBits;
         out->count = (uint8_t)in.count;
+        unsigned lastRank = 0u;
         for (size_t i = 0; i < in.count; ++i) {
-            if (in.actions[i].button > 255u || in.actions[i].source > CE_WORLD_ACTION_MOUSE_AXIS)
+            const unsigned rank = ActionRank(in.actions[i].button);
+            if (!rank || rank <= lastRank || in.actions[i].button > 255u ||
+                in.actions[i].source > CE_WORLD_ACTION_MOUSE_AXIS)
                 return false;
+            lastRank = rank;
             const uint32_t vb = FloatToBits(in.actions[i].value);
             if (!IsFiniteBits(vb) || !(in.actions[i].value >= -1.0f && in.actions[i].value <= 1.0f))
                 return false;
@@ -257,9 +273,13 @@ struct CeOnlineWireInput {
             return false;
         if (!mouse_ground_aim && (yaw != 0.0f || pitch != 0.0f))
             return false;
+        unsigned lastRank = 0u;
         for (size_t i = 0; i < count; ++i) {
-            if (actions[i].source > CE_WORLD_ACTION_MOUSE_AXIS || !IsFiniteBits(actions[i].value_bits))
+            const unsigned rank = ActionRank(actions[i].button);
+            if (!rank || rank <= lastRank ||
+                actions[i].source > CE_WORLD_ACTION_MOUSE_AXIS || !IsFiniteBits(actions[i].value_bits))
                 return false;
+            lastRank = rank;
             const float val = BitsToFloat(actions[i].value_bits);
             if (!(val >= -1.0f && val <= 1.0f))
                 return false;
@@ -568,6 +588,7 @@ private:
     void HandleDisconnectEvent(uint8_t sim_slot);
     bool TryConfirmStartHash();
     bool TryConfirmFinalHash();
+    bool CheckPendingHashes();
     void AppendChat(uint8_t sim_slot, const char *text);
     CeNPeerDesyncReport RemapReportToSimSlots(const CeNPeerDesyncReport &ringReport) const;
 

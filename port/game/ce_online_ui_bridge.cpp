@@ -16,6 +16,7 @@
 #include <vector>
 
 extern "C" int CE_SettingGetText(const char *key, char *out, int n) __attribute__((weak));
+extern "C" int CE_LobbyRestartDue(void) __attribute__((weak));
 
 namespace {
 
@@ -408,6 +409,9 @@ public:
     void FlushLeave(uint64_t nowMs) override {
         PortCeOnlineServiceInstance()->FlushLeave(nowMs);
     }
+    bool IsLaunchPending() const override {
+        return CE_LobbyRestartDue && CE_LobbyRestartDue() != 0;
+    }
 };
 #endif
 
@@ -472,6 +476,7 @@ public:
     void OnMatchTicketReady(const CeOnlineStartTicketView &t) override { if (mInner) mInner->OnMatchTicketReady(t); }
     bool TakeOpError(std::string *out) override { return mInner ? mInner->TakeOpError(out) : false; }
     void FlushLeave(uint64_t nowMs) override { if (mInner) mInner->FlushLeave(nowMs); }
+    bool IsLaunchPending() const override { return mInner ? mInner->IsLaunchPending() : false; }
 
 private:
     CeDefaultOnlineUiBackend mFallback;
@@ -1179,6 +1184,16 @@ void PortCeOnlineHostInitOps(const CeOnlineUiHostOps *ops) {
 void PortCeOnlineHostOpen(int from_multiplayer) {
     EnsureBound();
     gModel.Open(from_multiplayer != 0);
+}
+
+void PortCeOnlineHostSetOutcomeNotice(const char *text, int is_error) {
+    if (!gModel.Active()) return;
+    if (gModel.Page() == CE_ONLINE_PAGE_HOME) {
+        gModel.EnterBrowser(CE_ONLINE_PAGE_HOME);
+    }
+    if (text && text[0]) {
+        gModel.SetStatusNotice(text, is_error != 0);
+    }
 }
 
 void PortCeOnlineHostClose(void) {

@@ -28,7 +28,7 @@ static void Check(bool value, int line)
 }
 #define CHECK(v) Check((v),__LINE__)
 bool PortCeLayer(){return true;}
-extern "C" int CE_SettingGetBool(const char*,int fallback){++settingsReads;return fallback;}
+extern "C" int CE_SettingGetBool(const char*,int){++settingsReads;return 0;}
 void PortSessionLog(PortSessionCategory,bool,const char*,...){}
 
 struct Fixture {

@@ -545,6 +545,31 @@ static void BoxDownsample(const uint32_t *src, unsigned sw, unsigned sh,
     }
 }
 
+static void DownsampleRectClamped(const uint32_t *src, unsigned sw,
+                                  unsigned x0, unsigned y0, unsigned x1, unsigned y1,
+                                  unsigned cellX0, unsigned cellY0, unsigned cellX1, unsigned cellY1,
+                                  uint32_t *outPx) {
+    unsigned aSum = 0u, rSum = 0u, gSum = 0u, bSum = 0u, count = 0u;
+    for (unsigned y = y0; y < y1; ++y) {
+        const unsigned cy = y < cellY0 ? cellY0 : (y >= cellY1 ? cellY1 - 1u : y);
+        const uint32_t *srow = src + cy * sw;
+        for (unsigned x = x0; x < x1; ++x) {
+            const unsigned cx = x < cellX0 ? cellX0 : (x >= cellX1 ? cellX1 - 1u : x);
+            const uint32_t p = srow[cx];
+            aSum += (p >> 24) & 255u;
+            rSum += (p >> 16) & 255u;
+            gSum += (p >> 8) & 255u;
+            bSum += p & 255u;
+            ++count;
+        }
+    }
+    if (!count) { *outPx = 0xff000000u; return; }
+    *outPx = PackArgb((aSum + count / 2u) / count,
+                      (rSum + count / 2u) / count,
+                      (gSum + count / 2u) / count,
+                      (bSum + count / 2u) / count);
+}
+
 #ifndef CE_MUSEUM_TEXTURES_HOST_TEST
 static_assert(static_cast<unsigned>(CE_MUSEUM_TEX_COUNT) == static_cast<unsigned>(CeMuseumTexturesData::kCount),
               "CeMuseumTexId must match CeMuseumTexturesData::kCount");
@@ -565,38 +590,45 @@ bool ForcedMissing(const char *slug) {
     return slug && missing && *missing && std::strstr(slug, missing) != NULL;
 }
 
-// Wrap a top-down 32-bit BGRA/ARGB8888 buffer in an 18-byte uncompressed TGA header and upload via
-// D3DXCreateTextureFromFileInMemoryEx with MipLevels=0 (full box-filtered mip chain) into D3DPOOL_MANAGED.
-IDirect3DTexture9 *UploadManagedArgbAtlas(IDirect3DDevice9 *device, const uint32_t *argb,
-                                          unsigned width, unsigned height) {
+// Upload an atlas into D3DPOOL_MANAGED with capped per-cell software mip levels (kAtlasMipLevels)
+// so adjacent strips/buttons never bleed across seams at oblique viewing angles.
+IDirect3DTexture9 *UploadManagedArgbAtlas(IDirect3DDevice9 *device, const unsigned int *argb,
+                                          unsigned width, unsigned height, bool isPortalSign) {
     if (!device || !argb || !width || !height) return NULL;
-    const size_t pixelBytes = static_cast<size_t>(width) * static_cast<size_t>(height) * 4u;
-    std::vector<unsigned char> tga(18u + pixelBytes, 0u);
-    tga[2]  = 2u; // uncompressed true-color
-    tga[12] = static_cast<unsigned char>(width & 0xffu);
-    tga[13] = static_cast<unsigned char>((width >> 8) & 0xffu);
-    tga[14] = static_cast<unsigned char>(height & 0xffu);
-    tga[15] = static_cast<unsigned char>((height >> 8) & 0xffu);
-    tga[16] = 32u;   // 32-bit BGRA
-    tga[17] = 0x28u; // top-down origin (0x20) + 8-bit alpha (0x08)
-    unsigned char *dst = &tga[18];
-    const size_t count = static_cast<size_t>(width) * static_cast<size_t>(height);
-    for (size_t i = 0; i < count; ++i) {
-        const uint32_t p = argb[i];
-        dst[i * 4u + 0u] = static_cast<unsigned char>(p & 0xffu);         // B
-        dst[i * 4u + 1u] = static_cast<unsigned char>((p >> 8) & 0xffu);  // G
-        dst[i * 4u + 2u] = static_cast<unsigned char>((p >> 16) & 0xffu); // R
-        dst[i * 4u + 3u] = static_cast<unsigned char>((p >> 24) & 0xffu); // A
-    }
     IDirect3DTexture9 *tex = NULL;
-    const HRESULT hr = D3DXCreateTextureFromFileInMemoryEx(
-        device, tga.data(), static_cast<UINT>(tga.size()),
+    const HRESULT hr = device->CreateTexture(
         static_cast<UINT>(width), static_cast<UINT>(height),
-        0, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED,
-        D3DX_FILTER_TRIANGLE, D3DX_FILTER_BOX, 0, NULL, NULL, &tex);
+        static_cast<UINT>(kAtlasMipLevels), 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &tex, NULL);
     if (FAILED(hr) || !tex) {
         if (tex) tex->Release();
         return NULL;
+    }
+    std::vector<unsigned int> mipBuf;
+    for (unsigned lvl = 0u; lvl < kAtlasMipLevels; ++lvl) {
+        const unsigned lw = width >> lvl;
+        const unsigned lh = height >> lvl;
+        if (!lw || !lh) break;
+        const unsigned int *src = argb;
+        if (lvl > 0u) {
+            mipBuf.resize(static_cast<size_t>(lw) * static_cast<size_t>(lh));
+            if (isPortalSign)
+                CeMuseumTextures::DownsamplePortalSignAtlasLevel(argb, lvl, mipBuf.data());
+            else
+                CeMuseumTextures::DownsampleDirectoryAtlasLevel(argb, lvl, mipBuf.data());
+            src = mipBuf.data();
+        }
+        D3DLOCKED_RECT lr = {};
+        if (FAILED(tex->LockRect(static_cast<UINT>(lvl), &lr, NULL, 0)) || !lr.pBits) {
+            tex->Release();
+            return NULL;
+        }
+        unsigned char *dstBytes = static_cast<unsigned char *>(lr.pBits);
+        for (unsigned y = 0u; y < lh; ++y) {
+            std::memcpy(dstBytes + static_cast<size_t>(y) * static_cast<size_t>(lr.Pitch),
+                        src + static_cast<size_t>(y) * static_cast<size_t>(lw),
+                        static_cast<size_t>(lw) * sizeof(uint32_t));
+        }
+        tex->UnlockRect(static_cast<UINT>(lvl));
     }
     return tex;
 }
@@ -910,6 +942,87 @@ void BakeDirectoryAtlasRgba(unsigned int *outArgb) {
                   kDirectoryAtlasWidth, kDirectoryAtlasHeight);
 }
 
+void DownsamplePortalSignAtlasLevel(const unsigned int *baseArgb, unsigned level, unsigned int *outArgb) {
+    if (!baseArgb || !outArgb || level >= kAtlasMipLevels) return;
+    const unsigned scale = 1u << level;
+    const unsigned dw = kPortalAtlasWidth >> level;
+    const unsigned dh = kPortalAtlasHeight >> level;
+    if (level == 0u) {
+        std::memcpy(outArgb, baseArgb, static_cast<size_t>(dw) * static_cast<size_t>(dh) * sizeof(unsigned int));
+        return;
+    }
+    const uint32_t *src = reinterpret_cast<const uint32_t *>(baseArgb);
+    uint32_t *dst = reinterpret_cast<uint32_t *>(outArgb);
+    const unsigned dstStripH = kPortalStripHeight >> level;
+    for (unsigned s = 0u; s < static_cast<unsigned>(CE_MUSEUM_SIGN_COUNT); ++s) {
+        const unsigned cellY0 = s * kPortalStripHeight;
+        const unsigned cellY1 = cellY0 + kPortalStripHeight;
+        for (unsigned ly = 0u; ly < dstStripH; ++ly) {
+            const unsigned dy = s * dstStripH + ly;
+            const unsigned sy0 = dy * scale;
+            const unsigned sy1 = sy0 + scale;
+            for (unsigned dx = 0u; dx < dw; ++dx) {
+                const unsigned sx0 = dx * scale;
+                const unsigned sx1 = sx0 + scale;
+                DownsampleRectClamped(src, kPortalAtlasWidth, sx0, sy0, sx1, sy1,
+                                      0u, cellY0, kPortalAtlasWidth, cellY1,
+                                      &dst[dy * dw + dx]);
+            }
+        }
+    }
+}
+
+void DownsampleDirectoryAtlasLevel(const unsigned int *baseArgb, unsigned level, unsigned int *outArgb) {
+    if (!baseArgb || !outArgb || level >= kAtlasMipLevels) return;
+    const unsigned scale = 1u << level;
+    const unsigned dw = kDirectoryAtlasWidth >> level;
+    const unsigned dh = kDirectoryAtlasHeight >> level;
+    if (level == 0u) {
+        std::memcpy(outArgb, baseArgb, static_cast<size_t>(dw) * static_cast<size_t>(dh) * sizeof(unsigned int));
+        return;
+    }
+    const uint32_t *src = reinterpret_cast<const uint32_t *>(baseArgb);
+    uint32_t *dst = reinterpret_cast<uint32_t *>(outArgb);
+    const unsigned dstMapH = kDirectoryMapHeight >> level;
+    // 1. Top floor-plan map panel [0..512) x [0..384): strictly clamped inside map bounds.
+    for (unsigned dy = 0u; dy < dstMapH; ++dy) {
+        const unsigned sy0 = dy * scale;
+        const unsigned sy1 = sy0 + scale;
+        for (unsigned dx = 0u; dx < dw; ++dx) {
+            const unsigned sx0 = dx * scale;
+            const unsigned sx1 = sx0 + scale;
+            DownsampleRectClamped(src, kDirectoryAtlasWidth, sx0, sy0, sx1, sy1,
+                                  0u, 0u, kDirectoryAtlasWidth, kDirectoryMapHeight,
+                                  &dst[dy * dw + dx]);
+        }
+    }
+    // 2. Bottom 3x2 console button grid: each texel samples strictly inside its own 170x64 button cell.
+    constexpr unsigned kCellW = 170u;
+    constexpr unsigned kCellH = 64u;
+    const unsigned dstCellH = kCellH >> level;
+    for (unsigned row = 0u; row < 2u; ++row) {
+        const unsigned cellY0 = kDirectoryMapHeight + row * kCellH;
+        const unsigned cellY1 = cellY0 + kCellH;
+        for (unsigned ly = 0u; ly < dstCellH; ++ly) {
+            const unsigned dy = dstMapH + row * dstCellH + ly;
+            const unsigned sy0 = dy * scale;
+            const unsigned sy1 = sy0 + scale;
+            for (unsigned dx = 0u; dx < dw; ++dx) {
+                const unsigned sx0 = dx * scale;
+                const unsigned sx1 = sx0 + scale;
+                const unsigned center2 = (dx * 2u + 1u) * scale; // 2x level-0 center X
+                unsigned col = center2 / (2u * kCellW);
+                if (col > 2u) col = 2u;
+                const unsigned cellX0 = col * kCellW;
+                const unsigned cellX1 = cellX0 + kCellW;
+                DownsampleRectClamped(src, kDirectoryAtlasWidth, sx0, sy0, sx1, sy1,
+                                      cellX0, cellY0, cellX1, cellY1,
+                                      &dst[dy * dw + dx]);
+            }
+        }
+    }
+}
+
 #ifndef CE_MUSEUM_TEXTURES_HOST_TEST
 
 const char *Name(CeMuseumTexId id) {
@@ -939,10 +1052,12 @@ void ReleaseAll() {
 }
 
 void LoadAll(IDirect3DDevice9 *device) {
+    if (!device) { ReleaseAll(); return; }
+    const uint64_t gen = CurrentDeviceGen();
+    if (gLoaded && gDevice == device && gDeviceGen == gen) return;
     ReleaseAll();
-    if (!device) return;
     gDevice = device;
-    gDeviceGen = CurrentDeviceGen();
+    gDeviceGen = gen;
     gLoaded = true;
     unsigned loaded = 0;
     for (unsigned i = 0; i < static_cast<unsigned>(CE_MUSEUM_TEX_COUNT); ++i) {
@@ -978,18 +1093,18 @@ void LoadAll(IDirect3DDevice9 *device) {
         delete[] raw;
     }
 
-    // Bake the 1024x512 Portal Lintel Signage Atlas ONCE into D3DPOOL_MANAGED with full mipmaps.
+    // Bake the 1024x512 Portal Lintel Signage Atlas ONCE into D3DPOOL_MANAGED with per-strip capped mips.
     if (!ForcedMissing("portal_signage")) {
         std::vector<unsigned int> pixels(kPortalAtlasWidth * kPortalAtlasHeight, 0xff161c22u);
         BakePortalSignAtlasRgba(pixels.data());
-        gPortalSignAtlas = UploadManagedArgbAtlas(device, pixels.data(), kPortalAtlasWidth, kPortalAtlasHeight);
+        gPortalSignAtlas = UploadManagedArgbAtlas(device, pixels.data(), kPortalAtlasWidth, kPortalAtlasHeight, true);
     }
 
-    // Bake the 512x512 Atrium Directory Floor-Plan & Labeled Console Buttons Atlas ONCE.
+    // Bake the 512x512 Atrium Directory Floor-Plan & Labeled Console Buttons Atlas ONCE with per-cell capped mips.
     if (!ForcedMissing("directory_map")) {
         std::vector<unsigned int> pixels(kDirectoryAtlasWidth * kDirectoryAtlasHeight, 0xff161c22u);
         BakeDirectoryAtlasRgba(pixels.data());
-        gDirectoryAtlas = UploadManagedArgbAtlas(device, pixels.data(), kDirectoryAtlasWidth, kDirectoryAtlasHeight);
+        gDirectoryAtlas = UploadManagedArgbAtlas(device, pixels.data(), kDirectoryAtlasWidth, kDirectoryAtlasHeight, false);
     }
 
     PortSessionLog(PORT_SESSION_GAME, false,
@@ -1036,6 +1151,10 @@ IDirect3DTexture9 *GetDirectoryAtlas() { return 0; }
 #endif // !CE_MUSEUM_TEXTURES_HOST_TEST
 
 } // namespace CeMuseumTextures
+
+extern "C" void PortCeMuseumTexturesDeleteDeviceObjects(void) {
+    CeMuseumTextures::ReleaseAll();
+}
 #else
 #include "ce_museum_textures.h"
 namespace CeMuseumTextures {
@@ -1052,5 +1171,7 @@ CeMuseumAtlasUv DirectoryMapUv() { return CeMuseumAtlasUv{0.0f, 0.0f, 1.0f, 1.0f
 CeMuseumAtlasUv DirectoryButtonUv(CeMuseumDirButtonId) { return CeMuseumAtlasUv{0.0f, 0.0f, 1.0f, 1.0f}; }
 void BakePortalSignAtlasRgba(unsigned int *) {}
 void BakeDirectoryAtlasRgba(unsigned int *) {}
+void DownsamplePortalSignAtlasLevel(const unsigned int *, unsigned, unsigned int *) {}
+void DownsampleDirectoryAtlasLevel(const unsigned int *, unsigned, unsigned int *) {}
 } // namespace CeMuseumTextures
 #endif

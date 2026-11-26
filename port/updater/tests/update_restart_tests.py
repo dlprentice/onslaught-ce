@@ -153,7 +153,8 @@ class EntryPoint(unittest.TestCase):
                     row, _ = self.invoke(platform, *args)
                     self.assertEqual(row["return"], rc)
                     self.assertEqual(row[field], 1)
-                    self.assertEqual((row["games"], row["finds"], row["records"], row["handoffs"]), (0, 0, 0, 1))
+                    want_handoff = 0 if "--rollback" in args else 1
+                    self.assertEqual((row["games"], row["finds"], row["records"], row["handoffs"]), (0, 0, 0, want_handoff))
             with self.subTest(platform=platform, args="--no-update-check --update-only"):
                 row, _ = self.invoke(platform, "--no-update-check", "--update-only")
                 self.assertEqual((row["return"], row["checks"], row["games"]), (12, 0, 0))  # no request at all

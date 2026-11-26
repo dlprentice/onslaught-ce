@@ -410,8 +410,13 @@ static void TestWorldSerializerAndForbiddenUnits() {
     Check(VerifyWorldBody(realBuf, realLen, &realSum) && realSum.sawFenrir && !realSum.sawForbiddenUnit,
           "verify Fenrir 2 world");
 
-    // Truncated world buffer fails verification cleanly.
+    // Truncated world buffer (header or 78-byte tail) and trailing garbage fail verification cleanly.
     Check(!VerifyWorldBody(realBuf, 32u, &realSum), "truncated world rejected");
+    Check(!VerifyWorldBody(realBuf, realLen - 6u, &realSum), "truncated 78-byte world tail rejected");
+    if (realLen + 1u <= sizeof(realBuf)) {
+        realBuf[realLen] = 0xAAu;
+        Check(!VerifyWorldBody(realBuf, realLen + 1u, &realSum), "trailing bytes past world tail rejected");
+    }
 
     // 325-byte PMSH/PMS2 mesh preload stub chunk layout.
     uint8_t stub[325] = {};

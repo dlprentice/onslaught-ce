@@ -110,7 +110,7 @@ class SelfReplacementCandidate(unittest.TestCase):
         changed = self.methods.replace(needle, "(void)0;", 1)
         self.assertNotEqual(0, run([self.build("no-instruction-guard", changed), "event"]).returncode)
 
-        needle = "if (!mCode) return; // the init instruction replaced and retired this script"
+        needle = "if (!mCode) { for (int i = 0; i < num_args; i++) delete args[i]; return; } // the init instruction replaced and retired this script"
         self.assertEqual(2, self.methods.count(needle))
         changed = self.methods.replace(needle, "if (!mCode) { code->mInitRun = TRUE; return; }", 2)
         exe = self.build("no-init-code-guard", changed)

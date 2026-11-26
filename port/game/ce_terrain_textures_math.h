@@ -11,10 +11,13 @@ static const float kCeTerrainTileSize = 8.0f;
 static const int kCeTerrainMaxLevels = 5;
 
 // Largest square atlas texture dimension we use for expanded terrain caches:
-// 2048 when supported, 1024 on older hardware, or 0 to fall back to retail 512.
-inline unsigned CeTerrainMaxAtlasSize(unsigned maxTextureWidth, unsigned maxTextureHeight)
+// 4096 in 1P on modern GPUs (so L1, L2, AND L3 hold the entire 64x64 map permanently and L4 covers
+// 32x32 tiles = 4x the area), capped to 2048 in 2P split-screen for 32-bit VA headroom, 1024 on
+// older hardware, or 0 to fall back to retail 512.
+inline unsigned CeTerrainMaxAtlasSize(unsigned maxTextureWidth, unsigned maxTextureHeight, int numViews = 1)
 {
     const unsigned limit = maxTextureWidth < maxTextureHeight ? maxTextureWidth : maxTextureHeight;
+    if (numViews <= 1 && limit >= 4096u) return 4096u;
     if (limit >= 2048u) return 2048u;
     if (limit >= 1024u) return 1024u;
     return 0u;
@@ -78,6 +81,7 @@ struct CeTerrainViewFocus
     int focusTileY[kCeTerrainMaxLevels];
     int safeHalf[kCeTerrainMaxLevels];
     int maxTexLevel;
+    unsigned maxAtlas;
 };
 
 inline int CeTerrainClampTile(int v, int lo, int hi)
@@ -104,6 +108,7 @@ inline CeTerrainViewFocus CeTerrainComputeFocus(
     if (maxLvl >= kCeTerrainMaxLevels) maxLvl = kCeTerrainMaxLevels - 1;
     if (maxLvl < 0) maxLvl = 0;
     f.maxTexLevel = maxLvl;
+    f.maxAtlas = maxAtlas;
 
     const float alt = groundZ > camZ ? (groundZ - camZ) : 0.0f;
     const float hlen = std::sqrt(dirX * dirX + dirY * dirY);
@@ -172,11 +177,15 @@ inline int CeTerrainChooseLevel(const CeTerrainViewFocus &f, int tileX, int tile
     const float dz = midHeight - f.camZ;
     const float dist2 = dx * dx + dy * dy + dz * dz;
 
-    if (f.maxTexLevel >= 4 && dist2 <= 90.0f * 90.0f && CeTerrainTileInsideSafeBox(f, 4, tileX, tileY))
+    const float l4Dist = f.maxAtlas >= 4096u ? 125.0f : 90.0f;
+    const float l3Dist = f.maxAtlas >= 4096u ? 280.0f : 185.0f;
+    const float l2Dist = f.maxAtlas >= 4096u ? 520.0f : 360.0f;
+
+    if (f.maxTexLevel >= 4 && dist2 <= l4Dist * l4Dist && CeTerrainTileInsideSafeBox(f, 4, tileX, tileY))
         return 4;
-    if (f.maxTexLevel >= 3 && dist2 <= 185.0f * 185.0f && CeTerrainTileInsideSafeBox(f, 3, tileX, tileY))
+    if (f.maxTexLevel >= 3 && dist2 <= l3Dist * l3Dist && CeTerrainTileInsideSafeBox(f, 3, tileX, tileY))
         return 3;
-    if (f.maxTexLevel >= 2 && dist2 <= 360.0f * 360.0f && CeTerrainTileInsideSafeBox(f, 2, tileX, tileY))
+    if (f.maxTexLevel >= 2 && dist2 <= l2Dist * l2Dist && CeTerrainTileInsideSafeBox(f, 2, tileX, tileY))
         return 2;
     if (f.maxTexLevel >= 1 && CeTerrainTileInsideSafeBox(f, 1, tileX, tileY))
         return 1;

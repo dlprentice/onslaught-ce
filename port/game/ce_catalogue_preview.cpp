@@ -718,6 +718,11 @@ void PortCeCatalogueSpeechLinesEnd()
     free(sLines); sLines = NULL; sLineCount = 0; sLinesTable = NULL; sLinesLanguage = -1;
     sOtherText.Shutdown(); sOtherText.Init(); sOtherLanguage = -1;
 }
+
+extern "C" void PortCeCataloguePreviewDeleteDeviceObjects(void)
+{
+    PortCeCataloguePictureClose();
+}
 #else
 // A private build has no Catalogue (it is a CE page); these let ce_catalogue_menu.cpp and ce_catalogue_sounds.cpp link there.
 #include "ce_catalogue_sounds.h"

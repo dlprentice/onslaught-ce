@@ -6,6 +6,13 @@
 #include "../common/platform.h"
 #include "../common/feel.h"
 
+#ifndef ERROR_TOO_MANY_OPEN_FILES
+#define ERROR_TOO_MANY_OPEN_FILES 4L
+#endif
+#ifndef ERROR_INVALID_PARAMETER
+#define ERROR_INVALID_PARAMETER 87L
+#endif
+
 #include <errno.h>
 #include <pthread.h>
 #include <stdarg.h>
@@ -31,26 +38,34 @@ static PortHandle *sHandles[8192];		// open addressing, keyed by pointer
 
 static unsigned Slot(const void *p) { return (unsigned)(((uintptr_t)p >> 4) * 2654435761u) % 8192; }
 
-static void Register(PortHandle *h)
+static bool Register(PortHandle *h)
 {
 	pthread_mutex_lock(&sHandlesLock);
 	unsigned i = Slot(h);
-	while (sHandles[i] && sHandles[i] != (PortHandle *)1)
-		i = (i + 1) % 8192;
-	sHandles[i] = h;
+	for (unsigned n = 0; n < 8192; n++, i = (i + 1) % 8192)
+		if (!sHandles[i] || sHandles[i] == (PortHandle *)1)
+		{
+			sHandles[i] = h;
+			pthread_mutex_unlock(&sHandlesLock);
+			return true;
+		}
 	pthread_mutex_unlock(&sHandlesLock);
+	return false;
 }
 
-static void Unregister(PortHandle *h)
+static bool Unregister(PortHandle *h)
 {
+	bool removed = false;
 	pthread_mutex_lock(&sHandlesLock);
 	for (unsigned i = Slot(h), n = 0; sHandles[i] && n < 8192; i = (i + 1) % 8192, n++)
 		if (sHandles[i] == h)
 		{
 			sHandles[i] = (PortHandle *)1;	// tombstone
+			removed = true;
 			break;
 		}
 	pthread_mutex_unlock(&sHandlesLock);
+	return removed;
 }
 
 PortHandle *PortCheck(HANDLE handle, int kind)
@@ -74,10 +89,22 @@ PortHandle *PortCheck(HANDLE handle, int kind)
 PortHandle *PortHandleNew(PortHandleKind kind, size_t size)
 {
 	PortHandle *h = (PortHandle *)calloc(1, size);
+	if (!h)
+	{
+		PortSetLastError(ERROR_NOT_ENOUGH_MEMORY);
+		return NULL;
+	}
 	h->kind = kind;
 	pthread_mutex_init(&h->lock, NULL);
 	pthread_cond_init(&h->cond, NULL);
-	Register(h);
+	if (!Register(h))
+	{
+		pthread_cond_destroy(&h->cond);
+		pthread_mutex_destroy(&h->lock);
+		free(h);
+		PortSetLastError(ERROR_TOO_MANY_OPEN_FILES);
+		return NULL;
+	}
 	return h;
 }
 
@@ -96,6 +123,11 @@ extern "C" BOOL WINAPI CloseHandle(HANDLE handle)
 	PortHandle *h = PortCheck(handle, 0);
 	if (!h)
 		return FALSE;
+	if (!Unregister(h))
+	{
+		PortSetLastError(ERROR_INVALID_HANDLE);
+		return FALSE;
+	}
 	switch (h->kind)
 	{
 	case PORT_FILE:
@@ -104,19 +136,21 @@ extern "C" BOOL WINAPI CloseHandle(HANDLE handle)
 	case PORT_THREAD:
 	{
 		PortThread *t = (PortThread *)h;
-		// A thread's handle may close while it runs (the game closes its music thread's after the wait): detach, and
-		// let the thread free the record when it finishes.
+		// A thread's handle may close while it runs (the game closes its music thread's after the wait): detach
+		// while holding h->lock so ThreadMain cannot free the record first, then let ThreadMain free it on exit.
 		pthread_mutex_lock(&h->lock);
 		bool done = t->finished;
-		t->orphaned = true;
+		if (!done)
+		{
+			t->orphaned = true;
+			pthread_detach(t->thread);
+		}
 		pthread_mutex_unlock(&h->lock);
 		if (done)
 		{
 			pthread_join(t->thread, NULL);
 			HandleFree(h);
 		}
-		else
-			pthread_detach(t->thread);
 		return TRUE;
 	}
 	default:
@@ -233,6 +267,8 @@ extern "C" void WINAPI GetSystemTime(LPSYSTEMTIME st) { FillSystemTime(st, false
 extern "C" HANDLE WINAPI CreateEventA(LPSECURITY_ATTRIBUTES, BOOL manual, BOOL initial, LPCSTR)
 {
 	PortEvent *e = (PortEvent *)PortHandleNew(PORT_EVENT, sizeof(PortEvent));
+	if (!e)
+		return NULL;
 	e->manual = manual != 0;
 	e->signaled = initial != 0;
 	return e;
@@ -265,6 +301,8 @@ extern "C" BOOL WINAPI ResetEvent(HANDLE handle)
 extern "C" HANDLE WINAPI CreateMutexA(LPSECURITY_ATTRIBUTES, BOOL initialOwner, LPCSTR)
 {
 	PortMutex *m = (PortMutex *)PortHandleNew(PORT_MUTEX, sizeof(PortMutex));
+	if (!m)
+		return NULL;
 	if (initialOwner)
 	{
 		m->owner = pthread_self();
@@ -368,11 +406,63 @@ void PortWaitersWake()
 	pthread_mutex_unlock(&sWaitLock);
 }
 
+static bool IsReady(PortHandle *h)
+{
+	switch (h->kind)
+	{
+	case PORT_EVENT:
+		return ((PortEvent *)h)->signaled;
+	case PORT_MUTEX:
+	{
+		PortMutex *m = (PortMutex *)h;
+		return m->count == 0 || pthread_equal(m->owner, pthread_self());
+	}
+	case PORT_THREAD:
+		return ((PortThread *)h)->finished;
+	default:
+		return true;
+	}
+}
+
 extern "C" DWORD WINAPI WaitForMultipleObjects(DWORD count, const HANDLE *handles, BOOL all, DWORD ms)
 {
+	if (count == 0 || count > 64 || !handles)
+	{
+		PortSetLastError(ERROR_INVALID_PARAMETER);
+		return WAIT_FAILED;
+	}
+	PortHandle *ordered[64];
 	for (DWORD i = 0; i < count; i++)
-		if (!PortCheck(handles[i], 0))
+	{
+		PortHandle *h = PortCheck(handles[i], 0);
+		if (!h)
 			return WAIT_FAILED;
+		if (all)
+		{
+			for (DWORD j = 0; j < i; j++)
+				if (ordered[j] == h)
+				{
+					PortSetLastError(ERROR_INVALID_PARAMETER);
+					return WAIT_FAILED;
+				}
+		}
+		ordered[i] = h;
+	}
+	if (all)
+	{
+		// Lock in canonical pointer order so simultaneous WaitForMultipleObjects(..., TRUE) calls cannot deadlock.
+		for (DWORD i = 1; i < count; i++)
+		{
+			PortHandle *key = ordered[i];
+			DWORD j = i;
+			while (j > 0 && (uintptr_t)ordered[j - 1] > (uintptr_t)key)
+			{
+				ordered[j] = ordered[j - 1];
+				j--;
+			}
+			ordered[j] = key;
+		}
+	}
 	timespec deadline;
 	if (ms != INFINITE)
 		Deadline(&deadline, ms);
@@ -383,20 +473,18 @@ extern "C" DWORD WINAPI WaitForMultipleObjects(DWORD count, const HANDLE *handle
 		pthread_mutex_unlock(&sWaitLock);
 		if (all)
 		{
+			for (DWORD i = 0; i < count; i++)
+				pthread_mutex_lock(&ordered[i]->lock);
 			bool every = true;
 			for (DWORD i = 0; i < count && every; i++)
-			{
-				PortHandle *h = (PortHandle *)handles[i];
-				pthread_mutex_lock(&h->lock);
-				every = h->kind == PORT_EVENT ? ((PortEvent *)h)->signaled : h->kind == PORT_THREAD ? ((PortThread *)h)->finished : true;
-				pthread_mutex_unlock(&h->lock);
-			}
+				every = IsReady(ordered[i]);
 			if (every)
-			{
 				for (DWORD i = 0; i < count; i++)
-					WaitForSingleObject(handles[i], 0);
+					TryAcquire(ordered[i]);
+			for (DWORD i = count; i > 0; i--)
+				pthread_mutex_unlock(&ordered[i - 1]->lock);
+			if (every)
 				return WAIT_OBJECT_0;
-			}
 		}
 		else
 		{
@@ -410,6 +498,8 @@ extern "C" DWORD WINAPI WaitForMultipleObjects(DWORD count, const HANDLE *handle
 					return WAIT_OBJECT_0 + i;
 			}
 		}
+		if (ms == 0)
+			return WAIT_TIMEOUT;
 		pthread_mutex_lock(&sWaitLock);
 		int rc = 0;
 		while (generation == sWaitGeneration && rc != ETIMEDOUT)
@@ -446,6 +536,8 @@ extern "C" HANDLE WINAPI CreateThread(LPSECURITY_ATTRIBUTES, SIZE_T stack, LPTHR
 									  LPDWORD id)
 {
 	PortThread *t = (PortThread *)PortHandleNew(PORT_THREAD, sizeof(PortThread));
+	if (!t)
+		return NULL;
 	t->start = start;
 	t->param = param;
 	t->exitCode = STILL_ACTIVE;

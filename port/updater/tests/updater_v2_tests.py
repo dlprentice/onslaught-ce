@@ -1027,9 +1027,8 @@ class UpdaterV2(unittest.TestCase):
         try:
             r = self.update(VERSIONS[3])
             self.assertEqual((v / "precious.txt").read_text(), "precious\n")
-            if PLATFORM == "linux":  # the FIFO keeps the whole entry, hard link included
-                self.assertIn(f"could not remove the old version folder {old}", r.log)
-                self.assertTrue((self.install / "versions" / old / "hardlink.txt").exists())
+            self.assertIn(f"could not remove the old version folder {old}", r.log)
+            self.assertTrue((self.install / "versions" / old / "hardlink.txt").exists())
         finally:
             if os.path.lexists(fifo):
                 os.unlink(fifo)  # tearDown's tree() would block opening it

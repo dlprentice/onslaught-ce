@@ -297,7 +297,17 @@ extern "C" int PortCeMuseumVisitReadWorld(const char *name, const void **bytes, 
     if (!gVisit.active) return 0;
     // The pause menu's Retry restarts the level without leaving it, so after a visit that loaded cleanly and then ended the same pair
     // is asked for again. A visit that failed (the latch below) and any other world (the name check) stay refused.
-    if (gVisit.ended && gVisit.loaded) { gVisit.ended = false; gVisit.loaded = false; gVisit.readMask = 0; }
+    if (gVisit.ended && gVisit.loaded) {
+        gVisit.ended = false;
+        gVisit.loaded = false;
+        gVisit.readMask = 0;
+#if defined(CE_VERSION) && !defined(CE_MUSEUM_VISIT_HOST_FIXTURE)
+        if (gVisit.installed) {
+            gVisit.generated = false;
+            PortCeMuseumAuthoredInstall();
+        }
+#endif
+    }
     if (!bytes || !length || gVisit.ended || gVisit.failed) {
         gVisit.failed = true; gMessage = kOpenFailed; return -1;
     }

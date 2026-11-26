@@ -116,7 +116,7 @@
  		mStackBase = mStack.Size();
  		Run();
 +#ifdef CE_VERSION
-+        if (!mCode) return; // the init instruction replaced and retired this script
++        if (!mCode) { for (int i = 0; i < num_args; i++) delete args[i]; return; } // the init instruction replaced and retired this script
 +#endif
  		code->mInitRun = TRUE;
  	}
@@ -126,7 +126,7 @@
  		mStackBase = mStack.Size();
  		Run();
 +#ifdef CE_VERSION
-+        if (!mCode) return; // the init instruction replaced and retired this script
++        if (!mCode) { for (int i = 0; i < num_args; i++) delete args[i]; return; } // the init instruction replaced and retired this script
 +#endif
  		code->mInitRun = TRUE;
  	}

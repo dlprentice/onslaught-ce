@@ -1,6 +1,23 @@
 --- a/world.cpp
 +++ b/world.cpp
-@@ -357,15 +357,21 @@
+@@ -146,9 +146,16 @@
+ 	w->mSet110.RemoveAll();
+ }
+ 
++#ifdef CE_VERSION
++extern "C" void PortCeScriptGuardClear(void) __attribute__((weak));
++extern "C" void PortCeScriptGuardRecordWorld(int level, bool base, bool modWorld) __attribute__((weak));
++#endif
+ //******************************************************************************************
+ void CWorld::Clear()	// FUNCTION: 0x0050ada0
+ {
++#ifdef CE_VERSION
++	if (PortCeScriptGuardClear) PortCeScriptGuardClear();
++#endif
+ 	delete INFLUENCEMAP;
+ 	INFLUENCEMAP = NULL;
+ 
+@@ -357,15 +364,21 @@
  
  	sprintf(name, "%sworld%03d.wrd", path, level);
  
@@ -24,7 +41,7 @@
  		{
  			mWorldResourcePos = -1;
  			mBaseWorldResourcePos = -1;
-@@ -373,13 +379,13 @@
+@@ -373,13 +386,13 @@
  	}
  	else
  	{
@@ -40,3 +57,18 @@
  		{
  			mWorldResourcePos = -1;
  			mBaseWorldResourcePos = -1;
+@@ -388,6 +401,14 @@
+ 		CONSOLE.Status(status);
+ 	}
+ 
++#ifdef CE_VERSION
++	if (PortCeScriptGuardRecordWorld)
++	{
++		char ceWorldKey[64];
++		sprintf(ceWorldKey, "%sworld%03d.wrd", path, level);
++		PortCeScriptGuardRecordWorld(level, base != FALSE, PortModHas(ceWorldKey));
++	}
++#endif
+ 	if (base)
+ 	{
+ 		sprintf(status, "Loading base world %d", level);

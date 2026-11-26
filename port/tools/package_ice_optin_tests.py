@@ -539,6 +539,26 @@ class IceOptInTests(unittest.TestCase):
             self.assertIn(library, gaps.call_args.args[0])
         self.assertEqual(records[0], records[1])
 
+    def test_text_chat_and_lobby_url_receipt_profile_must_match_across_targets(self):
+        for target in ("linux", "windows"):
+            self.receipts[target]["with_text_chat"] = True
+            self.receipts[target]["online_lobby_url"] = "https://lobby.example.invalid"
+        self.save_receipts()
+        ice_package.prepare(self.build)
+        self.receipts["windows"]["with_text_chat"] = False
+        self.save_receipts()
+        with self.assertRaisesRegex(SystemExit, "disagree"):
+            ice_package.prepare(self.build)
+        self.receipts["windows"]["with_text_chat"] = True
+        self.receipts["windows"]["online_lobby_url"] = "https://other.example.invalid"
+        self.save_receipts()
+        with self.assertRaisesRegex(SystemExit, "disagree"):
+            ice_package.prepare(self.build)
+        self.receipts["windows"]["with_text_chat"] = 1
+        self.save_receipts()
+        with self.assertRaisesRegex(SystemExit, "non-boolean"):
+            ice_package.prepare(self.build)
+
 
 if __name__ == "__main__":
     unittest.main()

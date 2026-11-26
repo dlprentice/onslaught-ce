@@ -77,18 +77,80 @@ bool career(const std::string &s) {
   return s.size() > 4 && lower(s.substr(s.size() - 4)) == ".bes";
 }
 bool portable(const std::string &s) {
-  if (!career(s) || s.size() > 35 || s.front() == ' ' ||
-      s[s.size() - 5] == ' ' || s[s.size() - 5] == '.')
+  if (!career(s) || s.size() >= 256 || s.front() == ' ' ||
+      s[s.size() - 5] == ' ' || s[s.size() - 5] == '.' ||
+      CeBackupFileHasDirectionMark(s.data(), s.size()))
     return false;
-  for (unsigned char c : s)
-    if (c < 32 || c >= 127 || std::strchr("<>:\"/\\|?*", c))
+  const size_t stemLen = s.size() - 4;
+  size_t units = 0;
+  std::vector<unsigned> codepoints;
+  for (size_t i = 0; i < stemLen;) {
+    unsigned char b0 = static_cast<unsigned char>(s[i++]);
+    unsigned cp = 0;
+    if (b0 < 0x80) {
+      cp = b0;
+      if (cp < 32 || cp == 127 || std::strchr("<>:\"/\\|?*", char(cp)))
+        return false;
+    } else {
+      unsigned extra = 0, minCp = 0;
+      if (b0 >= 0xc2 && b0 <= 0xdf) {
+        cp = b0 & 0x1fu;
+        extra = 1;
+        minCp = 0x80;
+      } else if (b0 >= 0xe0 && b0 <= 0xef) {
+        cp = b0 & 0x0fu;
+        extra = 2;
+        minCp = 0x800;
+      } else if (b0 >= 0xf0 && b0 <= 0xf4) {
+        cp = b0 & 0x07u;
+        extra = 3;
+        minCp = 0x10000;
+      } else
+        return false;
+      if (extra > stemLen - i)
+        return false;
+      while (extra--) {
+        unsigned char bx = static_cast<unsigned char>(s[i++]);
+        if ((bx & 0xc0u) != 0x80u)
+          return false;
+        cp = (cp << 6) | (bx & 0x3fu);
+      }
+      if (cp < minCp || cp > 0x10ffffu || (cp >= 0xd800u && cp <= 0xdfffu) ||
+          (cp >= 0x80u && cp <= 0x9fu) || CeBackupDirectionMark(cp))
+        return false;
+    }
+    units += cp >= 0x10000u ? 2u : 1u;
+    if (units > 31u)
       return false;
-  std::string head = lower(s.substr(0, s.size() - 4));
-  head = head.substr(0, head.find('.'));
-  return head != "con" && head != "prn" && head != "aux" && head != "nul" &&
-         !(head.size() == 4 &&
-           (head.substr(0, 3) == "com" || head.substr(0, 3) == "lpt") &&
-           head[3] >= '1' && head[3] <= '9');
+    codepoints.push_back(cp);
+  }
+  if (codepoints.empty())
+    return false;
+  size_t headEnd = 0;
+  while (headEnd < codepoints.size() && codepoints[headEnd] != '.')
+    ++headEnd;
+  while (headEnd > 0 && codepoints[headEnd - 1] == ' ')
+    --headEnd;
+  std::string head;
+  for (size_t i = 0; i < headEnd; ++i) {
+    unsigned cp = codepoints[i];
+    if (cp >= 'A' && cp <= 'Z')
+      head.push_back(char(cp + ('a' - 'A')));
+    else if (cp < 0x80u)
+      head.push_back(char(cp));
+    else
+      head.push_back('!');
+  }
+  if (head == "con" || head == "prn" || head == "aux" || head == "nul" ||
+      head == "conin$" || head == "conout$")
+    return false;
+  if (headEnd == 4 &&
+      (head.compare(0, 3, "com") == 0 || head.compare(0, 3, "lpt") == 0)) {
+    unsigned d = codepoints[3];
+    if ((d >= '0' && d <= '9') || d == 0xb9u || d == 0xb2u || d == 0xb3u)
+      return false;
+  }
+  return true;
 }
 bool isOsSystemSymlink(int parentFd, const char *part) {
   struct stat pst{}, lst{};

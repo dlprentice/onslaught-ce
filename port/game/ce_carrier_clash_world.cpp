@@ -151,11 +151,19 @@ bool VerifyPackedAyaFile(const char *gameRelPath, bool *outExists) {
 			ok = false;
 			break;
 		}
-		unsigned long dstLen = kAyaPackBuffer;
-		if (uncompress(unpacked, &dstLen, packed, length) != 0 ||
-		    dstLen == 0ul || dstLen > kAyaUnpackBlock) {
-			ok = false;
-			break;
+		if (blocks == 0u) {
+			unsigned long dstLen = kAyaPackBuffer;
+			if (uncompress(unpacked, &dstLen, packed, length) != 0 ||
+			    dstLen == 0ul || dstLen > kAyaUnpackBlock) {
+				ok = false;
+				break;
+			}
+		} else {
+			if (length < 2ul || (packed[0] & 0x0fu) != 8u ||
+			    ((((unsigned)packed[0] << 8) | (unsigned)packed[1]) % 31u) != 0u) {
+				ok = false;
+				break;
+			}
 		}
 		++blocks;
 	}
@@ -627,11 +635,7 @@ extern "C" bool PortCeCarrierClashPreloadMeshes(void) {
 			     PreloadRetailMeshTexture(spec.texture);
 		}
 		if (ok) {
-			char meshPath[128] = {};
-			bool exists = false;
-			std::snprintf(meshPath, sizeof(meshPath), "data\\resources\\meshes\\m_%s.aya", spec.mesh);
-			ok = VerifyPackedAyaFile(meshPath, &exists) && exists &&
-			     LoadRetailMeshFromStandaloneAya(spec.mesh, 908 + static_cast<int32_t>(i));
+			ok = LoadRetailMeshFromStandaloneAya(spec.mesh, 908 + static_cast<int32_t>(i));
 		}
 		if (ok) {
 			++supportLoaded;

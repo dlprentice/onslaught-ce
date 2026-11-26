@@ -25,7 +25,7 @@ struct Video {
  struct { U32 FrameNum=1; } pub;
  unsigned sessionId=1;char sessionAsset[121]="authored.vid";
  AVFormatContext *fmt=nullptr;std::vector<AVPacket*> packets;AVFrame*frame=nullptr;AVCodecContext*dec=nullptr;
- IDirectSoundBuffer *sound=nullptr;DWORD soundRate=0,soundBlock=0;bool started=false;LARGE_INTEGER start{};U32 played=0;
+ IDirectSoundBuffer *sound=nullptr;DWORD soundRate=0,soundBlock=0;bool started=false,soundFailed=false;LARGE_INTEGER start{};U32 played=0;
 };
 static IDirectSound8 *gSound;
 static U32 gTrack;

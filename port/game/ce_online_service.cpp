@@ -160,17 +160,28 @@ bool ParseIceUrl(const std::string &url, bool *out_is_turn, std::string *out_hos
     } else {
         return false;
     }
-    size_t q = url.find('?', pos);
+    const size_t q = url.find('?', pos);
     if (q != std::string::npos) {
+        if (!*out_is_turn) return false;
         const std::string query = url.substr(q + 1);
-        if (*out_is_turn && query != "transport=udp") return false;
+        if (query != "transport=udp") return false;
     }
-    std::string hostport = (q == std::string::npos) ? url.substr(pos) : url.substr(pos, q - pos);
-    size_t colon = hostport.rfind(':');
+    const std::string hostport = (q == std::string::npos) ? url.substr(pos) : url.substr(pos, q - pos);
+    const size_t colon = hostport.rfind(':');
     if (colon == std::string::npos || colon == 0 || colon + 1 >= hostport.size()) return false;
-    std::string host = hostport.substr(0, colon);
-    unsigned long p = std::strtoul(hostport.substr(colon + 1).c_str(), nullptr, 10);
-    if (p == 0 || p > 65535) return false;
+    const std::string host = hostport.substr(0, colon);
+    const std::string port_str = hostport.substr(colon + 1);
+    if (port_str.size() > 5 || port_str[0] == '0') return false;
+    for (char ch : port_str) {
+        if (ch < '0' || ch > '9') return false;
+    }
+    char *endptr = nullptr;
+    const unsigned long p = std::strtoul(port_str.c_str(), &endptr, 10);
+    if (!endptr || *endptr != '\0' || p == 0 || p > 65535) return false;
+    const bool allowed_host = *out_is_turn
+        ? (host == "turn.cloudflare.com" || host == "127.0.0.1")
+        : (host == "stun.cloudflare.com" || host == "127.0.0.1");
+    if (!allowed_host) return false;
     *out_host = host;
     *out_port = static_cast<uint16_t>(p);
     return true;
@@ -1435,6 +1446,9 @@ public:
     CeLiveOnlineStarBridge() = default;
     ~CeLiveOnlineStarBridge() override {
         if (transport_) transport_->Leave(0);
+        transport_.reset();
+        lobby_.reset();
+        crypto_wipe(&ticket_, sizeof(ticket_));
     }
 
     bool Init(const CE_OnlineMatchTicket &ticket, const uint8_t compat_digest[32]) {
@@ -1626,6 +1640,21 @@ public:
 private:
     static constexpr uint32_t kMaxFinishAttempts = 4;
     static constexpr uint64_t kMatchHeartbeatIntervalMs = 60000ULL;
+    static constexpr uint64_t kHostStunFallbackTimeoutMs = 15000ULL;
+
+    bool TryReauthLocalProfile(uint64_t now_ms) {
+        const char *udir = PortUserDir();
+        std::string perr;
+        const char *expected_pid = (ticket_.local_sim_slot < ticket_.slot_count)
+            ? ticket_.slots[ticket_.local_sim_slot].player_id : "";
+        if (udir && udir[0] && finish_profile_.LoadOrCreate(udir, &perr) &&
+            expected_pid[0] && finish_profile_.PlayerId() == expected_pid) {
+            lobby_->ClearSession();
+            return lobby_->BeginAuthenticate(finish_profile_, kOnlineBuildId,
+                                             ComputeContentId(), now_ms);
+        }
+        return false;
+    }
 
     struct GuestLink {
         uint16_t seat = 0;
@@ -1702,15 +1731,8 @@ private:
                     const unsigned code = lobby_->LastHttpCode();
                     if (code == 401u && !finish_reauthed_) {
                         finish_reauthed_ = true;
-                        const char *udir = PortUserDir();
-                        std::string perr;
-                        if (udir && udir[0] && finish_profile_.LoadOrCreate(udir, &perr) &&
-                            finish_profile_.PlayerId() == ticket_.slots[0].player_id) {
-                            lobby_->ClearSession();
-                            if (lobby_->BeginAuthenticate(finish_profile_, kOnlineBuildId,
-                                                          ComputeContentId(), now_ms)) {
-                                return;
-                            }
+                        if (TryReauthLocalProfile(now_ms)) {
+                            return;
                         }
                         finish_sent_ = true;
                         return;
@@ -1834,14 +1856,24 @@ private:
                 const bool authed = transport_->GetPeerInfo(g.sim_slot, pinfo) && pinfo.authenticated;
                 if (!authed) any_unauthenticated = true;
 
-                if (g.bridge_attached && !authed && transport_->IsGuestIceFailed(g.sim_slot)) {
+                const bool host_stun_timed_out =
+                    !g.require_relay && !g.retried_relay && g.bridge_attached && !authed &&
+                    g.bridge_attached_ms > 0 && now_ms >= g.bridge_attached_ms &&
+                    (now_ms - g.bridge_attached_ms >= kHostStunFallbackTimeoutMs);
+                if (g.bridge_attached && !authed &&
+                    (transport_->IsGuestIceFailed(g.sim_slot) || host_stun_timed_out)) {
                     if (!g.retried_relay && !g.require_relay) {
-                        // Per-guest automatic TURN fallback when STUN P2P fails.
+                        if (host_stun_timed_out) {
+                            fprintf(stderr, "onslaught-ce: online match host slot %u STUN pre-auth timed out; switching to TURN relay\n",
+                                    (unsigned)g.sim_slot);
+                        }
+                        // Per-guest automatic TURN fallback when STUN P2P fails or stalls pre-auth.
                         transport_->DetachGuestIceBridge(g.sim_slot);
                         g.require_relay = true;
                         g.retried_relay = true;
                         g.turn_fetched = false;
                         g.bridge_attached = false;
+                        g.bridge_attached_ms = 0;
                         g.offer_sent = false;
                         g.inflight_offer_gen = 0;
                         g.answer_applied = false;
@@ -1870,7 +1902,7 @@ private:
                             if (failed_) return;
                             continue;
                         }
-                        g.bridge_attached_ms = now_ms;
+                        g.bridge_attached_ms = now_ms ? now_ms : 1u;
                         g.pending_answer_tried = false;
                     } else if (!g.turn_fetched) {
                         active_guest_index_ = i;
@@ -2093,7 +2125,15 @@ private:
         if (op == CeOnlineOpKind::UpdateRoom || op == CeOnlineOpKind::PollRoom ||
             op == CeOnlineOpKind::Authenticate) {
             if (op == CeOnlineOpKind::Authenticate) {
-                match_lifecycle_retry_after_ms_ = (st == CeOnlineOpStatus::Completed) ? 0ULL : (now_ms + 15000ULL);
+                if (st == CeOnlineOpStatus::Completed) {
+                    match_lifecycle_retry_after_ms_ = 0ULL;
+                    signal_reauthed_ = false;
+                } else {
+                    match_lifecycle_retry_after_ms_ = now_ms + 15000ULL;
+                    if (!IsConnected()) {
+                        RecordSignalFailure(now_ms, "reauth");
+                    }
+                }
                 return;
             }
             if (st == CeOnlineOpStatus::Completed) {
@@ -2111,15 +2151,8 @@ private:
             const unsigned code = lobby_->LastHttpCode();
             if (code == 401u && !room_in_match_reauthed_) {
                 room_in_match_reauthed_ = true;
-                const char *udir = PortUserDir();
-                std::string perr;
-                if (udir && udir[0] && finish_profile_.LoadOrCreate(udir, &perr) &&
-                    finish_profile_.PlayerId() == ticket_.slots[0].player_id) {
-                    lobby_->ClearSession();
-                    if (lobby_->BeginAuthenticate(finish_profile_, kOnlineBuildId,
-                                                  ComputeContentId(), now_ms)) {
-                        return;
-                    }
+                if (TryReauthLocalProfile(now_ms)) {
+                    return;
                 }
             }
             if (op == CeOnlineOpKind::UpdateRoom) {
@@ -2144,6 +2177,15 @@ private:
             return;
         }
         if (st != CeOnlineOpStatus::Completed) {
+            if (lobby_->LastHttpCode() == 401u && !signal_reauthed_) {
+                signal_reauthed_ = true;
+                if (is_host_ && op_guest >= 0 && static_cast<size_t>(op_guest) < expected_guests_.size()) {
+                    expected_guests_[static_cast<size_t>(op_guest)].inflight_offer_gen = 0;
+                }
+                if (TryReauthLocalProfile(now_ms)) {
+                    return;
+                }
+            }
             if (is_host_ && op_guest >= 0) {
                 if (static_cast<size_t>(op_guest) < expected_guests_.size()) {
                     expected_guests_[static_cast<size_t>(op_guest)].inflight_offer_gen = 0;
@@ -2423,6 +2465,7 @@ private:
     uint64_t finish_retry_after_ms_ = 0;
     bool room_in_match_promoted_ = false;
     bool room_in_match_reauthed_ = false;
+    bool signal_reauthed_ = false;
     bool match_heartbeat_stopped_ = false;
     uint32_t room_in_match_failures_ = 0;
     uint64_t match_lifecycle_retry_after_ms_ = 0;
@@ -2482,7 +2525,7 @@ extern "C" int PortCeOnlineServiceAttachMatchBridge(const uint8_t compat_digest[
 }
 
 extern "C" void PortCeOnlineServiceFinishMatch(int won) {
-    if (!gMatchResultRecorded) {
+    if (won >= 0 && !gMatchResultRecorded) {
         gMatchResultRecorded = true;
         const char *user_dir = PortUserDir();
         if (user_dir && user_dir[0]) {

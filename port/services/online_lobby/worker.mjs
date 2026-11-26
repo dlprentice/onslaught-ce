@@ -31,6 +31,13 @@ const CHAT_RATE_MAX = 5;
 const CHAT_RATE_WINDOW_MS = 10000;
 const SIGNAL_MAX_SDP_BYTES = 4096;
 const SIGNAL_RING_LIMIT = 256;
+const SIGNAL_RATE_MAX = 20;
+const SIGNAL_RATE_WINDOW_MS = 60000;
+const SIGNAL_PAGE_MAX_MESSAGES = 16;
+const SIGNAL_PAGE_MAX_BYTES = 48 * 1024;
+const JOIN_PW_RATE_MAX = 5;
+const JOIN_PW_RATE_WINDOW_MS = 60000;
+const ROOM_PW_PBKDF2_ITERS = 100000;
 const MAX_TURN_PER_PAIR_PER_MATCH = 4;
 
 const MAP_MODES = new Map([
@@ -558,11 +565,54 @@ async function hashClientIp(request, env) {
 }
 
 async function hashRoomPassword(saltHex, password) {
-  return sha256Hex(encoder.encode(`onslaught-ce-room-pw-v1\0${saltHex}\0${password}`));
+  const keyMaterial = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(password),
+    "PBKDF2",
+    false,
+    ["deriveBits"]
+  );
+  const bits = await crypto.subtle.deriveBits(
+    {
+      name: "PBKDF2",
+      hash: "SHA-256",
+      salt: encoder.encode(`onslaught-ce-room-pw-v2\0${saltHex}`),
+      iterations: ROOM_PW_PBKDF2_ITERS,
+    },
+    keyMaterial,
+    256
+  );
+  return `pbkdf2$${ROOM_PW_PBKDF2_ITERS}$${hex(new Uint8Array(bits))}`;
 }
 
 async function verifyRoomPassword(saltHex, expectedHashHex, candidatePassword) {
-  const actual = await hashRoomPassword(saltHex, candidatePassword);
+  let actual;
+  if (typeof expectedHashHex === "string" && expectedHashHex.startsWith("pbkdf2$")) {
+    const parts = expectedHashHex.split("$");
+    if (parts.length !== 3) return false;
+    const iters = Number(parts[1]);
+    if (!Number.isSafeInteger(iters) || iters < 1000 || iters > ROOM_PW_PBKDF2_ITERS) return false;
+    const keyMaterial = await crypto.subtle.importKey(
+      "raw",
+      encoder.encode(candidatePassword),
+      "PBKDF2",
+      false,
+      ["deriveBits"]
+    );
+    const bits = await crypto.subtle.deriveBits(
+      {
+        name: "PBKDF2",
+        hash: "SHA-256",
+        salt: encoder.encode(`onslaught-ce-room-pw-v2\0${saltHex}`),
+        iterations: iters,
+      },
+      keyMaterial,
+      256
+    );
+    actual = `pbkdf2$${iters}$${hex(new Uint8Array(bits))}`;
+  } else {
+    actual = await sha256Hex(encoder.encode(`onslaught-ce-room-pw-v1\0${saltHex}\0${candidatePassword}`));
+  }
   const a = encoder.encode(actual);
   const b = encoder.encode(expectedHashHex);
   if (a.length !== b.length) return false;
@@ -1322,13 +1372,18 @@ export class LobbyDirectory extends DurableObject {
         content_id TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
-        last_heartbeat_ms INTEGER NOT NULL
+        last_heartbeat_ms INTEGER NOT NULL,
+        rev INTEGER NOT NULL DEFAULT 0
       );
       CREATE TABLE IF NOT EXISTS turn_budgets (
         period_key TEXT PRIMARY KEY,
         used INTEGER NOT NULL
       );
     `);
+    const roomCols = sql.exec("PRAGMA table_info(rooms)").toArray().map(r => r.name);
+    if (!roomCols.includes("rev")) {
+      sql.exec("ALTER TABLE rooms ADD COLUMN rev INTEGER NOT NULL DEFAULT 0");
+    }
   }
 
   heartbeatTimeoutMs() {
@@ -1511,10 +1566,10 @@ export class LobbyDirectory extends DurableObject {
             `INSERT INTO rooms(
               room_id, code, name, host_player_id, host_callsign, host_tag, topology, mode, map,
               used_seats, human_seats, max_seats, visibility, has_password, require_relay, state,
-              proto, build_id, content_id, created_at, updated_at, last_heartbeat_ms
+              proto, build_id, content_id, created_at, updated_at, last_heartbeat_ms, rev
             ) VALUES(?, ?, '', ?, '', '', 'star_lockstep', 'coop_skirmish', 850,
                      1, 1, 2, 'unlisted', 0, 0, 'initializing',
-                     ?, '', '', ?, ?, ?)`,
+                     ?, '', '', ?, ?, ?, 0)`,
             roomId, code, playerId, PROTO_VERSION, now, now, nowMs
           );
           return { ok: true, room_id: roomId, code };
@@ -1563,7 +1618,7 @@ export class LobbyDirectory extends DurableObject {
       }
       this.pruneStaleRooms(this.effectivePruneMs(nowMs, observedAtMs));
       const rows = this.ctx.storage.sql.exec(
-        "SELECT code, state, last_heartbeat_ms FROM rooms WHERE room_id = ?",
+        "SELECT code, state, rev, last_heartbeat_ms FROM rooms WHERE room_id = ?",
         summary.room_id
       ).toArray();
       if (rows.length === 0 || rows[0].code !== summary.code ||
@@ -1573,6 +1628,15 @@ export class LobbyDirectory extends DurableObject {
       const nextHb = (Number.isSafeInteger(summary.last_heartbeat_ms) && summary.last_heartbeat_ms > 0)
         ? Math.min(nowMs, summary.last_heartbeat_ms)
         : nowMs;
+      const incomingRev = integer(summary.rev) ? summary.rev : 0;
+      const currentRev = Number(rows[0].rev || 0);
+      if (currentRev > 0 && incomingRev < currentRev) {
+        this.ctx.storage.sql.exec(
+          "UPDATE rooms SET last_heartbeat_ms = MAX(last_heartbeat_ms, ?) WHERE room_id = ? AND code = ?",
+          nextHb, summary.room_id, summary.code
+        );
+        return { ok: true, owned: true, stale: true };
+      }
       this.ctx.storage.sql.exec(
         `UPDATE rooms SET
           name = ?,
@@ -1594,14 +1658,15 @@ export class LobbyDirectory extends DurableObject {
           content_id = ?,
           created_at = ?,
           updated_at = ?,
-          last_heartbeat_ms = ?
-         WHERE room_id = ? AND code = ?`,
+          last_heartbeat_ms = MAX(last_heartbeat_ms, ?),
+          rev = ?
+         WHERE room_id = ? AND code = ? AND rev <= ?`,
         summary.name, summary.host_player_id, summary.host_callsign, summary.host_tag,
         summary.topology, summary.mode, summary.map, summary.used_seats, summary.human_seats,
         summary.max_seats, summary.visibility, summary.has_password ? 1 : 0,
         summary.require_relay ? 1 : 0, summary.state, PROTO_VERSION,
         summary.build_id, summary.content_id, summary.created_at, summary.updated_at,
-        nextHb, summary.room_id, summary.code
+        nextHb, incomingRev, summary.room_id, summary.code, incomingRev
       );
       return { ok: true, owned: true };
     });
@@ -1789,6 +1854,7 @@ export class GameRoom extends DurableObject {
       created_at: room.created_at,
       updated_at: room.updated_at,
       last_heartbeat_ms: room.last_heartbeat_ms,
+      rev: room.rev,
     };
   }
 
@@ -1839,7 +1905,7 @@ export class GameRoom extends DurableObject {
 
   formatRoomState(room, isMember) {
     let ticket = null;
-    if (room.start_ticket) {
+    if (isMember && room.start_ticket) {
       ticket = {
         match_id: room.start_ticket.match_id,
         seed: room.start_ticket.seed,
@@ -1848,7 +1914,7 @@ export class GameRoom extends DurableObject {
         topology: room.start_ticket.topology,
         require_relay: room.start_ticket.require_relay,
         roster_hash: room.start_ticket.roster_hash,
-        match_secret: isMember ? room.start_ticket.match_secret : "",
+        match_secret: room.start_ticket.match_secret,
         issued_at: room.start_ticket.issued_at,
         expires_at: room.start_ticket.expires_at,
         slots: room.start_ticket.slots,
@@ -1857,7 +1923,7 @@ export class GameRoom extends DurableObject {
     return {
       proto: PROTO_VERSION,
       room_id: room.room_id,
-      code: room.code,
+      code: (isMember || room.visibility === "public") ? room.code : "",
       rev: room.rev,
       state: room.state,
       name: room.name,
@@ -1877,7 +1943,7 @@ export class GameRoom extends DurableObject {
       seats: room.seats.map(s => ({
         seat: s.seat,
         kind: s.kind,
-        player_id: s.player_id,
+        player_id: isMember ? s.player_id : "",
         tag: s.tag,
         callsign: s.callsign,
         team: s.team,
@@ -1886,7 +1952,7 @@ export class GameRoom extends DurableObject {
         rtt_ms: s.rtt_ms,
         route: s.route,
       })),
-      chat: room.chat,
+      chat: isMember ? room.chat : [],
       start_ticket: ticket,
     };
   }
@@ -1953,9 +2019,11 @@ export class GameRoom extends DurableObject {
         chat_seq: 0,
         chat: [],
         chat_rates: {},
+        join_pw_rates: {},
         start_ticket: null,
         signal_seq: 0,
         signals: [],
+        signal_rates: {},
         permits: {},
         turn_counts: {},
       };
@@ -1991,8 +2059,11 @@ export class GameRoom extends DurableObject {
         return { ok: false, httpStatus: 403, errorCode: "kicked", message: "You were kicked from this room." };
       }
       const member = this.findMemberSeat(room, session.player_id);
+      if (!member) {
+        return { ok: false, httpStatus: 403, errorCode: "not_a_member", message: "You are not seated in this room." };
+      }
       let touchDir = false;
-      if (member) {
+      {
         let dirty = false;
         if (rttMs !== null && member.rtt_ms !== rttMs) {
           member.rtt_ms = rttMs;
@@ -2093,6 +2164,18 @@ export class GameRoom extends DurableObject {
           message: "Game build or content version does not match the room.",
         };
       }
+      if (room.has_password) {
+        const pwHist = ((room.join_pw_rates && room.join_pw_rates[session.player_id]) || [])
+          .filter(ts => preMs - ts < JOIN_PW_RATE_WINDOW_MS);
+        if (pwHist.length >= JOIN_PW_RATE_MAX) {
+          return {
+            ok: false,
+            httpStatus: 429,
+            errorCode: "rate_limited",
+            message: "Too many failed room password attempts. Please wait.",
+          };
+        }
+      }
       return {
         ok: true,
         alreadyMember: false,
@@ -2117,6 +2200,17 @@ export class GameRoom extends DurableObject {
     if (pre.has_password) {
       const matched = await verifyRoomPassword(pre.password_salt, pre.password_hash, payload.password);
       if (!matched) {
+        const failMs = Date.now();
+        this.ctx.storage.transactionSync(() => {
+          const room = this.readRoom();
+          if (!room || room.state === "expired" || room.state === "closed") return;
+          if (!room.join_pw_rates) room.join_pw_rates = {};
+          const hist = (room.join_pw_rates[session.player_id] || [])
+            .filter(ts => failMs - ts < JOIN_PW_RATE_WINDOW_MS);
+          hist.push(failMs);
+          room.join_pw_rates[session.player_id] = hist;
+          this.writeRoom(room);
+        });
         return { ok: false, httpStatus: 403, errorCode: "wrong_password", message: "Incorrect room password." };
       }
     }
@@ -2584,11 +2678,14 @@ export class GameRoom extends DurableObject {
 
       room.rev++;
       room.updated_at = nowSeconds();
-      room.last_heartbeat_ms = nowMs;
-      room.last_dir_heartbeat_ms = nowMs;
+      if (isHost) {
+        room.last_heartbeat_ms = nowMs;
+        room.last_dir_heartbeat_ms = nowMs;
+      }
       this.writeRoom(room);
       return {
         ok: true,
+        touchDir: isHost,
         roomId: room.room_id,
         code: room.code,
         state: this.formatRoomState(room, true),
@@ -2601,7 +2698,9 @@ export class GameRoom extends DurableObject {
     }
     const dirRes = res.syncRoom
       ? await this.syncDirectory(res.syncRoom, nowMs)
-      : await directoryStub(this.env).touchHeartbeat(res.roomId, res.code, nowMs);
+      : (res.touchDir
+        ? await directoryStub(this.env).touchHeartbeat(res.roomId, res.code, nowMs)
+        : await directoryStub(this.env).hasRoomOwnership(res.roomId, res.code, nowMs));
     if (!dirRes.ok) {
       this.expireRoomNow();
       return { ok: false, httpStatus: 404, errorCode: "room_not_found", message: "Room has expired." };
@@ -2814,6 +2913,7 @@ export class GameRoom extends DurableObject {
       room.start_ticket = ticket;
       room.signal_seq = 0;
       room.signals = [];
+      room.signal_rates = {};
       room.permits = {};
       room.turn_counts = {};
       room.rev++;
@@ -2881,6 +2981,7 @@ export class GameRoom extends DurableObject {
       room.start_ticket = null;
       room.signals = [];
       room.signal_seq = 0;
+      room.signal_rates = {};
       room.permits = {};
       room.turn_counts = {};
       for (const s of room.seats) s.ready = false;
@@ -2943,7 +3044,22 @@ export class GameRoom extends DurableObject {
       if (payload.from_seat !== room.host_seat && payload.to_seat !== room.host_seat) {
         return { ok: false, httpStatus: 400, errorCode: "star_topology_only", message: "Signals must travel between host and guest." };
       }
+      const isHost = member.seat === room.host_seat;
+      if ((payload.kind === "offer" && !isHost) || (payload.kind === "answer" && isHost)) {
+        return { ok: false, httpStatus: 403, errorCode: "invalid_signal_direction", message: "Host sends offers and guests send answers." };
+      }
+      if (!room.signal_rates) room.signal_rates = {};
+      const sigHist = (room.signal_rates[session.player_id] || []).filter(ts => nowMs - ts < SIGNAL_RATE_WINDOW_MS);
+      if (sigHist.length >= SIGNAL_RATE_MAX) {
+        return { ok: false, httpStatus: 429, errorCode: "rate_limited", message: "Signal rate limit exceeded." };
+      }
+      sigHist.push(nowMs);
+      room.signal_rates[session.player_id] = sigHist;
+
       room.signal_seq++;
+      room.signals = room.signals.filter(
+        m => !(m.from_seat === payload.from_seat && m.to_seat === payload.to_seat && m.kind === payload.kind)
+      );
       room.signals.push({
         seq: room.signal_seq,
         from_seat: payload.from_seat,
@@ -2955,16 +3071,20 @@ export class GameRoom extends DurableObject {
       if (room.signals.length > SIGNAL_RING_LIMIT) {
         room.signals.splice(0, room.signals.length - SIGNAL_RING_LIMIT);
       }
-      room.last_heartbeat_ms = nowMs;
-      room.last_dir_heartbeat_ms = nowMs;
+      if (isHost) {
+        room.last_heartbeat_ms = nowMs;
+        room.last_dir_heartbeat_ms = nowMs;
+      }
       this.writeRoom(room);
-      return { ok: true, seq: room.signal_seq, roomId: room.room_id, code: room.code };
+      return { ok: true, touchDir: isHost, seq: room.signal_seq, roomId: room.room_id, code: room.code };
     });
     if (!res.ok) {
       if (res.justExpired) await this.evictDirectoryForExpired(res.roomId, res.code);
       return res;
     }
-    const hb = await directoryStub(this.env).touchHeartbeat(res.roomId, res.code, nowMs);
+    const hb = res.touchDir
+      ? await directoryStub(this.env).touchHeartbeat(res.roomId, res.code, nowMs)
+      : await directoryStub(this.env).hasRoomOwnership(res.roomId, res.code, nowMs);
     if (!hb.ok) {
       this.expireRoomNow();
       return { ok: false, httpStatus: 404, errorCode: "room_not_found", message: "Room has expired." };
@@ -2999,26 +3119,46 @@ export class GameRoom extends DurableObject {
       if (matchId !== room.start_ticket.match_id) {
         return { ok: false, httpStatus: 409, errorCode: "match_mismatch", message: "Match identifier does not match active match." };
       }
-      const messages = room.signals
-        .filter(m => m.to_seat === member.seat && m.seq > since)
-        .map(m => ({
+      const messages = [];
+      let approxBytes = 64;
+      for (const m of room.signals) {
+        if (m.to_seat !== member.seat || m.seq <= since) continue;
+        const item = {
           seq: m.seq,
           from_seat: m.from_seat,
           to_seat: m.to_seat,
           kind: m.kind,
           sdp: m.sdp,
-        }));
+        };
+        const itemBytes = JSON.stringify(item).length + 2;
+        if (messages.length >= SIGNAL_PAGE_MAX_MESSAGES ||
+            (messages.length > 0 && approxBytes + itemBytes > SIGNAL_PAGE_MAX_BYTES)) {
+          break;
+        }
+        messages.push(item);
+        approxBytes += itemBytes;
+      }
       const seq = messages.length > 0 ? messages[messages.length - 1].seq : since;
-      room.last_heartbeat_ms = nowMs;
-      room.last_dir_heartbeat_ms = nowMs;
-      this.writeRoom(room);
-      return { ok: true, seq, messages, roomId: room.room_id, code: room.code };
+      const isHost = member.seat === room.host_seat;
+      let touchDir = false;
+      if (isHost) {
+        const hbInterval = Math.min(10000, Math.floor(roomStateTimeoutMs(this.env, room.state) / 3));
+        if (!room.last_dir_heartbeat_ms || (nowMs - room.last_dir_heartbeat_ms >= hbInterval)) {
+          room.last_heartbeat_ms = nowMs;
+          room.last_dir_heartbeat_ms = nowMs;
+          this.writeRoom(room);
+          touchDir = true;
+        }
+      }
+      return { ok: true, touchDir, seq, messages, roomId: room.room_id, code: room.code };
     });
     if (!res.ok) {
       if (res.justExpired) await this.evictDirectoryForExpired(res.roomId, res.code);
       return res;
     }
-    const hb = await directoryStub(this.env).touchHeartbeat(res.roomId, res.code, nowMs);
+    const hb = res.touchDir
+      ? await directoryStub(this.env).touchHeartbeat(res.roomId, res.code, nowMs)
+      : await directoryStub(this.env).hasRoomOwnership(res.roomId, res.code, nowMs);
     if (!hb.ok) {
       this.expireRoomNow();
       return { ok: false, httpStatus: 404, errorCode: "room_not_found", message: "Room has expired." };
@@ -3127,16 +3267,21 @@ export class GameRoom extends DurableObject {
         ttl,
       };
       room.permits[permit.attempt] = { state: "reserved", spent: false, permit, ip_hash: ipHash || "" };
-      room.last_heartbeat_ms = nowMs;
-      room.last_dir_heartbeat_ms = nowMs;
+      const isHost = member.seat === room.host_seat;
+      if (isHost) {
+        room.last_heartbeat_ms = nowMs;
+        room.last_dir_heartbeat_ms = nowMs;
+      }
       this.writeRoom(room);
-      return { ok: true, permit, roomId: room.room_id, code: room.code };
+      return { ok: true, touchDir: isHost, permit, roomId: room.room_id, code: room.code };
     });
     if (!reservation.ok) {
       if (reservation.justExpired) await this.evictDirectoryForExpired(reservation.roomId, reservation.code);
       return reservation;
     }
-    const hb = await directoryStub(this.env).touchHeartbeat(reservation.roomId, reservation.code, nowMs);
+    const hb = reservation.touchDir
+      ? await directoryStub(this.env).touchHeartbeat(reservation.roomId, reservation.code, nowMs)
+      : await directoryStub(this.env).hasRoomOwnership(reservation.roomId, reservation.code, nowMs);
     if (!hb.ok) {
       this.expireRoomNow();
       return { ok: false, httpStatus: 404, errorCode: "room_not_found", message: "Room has expired." };

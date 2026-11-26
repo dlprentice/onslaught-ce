@@ -34,12 +34,14 @@
  //*********************************************************************************
  // FUNCTION: 0x0051dba0
  BOOL	CFEPMultiplayerStart::Init()
-@@ -120,7 +123,11 @@
+@@ -120,7 +123,13 @@
  // FUNCTION: 0x0051de60
  void	CFEPMultiplayerStart::ButtonPressed(SINT button, float val)
  {
 +#ifdef CE_VERSION
-+	if (!(PortCeSoloSkirmishActive && PortCeSoloSkirmishActive()) && (RECONNECT_INTERFACE[1].GetState() != CReconnectInterface::OK))
++	if (!(PortCeSoloSkirmishActive && PortCeSoloSkirmishActive()) &&
++	    (RECONNECT_INTERFACE[1].GetState() != CReconnectInterface::OK) &&
++	    !((button == BUTTON_FRONTEND_MENU_BACK) && (FRONTEND.mReceivingButtonActionPort == mPort[0])))
 +#else
  	if (RECONNECT_INTERFACE[1].GetState() != CReconnectInterface::OK)
 +#endif
@@ -82,23 +84,24 @@
  			if (port != -1)
 --- a/PauseMenu.cpp
 +++ b/PauseMenu.cpp
-@@ -90,6 +90,9 @@
+@@ -90,6 +90,10 @@
  static CMenuMenuItem	*sShadowDetail;	static CMenuMenuItem	*sTreeDetail;	// 0082b48c, 0082b488 (the constructor sets them)
  // FUNCTION: 0x004cddc0 init:SCREEN_SHAPE
  // FUNCTION: 0x004cdde0 exit:SCREEN_SHAPE
 +#ifdef CE_VERSION
 +extern "C" int PortCeSoloSkirmishActive(void) __attribute__((weak));
++extern "C" int PortCeSoloControlsActive(void) __attribute__((weak));
 +#endif
  CTweakSLONG	SCREEN_SHAPE("SCREEN_SHAPE", 0);
  
  // FUNCTION: 0x004cddf0
-@@ -1808,8 +1811,13 @@
+@@ -1808,8 +1812,13 @@
  {
  	if (!AllControlBindingsSet(0))
  		return Localization_GetStringById(0xe8);
 +#ifdef CE_VERSION
 +	if ((GAME.GetGameState() >= GAME_STATE_PRE_RUNNING) && (GAME.GetGameState() < GAME_STATE_QUIT) && GAME.IsMultiplayer() &&
-+		!(PortCeSoloSkirmishActive && PortCeSoloSkirmishActive()) && (!AllControlBindingsSet(1)))
++		!(PortCeSoloControlsActive && PortCeSoloControlsActive()) && (!AllControlBindingsSet(1)))
 +#else
  	if ((GAME.GetGameState() >= GAME_STATE_PRE_RUNNING) && (GAME.GetGameState() < GAME_STATE_QUIT) && GAME.IsMultiplayer() &&
  		(!AllControlBindingsSet(1)))

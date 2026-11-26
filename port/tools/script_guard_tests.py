@@ -170,7 +170,16 @@ class ScriptGuardTests(unittest.TestCase):
 
     def test_the_guard_calls_only_the_two_things_the_driver_fakes(self):
         calls = set(re.findall(r"\b(Port[A-Za-z]+)\s*\(", self.source))
-        self.assertEqual({"PortModHas", "PortSessionLog", "PortCeScriptDeferNested", "PortCeScriptDeferred"}, calls)
+        self.assertEqual({
+            "PortModHas",
+            "PortSessionLog",
+            "PortModLevelSupplied",
+            "PortCeScriptGuardClear",
+            "PortCeScriptGuardNoteModFile",
+            "PortCeScriptGuardRecordWorld",
+            "PortCeScriptDeferNested",
+            "PortCeScriptDeferred",
+        }, calls)
 
     def test_the_patch_applies_alone_to_the_raw_source_without_fuzz_and_a_build_without_CE_VERSION_reads_the_raw_text(self):
         if shutil.which("patch") is None:
@@ -221,6 +230,72 @@ class ScriptGuardTests(unittest.TestCase):
             if not patch_problems(self.patch.replace(old, new)):
                 survivors.append(name)
         self.assertEqual([], survivors)
+
+    def test_load_time_provenance_latch_holds_across_mid_level_mod_removal(self):
+        driver = """
+#include "ce_script_guard.h"
+#include "mods.h"
+#include "portlog.h"
+#include <stdio.h>
+#include <string.h>
+
+extern "C" void PortCeScriptGuardClear(void);
+extern "C" void PortCeScriptGuardNoteModFile(const char *key);
+extern "C" void PortCeScriptGuardRecordWorld(int level, bool base, bool modWorld);
+
+static bool gModPresent = false;
+static const char *gModPath = "";
+bool PortModHas(const char *p) { return gModPresent && strcmp(p, gModPath) == 0; }
+void PortSessionLog(PortSessionCategory, bool, const char *, ...) {}
+
+int main() {
+    // 1. Primary world supplied by mod at load time, then mod removed mid-level.
+    PortCeScriptGuardClear();
+    gModPresent = true; gModPath = "data/worlds/world856.wrd";
+    PortCeScriptGuardRecordWorld(856, false, true);
+    gModPresent = false;
+    if (!PortModLevelSupplied(856)) return 1;
+    if (!PortCeScriptDeferNested(856, "startedDying")) return 2;
+
+    // 2. Clear resets latch so stock reload is not guarded.
+    PortCeScriptGuardClear();
+    PortCeScriptGuardRecordWorld(856, false, false);
+    if (PortModLevelSupplied(856)) return 3;
+
+    // 3. Base world supplied by mod (loaded before primary) latches primary too.
+    PortCeScriptGuardClear();
+    gModPresent = true; gModPath = "data/worlds/world100.wrd";
+    PortCeScriptGuardRecordWorld(100, true, true);
+    PortCeScriptGuardRecordWorld(200, false, false);
+    gModPresent = false;
+    if (!PortModLevelSupplied(200)) return 4;
+    if (!PortModLevelSupplied(100)) return 5;
+
+    // 4. Primary loaded first, then base world supplied by mod.
+    PortCeScriptGuardClear();
+    PortCeScriptGuardRecordWorld(201, false, false);
+    PortCeScriptGuardRecordWorld(101, true, true);
+    if (!PortModLevelSupplied(201)) return 6;
+
+    // 5. Served .aya noted via PortCeScriptGuardNoteModFile before RecordWorld.
+    PortCeScriptGuardClear();
+    PortCeScriptGuardNoteModFile("data/resources/305_res_PC.aya");
+    PortCeScriptGuardRecordWorld(305, false, false);
+    if (!PortModLevelSupplied(305)) return 7;
+    return 0;
+}
+"""
+        with tempfile.TemporaryDirectory(prefix="script-guard-latch-") as folder:
+            drv = Path(folder) / "latch_driver.cpp"
+            exe = Path(folder) / "latch_driver"
+            drv.write_text(driver)
+            done = subprocess.run(
+                [CXX, "-std=gnu++17", "-O0", "-Wall", "-Wextra", "-I", str(COMMON), str(drv), str(GUARD), "-o", str(exe)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(0, done.returncode, done.stderr)
+            run = subprocess.run([str(exe)], capture_output=True, text=True)
+            self.assertEqual(0, run.returncode, f"latch driver exited {run.returncode}: {run.stdout}{run.stderr}")
 
 
 if __name__ == "__main__":

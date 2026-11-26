@@ -59,7 +59,7 @@ bool Allowed()
 void InitialChoice()
 {
     if (requested < 0)
-        requested = CE_SettingGetBool("terrain_detail_distance", 0) ? 1 : 0;
+        requested = CE_SettingGetBool("terrain_detail_distance", 1) ? 1 : 0;
 }
 
 void Increment(unsigned &value)

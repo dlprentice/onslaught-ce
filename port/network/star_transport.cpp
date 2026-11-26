@@ -26,6 +26,7 @@ namespace {
 constexpr uint32_t kOuterMagic = 0x43455331u; // "CES1"
 constexpr size_t kOuterHeaderBytes = 28;    // magic(4) + flags(1) + chan(1) + slot(2) + seq(4) + session_id(16)
 constexpr size_t kAeadTagBytes = 16;
+constexpr size_t kMaxDatagramBytes = 1200;
 constexpr size_t kMaxWirePacketBytes = kOuterHeaderBytes + CeStarWire::kFrameHeaderBytes + CE_STAR_MAX_FRAME_PAYLOAD + kAeadTagBytes;
 constexpr size_t kMaxEventQueue = 512;
 constexpr size_t kMaxChatEventQueue = 64;
@@ -37,6 +38,79 @@ constexpr uint8_t kFlagFromHost = 0x02u;
 constexpr uint16_t kTlvVersion = 1;
 
 std::atomic<unsigned> gEnetUsers{0};
+thread_local CeStarTransport* gPollingStar = nullptr;
+thread_local uint64_t gPollingNowMs = 0;
+
+uint32_t ReadBE16(const uint8_t* p) noexcept {
+    return (static_cast<uint32_t>(p[0]) << 8) | p[1];
+}
+
+uint32_t DatagramCommands(const uint8_t* data, uint32_t size) noexcept {
+    if (!data || size < 2 || size > kMaxDatagramBytes) return 0;
+    const uint32_t flags = ReadBE16(data);
+    // Compression and ENet checksums are not enabled on this transport; refuse decompression allocation paths.
+    if (flags & ENET_PROTOCOL_HEADER_FLAG_COMPRESSED) return 0;
+    uint32_t at = (flags & ENET_PROTOCOL_HEADER_FLAG_SENT_TIME) ? 4u : 2u;
+    uint32_t count = 0;
+    static const uint32_t kCmdSizes[] = {
+        0u,
+        sizeof(ENetProtocolAcknowledge),
+        sizeof(ENetProtocolConnect),
+        sizeof(ENetProtocolVerifyConnect),
+        sizeof(ENetProtocolDisconnect),
+        sizeof(ENetProtocolPing),
+        sizeof(ENetProtocolSendReliable),
+        sizeof(ENetProtocolSendUnreliable),
+        sizeof(ENetProtocolSendFragment),
+        sizeof(ENetProtocolSendUnsequenced),
+        sizeof(ENetProtocolBandwidthLimit),
+        sizeof(ENetProtocolThrottleConfigure),
+        sizeof(ENetProtocolSendFragment)
+    };
+    while (at < size) {
+        if (size - at < sizeof(ENetProtocolCommandHeader) || ++count > ENET_PROTOCOL_MAXIMUM_PACKET_COMMANDS)
+            return 0;
+        const uint32_t kind = data[at] & ENET_PROTOCOL_COMMAND_MASK;
+        if (!kind || kind >= ENET_PROTOCOL_COMMAND_COUNT || kCmdSizes[kind] > size - at) return 0;
+        uint32_t payload = 0;
+        if (kind == ENET_PROTOCOL_COMMAND_SEND_RELIABLE) {
+            payload = ReadBE16(data + at + 4);
+        } else if (kind == ENET_PROTOCOL_COMMAND_SEND_UNRELIABLE ||
+                   kind == ENET_PROTOCOL_COMMAND_SEND_UNSEQUENCED ||
+                   kind == ENET_PROTOCOL_COMMAND_SEND_FRAGMENT ||
+                   kind == ENET_PROTOCOL_COMMAND_SEND_UNRELIABLE_FRAGMENT) {
+            payload = ReadBE16(data + at + 6);
+        }
+        at += kCmdSizes[kind];
+        if (payload > size - at) return 0;
+        at += payload;
+    }
+    return at == size ? count : 0;
+}
+
+uint32_t ListCount(ENetList* list, uint32_t limit) noexcept {
+    uint32_t count = 0;
+    for (ENetListIterator i = enet_list_begin(list); i != enet_list_end(list); i = enet_list_next(i)) {
+        if (++count > limit) break;
+    }
+    return count;
+}
+
+uint32_t IncomingMetadata(ENetHost* host, uint32_t limit) noexcept {
+    uint32_t count = 0;
+    for (size_t i = 0; i < host->peerCount; ++i) {
+        ENetPeer* p = &host->peers[i];
+        count += ListCount(&p->acknowledgements, limit);
+        count += ListCount(&p->dispatchedCommands, limit);
+        for (size_t j = 0; j < p->channelCount; ++j) {
+            count += ListCount(&p->channels[j].incomingReliableCommands, limit);
+            count += ListCount(&p->channels[j].incomingUnreliableCommands, limit);
+            if (count > limit) return count;
+        }
+        if (count > limit) return count;
+    }
+    return count;
+}
 
 void AcquireEnet(bool& ok) {
     ok = false;
@@ -470,14 +544,109 @@ bool CeStarTransport::Init(const CeStarConfig& config, CeStarError* out_error) {
             ENetPeer* p = enet_host_connect(host_, &remote, kChannelCount, 0);
             if (!p) return fail(CeStarError::Io);
             enet_peer_ping_interval(p, 500);
+            ConfigurePeerTimeouts(p);
             slots_[0].peer = p;
             slots_[0].route = CeStarRoute::Direct;
             guest_connect_started_ = true;
         }
     }
 
+    const size_t peer_count = (config_.role == CeStarRole::Host)
+        ? static_cast<size_t>(config_.max_guests) : 1u;
+    const uint64_t scale = std::min<uint64_t>(peer_count, 8u);
+    packet_burst_ = 256u * scale;
+    packet_rate_ = 1024u * scale;
+    byte_burst_ = 128u * 1024u * scale;
+    byte_rate_ = 512u * 1024u * scale;
+    packet_credit_ = packet_burst_ * 1000u;
+    byte_credit_ = byte_burst_ * 1000u;
+    incoming_metadata_limit_ = static_cast<uint32_t>(1024u * scale);
+    ingress_inited_ = false;
+    ingress_at_ms_ = 0;
+
+    host_->mtu = kMaxDatagramBytes;
+    host_->maximumPacketSize = kMaxWirePacketBytes;
+    host_->maximumWaitingData = std::min<size_t>(
+        512u * 1024u,
+        std::max<size_t>(kMaxWirePacketBytes * 2u, peer_count * 64u * 1024u));
+    host_->intercept = &CeStarTransport::InterceptCallback;
+
     if (out_error) *out_error = CeStarError::Ok;
     return true;
+}
+
+void CeStarTransport::ConfigurePeerTimeouts(_ENetPeer* peer) noexcept {
+    if (!peer) return;
+    const enet_uint32 timeout_min = std::max<enet_uint32>(5000u, config_.silence_timeout_ms);
+    const enet_uint32 timeout_max = std::max<enet_uint32>(timeout_min, config_.silence_timeout_ms + 5000u);
+    enet_peer_timeout(peer, 0, timeout_min, timeout_max);
+}
+
+int CeStarTransport::InterceptCallback(_ENetHost* host, _ENetEvent*) {
+    if (!gPollingStar || gPollingStar->host_ != host) return 1;
+    return gPollingStar->IngressCheck(host, gPollingNowMs);
+}
+
+int CeStarTransport::IngressCheck(_ENetHost* host, uint64_t now_ms) noexcept {
+#if defined(CE_NETWORK_ICE)
+    if (config_.use_ice) {
+        bool allowed = false;
+        if (config_.role == CeStarRole::Guest) {
+            if (!slots_.empty() && slots_[0].ice) {
+                const ENetAddress& src = slots_[0].ice->LocalAddress();
+                allowed = (host->receivedAddress.host == src.host &&
+                           host->receivedAddress.port == src.port);
+            }
+        } else {
+            for (uint16_t s = 1; s <= config_.max_guests && s < slots_.size(); ++s) {
+                if (!slots_[s].ice) continue;
+                const ENetAddress& src = slots_[s].ice->LocalAddress();
+                if (host->receivedAddress.host == src.host &&
+                    host->receivedAddress.port == src.port) {
+                    allowed = true;
+                    break;
+                }
+            }
+        }
+        if (!allowed) {
+            RejectPacket();
+            return 1;
+        }
+    }
+#endif
+    if (!ingress_inited_) {
+        ingress_inited_ = true;
+        ingress_at_ms_ = now_ms;
+    }
+    const uint64_t elapsed = (now_ms >= ingress_at_ms_) ? (now_ms - ingress_at_ms_) : 0u;
+    ingress_at_ms_ = now_ms;
+    packet_credit_ = (elapsed >= 1000u)
+        ? (packet_burst_ * 1000u)
+        : std::min<uint64_t>(packet_burst_ * 1000u, packet_credit_ + elapsed * packet_rate_);
+    byte_credit_ = (elapsed >= 1000u)
+        ? (byte_burst_ * 1000u)
+        : std::min<uint64_t>(byte_burst_ * 1000u, byte_credit_ + elapsed * byte_rate_);
+
+    const uint64_t bytes = static_cast<uint64_t>(host->receivedDataLength) * 1000u;
+    if (packet_credit_ < 1000u || byte_credit_ < bytes) {
+        RejectPacket();
+        return 1;
+    }
+    packet_credit_ -= 1000u;
+    byte_credit_ -= bytes;
+
+    const uint32_t commands = DatagramCommands(host->receivedData,
+                                               static_cast<uint32_t>(host->receivedDataLength));
+    if (!commands) {
+        RejectPacket();
+        return 1;
+    }
+    const uint32_t metadata = IncomingMetadata(host, incoming_metadata_limit_);
+    if (metadata > incoming_metadata_limit_ || commands * 2u > incoming_metadata_limit_ - metadata) {
+        RejectPacket();
+        return 1;
+    }
+    return 0;
 }
 
 void CeStarTransport::RejectPacket() noexcept {
@@ -654,6 +823,7 @@ void CeStarTransport::CleanupPendingPeer(_ENetPeer* peer) noexcept {
 void CeStarTransport::HandleHostHello(_ENetPeer* peer, const uint8_t hello_nonce[16],
                                       uint16_t claimed_slot, const uint8_t* body,
                                       size_t body_len, uint64_t now_ms) {
+    if (!peer || peer->data != nullptr) { RejectPacket(); return; }
     if (SeenHelloNonce(hello_nonce)) { RejectPacket(); return; }
     if (body_len < 32 + 32 + 32 + 4) { RejectPacket(); return; }
 
@@ -760,6 +930,7 @@ void CeStarTransport::HandleHostHello(_ENetPeer* peer, const uint8_t hello_nonce
 #endif
     peer->data = &slot;
     enet_peer_ping_interval(peer, 500);
+    ConfigurePeerTimeouts(peer);
     CleanupPendingPeer(peer);
 
     std::vector<uint8_t> accept;
@@ -1124,7 +1295,9 @@ void CeStarTransport::HandlePacket(_ENetPeer* peer, uint8_t channel, const uint8
     BuildAeadNonce(nonce, session_id, flags, channel, wire_slot, seq);
 
     if (is_handshake) {
-        if (channel != kChannelControl || seq != 1u) {
+        if ((config_.role == CeStarRole::Host && peer->data != nullptr) ||
+            (config_.role == CeStarRole::Guest && slots_[0].authenticated) ||
+            channel != kChannelControl || seq != 1u) {
             crypto_wipe(nonce, sizeof(nonce));
             RejectPacket();
             return;
@@ -1273,12 +1446,24 @@ void CeStarTransport::PumpIceBridges(uint64_t now_ms) {
             auto& slot = slots_[s];
             if (!slot.ice) continue;
             if (!slot.ice->Pump()) {
+                const ENetAddress old_addr = slot.ice->LocalAddress();
                 slot.ice_failed = true;
                 slot.ice.reset();
                 if (slot.peer) {
                     _ENetPeer* p = slot.peer;
                     HandleDisconnectPeer(p, 0);
                     enet_peer_reset(p);
+                }
+                if (host_) {
+                    for (size_t i = 0; i < host_->peerCount; ++i) {
+                        _ENetPeer* pp = &host_->peers[i];
+                        if (pp->state != ENET_PEER_STATE_DISCONNECTED &&
+                            pp->address.host == old_addr.host && pp->address.port == old_addr.port &&
+                            pp->data == nullptr) {
+                            CleanupPendingPeer(pp);
+                            enet_peer_reset(pp);
+                        }
+                    }
                 }
             } else if (slot.authenticated && slot.ice->Ready()) {
                 slot.route = slot.ice->UsesRelay() ? CeStarRoute::Relay : CeStarRoute::Direct;
@@ -1313,6 +1498,7 @@ void CeStarTransport::PumpIceBridges(uint64_t now_ms) {
                 ENetPeer* p = enet_host_connect(host_, &slot.ice->LocalAddress(), kChannelCount, 0);
                 if (p) {
                     enet_peer_ping_interval(p, 500);
+                    ConfigurePeerTimeouts(p);
                     slot.peer = p;
                     slot.connected_at_ms = now_ms ? now_ms : 1u;
                     guest_connect_started_ = true;
@@ -1337,6 +1523,20 @@ void CeStarTransport::Poll(uint64_t now_ms, uint32_t event_budget) {
     if (created_at_ms_ == 0) created_at_ms_ = now_ms;
 
     PumpIceBridges(now_ms);
+
+    struct ActivePollGuard {
+        CeStarTransport* prev;
+        uint64_t prev_now;
+        ActivePollGuard(CeStarTransport* self, uint64_t now) noexcept
+            : prev(gPollingStar), prev_now(gPollingNowMs) {
+            gPollingStar = self;
+            gPollingNowMs = now;
+        }
+        ~ActivePollGuard() {
+            gPollingStar = prev;
+            gPollingNowMs = prev_now;
+        }
+    } poll_guard(this, now_ms);
 
     ENetEvent ev{};
     uint32_t processed = 0;
@@ -1365,6 +1565,7 @@ void CeStarTransport::Poll(uint64_t now_ms, uint32_t event_budget) {
                     enet_peer_reset(ev.peer);
                 } else {
                     ev.peer->data = nullptr;
+                    ConfigurePeerTimeouts(ev.peer);
                     pending_peers_.push_back(PendingPeer{ev.peer, now_ms, 0, false});
                 }
             } else {
@@ -1647,6 +1848,9 @@ bool CeStarTransport::DisconnectGuest(uint16_t sim_slot, uint16_t reason) {
         PutU16(body, reason);
         SendFrameToSlot(slot, kChannelControl, CeStarMsgType::Leave, body.data(), body.size(), true);
         enet_host_flush(host_);
+#if defined(CE_NETWORK_ICE)
+        if (slot.ice) slot.ice->Pump();
+#endif
     }
     _ENetPeer* p = slot.peer;
     HandleDisconnectPeer(p, reason);
@@ -1830,9 +2034,35 @@ CeStarRoute CeStarTransport::GuestIceRoute(uint16_t sim_slot) const {
 
 void CeStarTransport::DetachGuestIceBridge(uint16_t sim_slot) {
     if (config_.role != CeStarRole::Host || sim_slot < 1 || sim_slot > config_.max_guests) return;
-    slots_[sim_slot].ice.reset();
-    slots_[sim_slot].ice_failed = false;
-    slots_[sim_slot].ice_require_relay = false;
+    auto& slot = slots_[sim_slot];
+    ENetAddress old_addr{};
+    const bool had_ice = static_cast<bool>(slot.ice);
+    if (had_ice) {
+        old_addr = slot.ice->LocalAddress();
+    }
+    slot.ice.reset();
+    slot.ice_failed = false;
+    slot.ice_require_relay = false;
+    if (had_ice && host_) {
+        for (size_t i = 0; i < host_->peerCount; ++i) {
+            _ENetPeer* p = &host_->peers[i];
+            if (p->state != ENET_PEER_STATE_DISCONNECTED &&
+                p->address.host == old_addr.host && p->address.port == old_addr.port &&
+                (p->data == nullptr || (!slot.authenticated && p->data == &slot))) {
+                CleanupPendingPeer(p);
+                p->data = nullptr;
+                if (slot.peer == p) slot.ResetLink();
+                enet_peer_reset(p);
+            }
+        }
+    }
+    if (!slot.authenticated && slot.peer) {
+        _ENetPeer* p = slot.peer;
+        CleanupPendingPeer(p);
+        p->data = nullptr;
+        slot.ResetLink();
+        enet_peer_reset(p);
+    }
 }
 
 bool CeStarTransport::AttachHostIceBridge(const juice_config_t& config, bool require_relay) {

@@ -497,6 +497,8 @@ FMatrix					gOpposingAnchorOri;
 float					gOpposingAnchorYaw = 0.0f;
 bool					gRelocatedOnlineP1 = false;
 int						gWinningTeam = -1;
+int						gAuxCoopLossTicks = 0;
+int						gAuxCoopLossReason = 0;
 CeMultiBeOverviewCamera	gOverviewCam;
 
 int IndexOfEngine(const CUnit *unit)
@@ -628,6 +630,8 @@ void ResetState()
 	gAuxSpawned = 0;
 	gSimTicks = 0;
 	gNanCount = 0;
+	gAuxCoopLossTicks = 0;
+	gAuxCoopLossReason = 0;
 	gTotalShots = 0;
 	gAuxShots = 0;
 	gP2Shots = 0;
@@ -1474,7 +1478,7 @@ void SyncHumanPlayerEngines()
 						? CE_MULTIBE_SIDE_MUSPELL : CE_MULTIBE_SIDE_FORSETI;
 					live->mAllegiance = (ticketTeam == CE_MULTIBE_SIDE_MUSPELL) ? kMuspellAllegiance : kForsetiAllegiance;
 				}
-				if (slot == 1 && gRelocatedOnlineP1)
+				if (slot == 1 && gRelocatedOnlineP1 && (live->GetPos() - gStartPos[1]).MagnitudeSq() > 900.0f)
 				{
 					live->Teleport(gStartPos[1]);
 					FMatrix ori;
@@ -1486,7 +1490,7 @@ void SyncHumanPlayerEngines()
 					    live->GetState() == BATTLE_ENGINE_STATE_WALKER)
 						live->Morph();
 				}
-				else
+				else if (!(slot == 1 && gRelocatedOnlineP1))
 #endif
 				{
 					gStartPos[slot] = live->GetPos();
@@ -1862,29 +1866,11 @@ void SelectBestAiWeapon(int idx, CBattleEngine *be, bool isJet, CUnit *target,
 
 void AbortAiWeaponCharge(CBattleEngine *be, CWeapon *curWep)
 {
+	(void)curWep;
 	if (!be)
 		return;
 	be->LoseWeaponCharge();
-	if (!curWep || curWep->AllowMovement())
-		return;
-	// Retail LoseWeaponCharge() does not clear mSlowMovement; cycle the active part back to curWep
-	// via public ChangeWeapon() (clears mSlowMovement without playing HUD voiceover).
-	const bool isJet = (be->GetState() == BATTLE_ENGINE_STATE_JET);
-	CBattleEngineJetPart *jet = isJet ? be->GetJetPart() : NULL;
-	CBattleEngineWalkerPart *walker = isJet ? NULL : be->GetWalkerPart();
-	const int total = isJet ? (jet ? jet->CountWeapons() : 0) : (walker ? walker->CountWeapons() : 0);
-	if (total <= 1)
-		return;
-	for (int step = 0; step < total; ++step)
-	{
-		if (isJet)
-			jet->ChangeWeapon();
-		else
-			walker->ChangeWeapon();
-		CWeapon *nowWep = isJet ? jet->GetCurrentWeapon() : walker->GetCurrentWeapon();
-		if (nowWep == curWep)
-			break;
-	}
+	be->CeClearSlowMovement();
 }
 
 void ExecuteAiFireDecision(int idx, CBattleEngine *be, CWeapon *curWep, CeMultiBeSlotBrain &brain,
@@ -2289,10 +2275,34 @@ void DriveAiEngine(int idx)
 	if (fwd.MagnitudeSq() > 1e-4f) fwd.Normalise(); else fwd = FVector(0.0f, 1.0f, 0.0f);
 	if (right.MagnitudeSq() > 1e-4f) right.Normalise(); else right = FVector(1.0f, 0.0f, 0.0f);
 
-	const bool dryFwd = IsDryAndInBounds(myPos + fwd * 10.0f, waterZ, waterMargin);
-	const bool dryBack = IsDryAndInBounds(myPos - fwd * 10.0f, waterZ, waterMargin);
-	const bool dryLeft = IsDryAndInBounds(myPos - right * 10.0f, waterZ, waterMargin);
-	const bool dryRight = IsDryAndInBounds(myPos + right * 10.0f, waterZ, waterMargin);
+	auto oobDistSq = [](const FVector &p) -> float {
+		float ex = 0.0f, ey = 0.0f;
+		if (p.X < 36.0f) ex = 36.0f - p.X;
+		else if (p.X > 476.0f) ex = p.X - 476.0f;
+		if (p.Y < 36.0f) ey = 36.0f - p.Y;
+		else if (p.Y > 476.0f) ey = p.Y - 476.0f;
+		return ex * ex + ey * ey;
+	};
+	const float myOobSq = outOfBounds ? oobDistSq(myPos) : 0.0f;
+	auto probeDry = [&](const FVector &p, float margin) -> bool {
+		if (IsDryAndInBounds(p, waterZ, margin))
+			return true;
+		if (!outOfBounds)
+			return false;
+		if (!CeMultiBeIsFinitePos(p.X, p.Y, p.Z))
+			return false;
+		if (p.X < 8.0f || p.X > 504.0f || p.Y < 8.0f || p.Y > 504.0f)
+			return false;
+		if (oobDistSq(p) >= myOobSq)
+			return false;
+		const float gz = MAP.Collide(p);
+		return CeAiIsFinite(gz) && CeMultiBeIsAboveWater(gz, waterZ, margin);
+	};
+
+	const bool dryFwd = probeDry(myPos + fwd * 10.0f, waterMargin);
+	const bool dryBack = probeDry(myPos - fwd * 10.0f, waterMargin);
+	const bool dryLeft = probeDry(myPos - right * 10.0f, waterMargin);
+	const bool dryRight = probeDry(myPos + right * 10.0f, waterMargin);
 	const bool dryDashLeft = dryLeft && IsDryAndInBounds(myPos - right * 8.0f, waterZ, 1.15f) &&
 	                         IsDryAndInBounds(myPos - right * 16.0f, waterZ, 1.15f);
 	const bool dryDashRight = dryRight && IsDryAndInBounds(myPos + right * 8.0f, waterZ, 1.15f) &&
@@ -2524,6 +2534,18 @@ extern "C" void PortCeMultiBeTickPre()
 		SyncSoloP2Engine();
 
 	gSimTicks++;
+
+	if (gAuxCoopLossTicks > 0)
+	{
+		gAuxCoopLossTicks--;
+		if (gAuxCoopLossTicks == 0)
+		{
+			const int reason = gAuxCoopLossReason;
+			gAuxCoopLossReason = 0;
+			if (GAME.GetGameState() == GAME_STATE_PLAYING)
+				GAME.DeclareLevelLost(reason, TRUE);
+		}
+	}
 
 	// Advance auxiliary BE respawn timers and redeploy any slot whose 5-second cooldown finished.
 	const uint8_t readyMask = gMatchState.TickRespawnTimers();
@@ -2776,6 +2798,68 @@ extern "C" void PortCeMultiBeApplyStartSlot(int *playerNumber, int retailInvert)
 	*playerNumber = CeMultiBeTransformStartSlot(*playerNumber, retailInvert != 0, cli0359, menuMuspell, isVersus);
 }
 
+extern "C" int PortCeMultiBeResolveStartAllegiance(int playerNumber, int defaultAllegiance)
+{
+#ifndef CE_NETWORK_OFF
+	if (OnlineMatchActive() && PortCeOnlineMatchSlotTeam &&
+	    WORLD.GetType() == CWorld::kVersusMultiplayer)
+	{
+		const int slot = playerNumber - 1;
+		if (slot >= 0 && slot < CE_MULTIBE_MAX)
+		{
+			return (PortCeOnlineMatchSlotTeam(slot) == CE_MULTIBE_SIDE_MUSPELL)
+				? (int)kMuspellAllegiance : (int)kForsetiAllegiance;
+		}
+	}
+#else
+	(void)playerNumber;
+#endif
+	return defaultAllegiance;
+}
+
+extern "C" void PortCeMultiBeAdjustRespawnPos(int playerNumber, float *x, float *y, float *z, float *yaw, int *planeMode)
+{
+#ifndef CE_NETWORK_OFF
+	if (!gActive || !OnlineMatchActive() || playerNumber != 2 || !gRelocatedOnlineP1)
+		return;
+	if (!x || !y || !z || !yaw || !planeMode)
+		return;
+	FVector spawnPos = gStartPos[1];
+	FVector fwd(gAnchorFwdX, gAnchorFwdY, 0.0f);
+	if (fwd.MagnitudeSq() < 1e-4f)
+		fwd = FVector(0.0f, 1.0f, 0.0f);
+	else
+		fwd.Normalise();
+	FVector right(fwd.Y, -fwd.X, 0.0f);
+	const float waterZ = MAP.GetWaterLevel();
+	const float startGroundZ = MAP.Collide(spawnPos);
+	bool foundDry = false;
+	if (CeMultiBeIsAboveWater(startGroundZ, waterZ, 0.8f))
+	{
+		spawnPos.Z = startGroundZ - 0.5f;
+		foundDry = CeMultiBeIsFinitePos(spawnPos.X, spawnPos.Y, spawnPos.Z);
+	}
+	bool airborne = false;
+	if (!foundDry && !FindDrySpawnPosition(gStartPos[1], right, fwd, 12.0f, 0.0f, &spawnPos))
+	{
+		spawnPos = gStartPos[1];
+		const float groundZ = MAP.Collide(spawnPos);
+		const float surfaceZ = (groundZ < waterZ) ? groundZ : waterZ;
+		spawnPos.Z = surfaceZ - 22.0f;
+		if (!CeMultiBeIsFinitePos(spawnPos.X, spawnPos.Y, spawnPos.Z))
+			return;
+		airborne = true;
+	}
+	*x = spawnPos.X;
+	*y = spawnPos.Y;
+	*z = spawnPos.Z;
+	*yaw = gStartYaw[1];
+	*planeMode = airborne ? 1 : 0;
+#else
+	(void)playerNumber; (void)x; (void)y; (void)z; (void)yaw; (void)planeMode;
+#endif
+}
+
 extern "C" int PortCeMultiBeAllowTeamKills(void)
 {
 #ifndef CE_NETWORK_OFF
@@ -2890,7 +2974,11 @@ extern "C" int PortCeMultiBeHandleDeath(void *battleEnginePtr)
 				shouldRespawn = false;
 				if (WORLD.GetType() == CWorld::kCooperativeMultiplayer)
 				{
-					GAME.DeclareLevelLost(idx == 2 ? P1_OUT_OF_LIVES : P2_OUT_OF_LIVES, TRUE);
+					if (gAuxCoopLossTicks <= 0)
+					{
+						gAuxCoopLossTicks = CeMultiBeMatchState::kRespawnTicks;
+						gAuxCoopLossReason = (idx == 2) ? P1_OUT_OF_LIVES : P2_OUT_OF_LIVES;
+					}
 				}
 				else if (WORLD.GetType() == CWorld::kVersusMultiplayer)
 				{
@@ -3031,14 +3119,23 @@ extern "C" int PortCeBattleEngineIsLocalHuman(const void *be)
 	const bool slotIsAi = (idx >= 0) ? gIsAiControlled[idx] : false;
 	const bool soloOrOne = gSoloSkirmish || PortCeOneScreenMatch();
 	CPlayer *p0 = GAME.GetPlayer(0);
-	const bool matchesSlot0 = (!p0 || !p0->GetBattleEngine() || be == p0->GetBattleEngine());
+	const bool matchesSlot0 = (p0 != NULL && p0->GetBattleEngine() != NULL && be == p0->GetBattleEngine());
 #ifndef CE_NETWORK_OFF
 	const bool onlineActive = OnlineMatchActive() || (CE_SessionActive && CE_SessionActive());
 	const int localSlot = (OnlineMatchActive() && PortCeOnlineMatchLocalSlot)
 		? PortCeOnlineMatchLocalSlot()
 		: (CE_LockstepLocalPlayer ? static_cast<int>(CE_LockstepLocalPlayer()) : 0);
-	CPlayer *lp = onlineActive ? GAME.GetPlayer(localSlot) : NULL;
-	const bool matchesLocalOnline = (!lp || !lp->GetBattleEngine() || be == lp->GetBattleEngine());
+	CPlayer *lp = NULL;
+	if (onlineActive && localSlot >= 0 && localSlot < CE_MULTIBE_MAX)
+	{
+		if (gActive && localSlot < gEngineCount && gIsAux[localSlot])
+			lp = gAuxPlayers[localSlot];
+		else if (localSlot < GAME.GetNPlayers() && localSlot < MAX_PLAYERS)
+			lp = GAME.GetPlayer(localSlot);
+	}
+	CBattleEngine *localOnlineBe = lp ? lp->GetBattleEngine()
+		: ((onlineActive && gActive && localSlot >= 0 && localSlot < gEngineCount) ? gEngines[localSlot] : NULL);
+	const bool matchesLocalOnline = (localOnlineBe != NULL && be == localOnlineBe);
 #else
 	const bool onlineActive = false;
 	const int localSlot = 0;
@@ -3061,6 +3158,8 @@ extern "C" void PortCeMultiBeUnitSpawn(CUnit *, CInitThing *) {}
 extern "C" void PortCeMultiBeUnitDestroyed(CUnit *) {}
 extern "C" void PortCeMultiBeWeaponFire(CWeapon *, CUnit *, CRound *) {}
 extern "C" void PortCeMultiBeApplyStartSlot(int *, int) {}
+extern "C" int PortCeMultiBeResolveStartAllegiance(int, int defaultAllegiance) { return defaultAllegiance; }
+extern "C" void PortCeMultiBeAdjustRespawnPos(int, float *, float *, float *, float *, int *) {}
 extern "C" int PortCeMultiBeAllowTeamKills(void) { return 0; }
 extern "C" int PortCeMultiBeSelectStartConfig(int, int p1Config, int) { return p1Config; }
 extern "C" CCamera *PortCeMultiBeAuxCamera(int) { return NULL; }

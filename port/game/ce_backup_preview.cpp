@@ -94,6 +94,8 @@ bool permit() {
 const CeRestoreAuthority kAuthority = {permit, PortCeRestoreNamesCompatible};
 int baseRows(){return view.careers?11:4;}
 Kind kind(int i, int *set) {
+  if (!allowed)
+    return i == 0 ? K_STATUS : i == 1 ? K_BACK : K_NONE;
   if (view.careers > 0) {
     static const Kind card[] = {K_RESTORE, K_STATUS, K_DATE,     K_FILES,
                                 K_CAREER,  K_MISSIONS, K_GOODIES, K_EARLIER};
@@ -114,7 +116,7 @@ Kind kind(int i, int *set) {
   static const Kind tail[] = {K_AGAIN, K_CHOOSE, K_BACK};
   return i >= 0 && i < 3 ? tail[i] : K_NONE;
 }
-int count(){return !allowed?1:screen==S_BROWSE?baseRows()+view.choices:lineCount;}
+int count(){return !allowed?2:screen==S_BROWSE?baseRows()+view.choices:lineCount;}
 void plain(WCHAR*dst,int n,const char*s){PortCeExtrasWiden(dst,n,s);}
 void widenUtf8(WCHAR *dst, int n, const char *s) { CeDecodeName(dst, n, s, true); }
 // A set's folder name as the player reads it: its local date and time (a

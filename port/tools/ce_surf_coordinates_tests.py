@@ -69,6 +69,7 @@ struct CRenderMethod
 };
 CRenderMethod WATER_METHOD("water_method", 3), SUN_METHOD("sun_method", 2), SURF_METHOD("surf_method", 2);
 bool WATER_USE_SHADER, gMirrorPass;
+bool PortCeLayer() { return true; }
 
 enum { MEMTYPE_VBUFFER = 44, MEMTYPE_LANDSCAPE = 1 };
 void *operator new(size_t size, int) { return ::operator new(size); }

@@ -42,74 +42,92 @@
  	if (mBlurAlpha>0)
 --- a/Hud.cpp
 +++ b/Hud.cpp
-@@ -820,7 +820,13 @@
+@@ -819,8 +819,22 @@
+ 	}
  	if (mObjectivePanelOpening != 0)
  	{
++#ifdef CE_VERSION
++		extern bool PortCeLayer();
++		const float ceObjRight = (PortCeLayer() && mViewportWidth > 0.f && mViewportRight > 0.f) ? mViewportRight : (float)PLATFORM.GetWindowWidth();
++		const float ceObjW = (PortCeLayer() && mViewportWidth > 0.f) ? mViewportWidth : (float)PLATFORM.GetWindowWidth();
++#else
++		const float ceObjRight = (float)PLATFORM.GetWindowWidth();
++		const float ceObjW = (float)PLATFORM.GetWindowWidth();
++#endif
  		if (mObjectivePanelOpening < 1.f)
+-			RenderObjectiveBar((float)(PLATFORM.GetWindowWidth() - 90), 40.f, 0, 0, mObjectivePanelOpening);
 +		{
 +			// Port (patch 0043, widescreen): the objective panel keeps to the 4:3 columns, as the rest of the HUD does
 +			if (PortWideActive())
-+				RenderObjectiveBar((float)(PLATFORM.GetWindowWidth() - 90) - PortHudInset(float(PLATFORM.GetWindowWidth())), 40.f, 0, 0, mObjectivePanelOpening);
++				RenderObjectiveBar((ceObjRight - 90.f) - PortHudInset(ceObjW), 40.f, 0, 0, mObjectivePanelOpening);
 +			else
- 			RenderObjectiveBar((float)(PLATFORM.GetWindowWidth() - 90), 40.f, 0, 0, mObjectivePanelOpening);
++			RenderObjectiveBar((ceObjRight - 90.f), 40.f, 0, 0, mObjectivePanelOpening);
 +		}
  		else
  		{
  			float	y = 43.f;
-@@ -845,7 +851,11 @@
+@@ -845,7 +859,11 @@
  					mObjectivePanelWidth = target;
  			}
  			float	width = mObjectivePanelWidth;
 -			float	x = (float)(PLATFORM.GetWindowWidth() - 90) - width * 0.5f;
 +			float	x;
 +			if (PortWideActive())	// Port (patch 0043)
-+				x = ((float)(PLATFORM.GetWindowWidth() - 90) - PortHudInset(float(PLATFORM.GetWindowWidth()))) - width * 0.5f;
++				x = ((ceObjRight - 90.f) - PortHudInset(ceObjW)) - width * 0.5f;
 +			else
-+			x = (float)(PLATFORM.GetWindowWidth() - 90) - width * 0.5f;
++			x = (ceObjRight - 90.f) - width * 0.5f;
  			total += 5.f;
  			RenderObjectiveBar(x, total * 0.6f + 40.f, width, total, mObjectivePanelOpening);
  
-@@ -943,6 +953,9 @@
+@@ -943,7 +961,10 @@
  							col = (((a + r) << 8) + gg) << 8;
  							col += (SINT)(t * 48.f + f);
  						}
+-						PLATFORM.Font(FONT_SMALL)->DrawTextDynamic((float)(PLATFORM.GetWindowWidth() - 165) - (size.cx + zero), y, 0.008f, 1.f, 1.f, col, ((FHudWorld &)WORLD).GetText(i), 1.f, 1, 0);	// STAND-IN (see above)
 +						if (PortWideActive())	// Port (patch 0043)
-+							PLATFORM.Font(FONT_SMALL)->DrawTextDynamic(((float)(PLATFORM.GetWindowWidth() - 165) - PortHudInset(float(PLATFORM.GetWindowWidth()))) - (size.cx + zero), y, 0.008f, 1.f, 1.f, col, ((FHudWorld &)WORLD).GetText(i), 1.f, 1, 0);
++							PLATFORM.Font(FONT_SMALL)->DrawTextDynamic(((ceObjRight - 165.f) - PortHudInset(ceObjW)) - (size.cx + zero), y, 0.008f, 1.f, 1.f, col, ((FHudWorld &)WORLD).GetText(i), 1.f, 1, 0);
 +						else
- 						PLATFORM.Font(FONT_SMALL)->DrawTextDynamic((float)(PLATFORM.GetWindowWidth() - 165) - (size.cx + zero), y, 0.008f, 1.f, 1.f, col, ((FHudWorld &)WORLD).GetText(i), 1.f, 1, 0);	// STAND-IN (see above)
++						PLATFORM.Font(FONT_SMALL)->DrawTextDynamic((ceObjRight - 165.f) - (size.cx + zero), y, 0.008f, 1.f, 1.f, col, ((FHudWorld &)WORLD).GetText(i), 1.f, 1, 0);	// STAND-IN (see above)
  
  						if ((((FHudWorld &)WORLD).GetTextState(i) == 2) || (((FHudWorld &)WORLD).GetTextState(i) == 5))
-@@ -959,6 +972,9 @@
+ 						{
+@@ -959,7 +980,10 @@
  							else
  								col2 = ((((a + gg) << 8) + r) << 8) + (SINT)(t * 32.f + f);
  							PLATFORM.Font(FONT_SMALL)->GetTextExtent(ToWCHAR(value), &size);
+-							PLATFORM.Font(FONT_SMALL)->DrawTextDynamic((float)(PLATFORM.GetWindowWidth() - 85) - (size.cx + zero), y, 0.008f, 1.f, 1.f, col2, ToWCHAR(count), 1.f, 1, 0);	// STAND-IN (see above)
 +							if (PortWideActive())	// Port (patch 0043)
-+								PLATFORM.Font(FONT_SMALL)->DrawTextDynamic(((float)(PLATFORM.GetWindowWidth() - 85) - PortHudInset(float(PLATFORM.GetWindowWidth()))) - (size.cx + zero), y, 0.008f, 1.f, 1.f, col2, ToWCHAR(count), 1.f, 1, 0);
++								PLATFORM.Font(FONT_SMALL)->DrawTextDynamic(((ceObjRight - 85.f) - PortHudInset(ceObjW)) - (size.cx + zero), y, 0.008f, 1.f, 1.f, col2, ToWCHAR(count), 1.f, 1, 0);
 +							else
- 							PLATFORM.Font(FONT_SMALL)->DrawTextDynamic((float)(PLATFORM.GetWindowWidth() - 85) - (size.cx + zero), y, 0.008f, 1.f, 1.f, col2, ToWCHAR(count), 1.f, 1, 0);	// STAND-IN (see above)
++							PLATFORM.Font(FONT_SMALL)->DrawTextDynamic((ceObjRight - 85.f) - (size.cx + zero), y, 0.008f, 1.f, 1.f, col2, ToWCHAR(count), 1.f, 1, 0);	// STAND-IN (see above)
  							DWORD	col3;
  							if (flash)
-@@ -970,6 +986,9 @@
+ 							{
+@@ -970,7 +994,10 @@
  							else
  								col3 = (((((SINT)(t * 111.f + f) + a) << 8) + gg) << 8) + (SINT)(t * 32.f + f);
  							PLATFORM.Font(FONT_SMALL)->GetTextExtent(ToWCHAR(goal), &size);
+-							PLATFORM.Font(FONT_SMALL)->DrawTextDynamic((float)(PLATFORM.GetWindowWidth() - 85) - (size.cx + zero), y, 0.008f, 1.f, 1.f, col3, ToWCHAR(goal), 1.f, 1, 0);	// STAND-IN (see above)
 +							if (PortWideActive())	// Port (patch 0043)
-+								PLATFORM.Font(FONT_SMALL)->DrawTextDynamic(((float)(PLATFORM.GetWindowWidth() - 85) - PortHudInset(float(PLATFORM.GetWindowWidth()))) - (size.cx + zero), y, 0.008f, 1.f, 1.f, col3, ToWCHAR(goal), 1.f, 1, 0);
++								PLATFORM.Font(FONT_SMALL)->DrawTextDynamic(((ceObjRight - 85.f) - PortHudInset(ceObjW)) - (size.cx + zero), y, 0.008f, 1.f, 1.f, col3, ToWCHAR(goal), 1.f, 1, 0);
 +							else
- 							PLATFORM.Font(FONT_SMALL)->DrawTextDynamic((float)(PLATFORM.GetWindowWidth() - 85) - (size.cx + zero), y, 0.008f, 1.f, 1.f, col3, ToWCHAR(goal), 1.f, 1, 0);	// STAND-IN (see above)
++							PLATFORM.Font(FONT_SMALL)->DrawTextDynamic((ceObjRight - 85.f) - (size.cx + zero), y, 0.008f, 1.f, 1.f, col3, ToWCHAR(goal), 1.f, 1, 0);	// STAND-IN (see above)
  						}
  						else
-@@ -986,6 +1005,9 @@
+ 						{
+@@ -986,7 +1013,10 @@
  							else
  								col2 = ((((a + gg) << 8) + r) << 8) + (SINT)(t * 32.f + f);
  							PLATFORM.Font(FONT_SMALL)->GetTextExtent(ToWCHAR(value), &size);
+-							PLATFORM.Font(FONT_SMALL)->DrawTextDynamic((float)(PLATFORM.GetWindowWidth() - 85) - (size.cx + zero), y, 0.008f, 1.f, 1.f, col2, ToWCHAR(value), 1.f, 1, 0);	// STAND-IN (see above)
 +							if (PortWideActive())	// Port (patch 0043)
-+								PLATFORM.Font(FONT_SMALL)->DrawTextDynamic(((float)(PLATFORM.GetWindowWidth() - 85) - PortHudInset(float(PLATFORM.GetWindowWidth()))) - (size.cx + zero), y, 0.008f, 1.f, 1.f, col2, ToWCHAR(value), 1.f, 1, 0);
++								PLATFORM.Font(FONT_SMALL)->DrawTextDynamic(((ceObjRight - 85.f) - PortHudInset(ceObjW)) - (size.cx + zero), y, 0.008f, 1.f, 1.f, col2, ToWCHAR(value), 1.f, 1, 0);
 +							else
- 							PLATFORM.Font(FONT_SMALL)->DrawTextDynamic((float)(PLATFORM.GetWindowWidth() - 85) - (size.cx + zero), y, 0.008f, 1.f, 1.f, col2, ToWCHAR(value), 1.f, 1, 0);	// STAND-IN (see above)
++							PLATFORM.Font(FONT_SMALL)->DrawTextDynamic((ceObjRight - 85.f) - (size.cx + zero), y, 0.008f, 1.f, 1.f, col2, ToWCHAR(value), 1.f, 1, 0);	// STAND-IN (see above)
  						}
  					}
-@@ -2119,6 +2141,16 @@
+ 				}
+@@ -2119,6 +2149,16 @@
  
  	RENDERINFO.SetFogEnabled(false);
  	RENDERINFO.SetLightingEnabled(false);

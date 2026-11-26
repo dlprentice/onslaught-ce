@@ -12,8 +12,10 @@ static bool RtsHudPickStructureWorld(float, float) { return false; }
 static void RtsHudResetState() {}
 using WORD=unsigned;
 static const int kMouseDown=1,kMouseUp=2;
-static const int DIK_LSHIFT=0,DIK_RSHIFT=1,DIK_LCONTROL=2,DIK_RCONTROL=3;
-static bool gDown[4],gBoxing,gStrategicDragging,gArmed,gUnitPointerAvailable;
+static const int DIK_LSHIFT=0,DIK_RSHIFT=1,DIK_LCONTROL=2,DIK_RCONTROL=3,DIK_F1=0x3B;
+static bool gDown[256],gBoxing,gStrategicDragging,gArmed,gUnitPointerAvailable;
+static std::uint64_t gOrderNs=0;
+static int gHudFollowSquad=-1;
 static float MOUSE_X=20,MOUSE_Y=20,gBoxX,gBoxY,gStrategicDragX,gStrategicDragY,gStrategicWheel;
 static int gStrategicClickOrder,physical[3],gSelected;
 static struct {float s=1;} L;

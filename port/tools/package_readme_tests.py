@@ -430,7 +430,7 @@ class PackageReadmeTests(unittest.TestCase):
         # network source build (the Mods section names what such a build switches off)
         unplanned = " ".join(line for line in players.splitlines()
                              if not line.startswith("- Planned, not in this version yet:") and "experimental network source build" not in line)
-        source_notice = "- Release 0.1.13 does not offer Internet multiplayer. This source branch has opt-in 2 to 4 player network test builds; that does not establish a released Internet service. Additional HUD options remain planned."
+        source_notice = "- Default public builds do not offer Internet multiplayer; explicit opt-in network/ICE builds include experimental 2 to 4 player co-op and versus play. Additional HUD options remain planned."
         unplanned = " ".join(unplanned.split())
         self.assertIn(source_notice, unplanned)
         unplanned = unplanned.replace(source_notice, "")

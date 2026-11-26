@@ -322,6 +322,8 @@ public:
         ++flushLeaveCalls;
         lastFlushLeaveNowMs = nowMs;
     }
+    bool launchPending = false;
+    virtual bool IsLaunchPending() const { return launchPending; }
     std::string pendingOpError;
     virtual bool TakeOpError(std::string *out) {
         if (pendingOpError.empty()) return false;
@@ -1566,6 +1568,127 @@ static void TestV0115OnlineUxCraftAndPrivacy() {
               CeOnlineStringIsFontSafe(dispCustom) &&
               CeOnlineStringIsFontSafe(dispEmpty),
               "all server display strings are BEA font-safe");
+    }
+
+    // 5. L3-P1-10: Connecting screen recovers if room disappears after ticket without opErr (when no launch pending)
+    {
+        FakeOnlineBackend be;
+        CeOnlineUiModel ui;
+        ui.SetBackend(&be);
+        ui.Open(false);
+        ui.EnterCreate(CE_ONLINE_PAGE_HOME);
+        ui.SetCreateRoomName("Launch Guard");
+        CHECK(ui.CreateSubmit(), "create room for launch-guard check");
+        ui.SyncFromBackend(100);
+        be.room.seats[0].ready = true;
+        be.room.seats[1].kind = CE_ONLINE_SEAT_HUMAN;
+        be.room.seats[1].playerId = "guest_2";
+        be.room.seats[1].callsign = "WingTwo";
+        be.room.seats[1].ready = true;
+        ui.SyncFromBackend(120);
+        CHECK(ui.RoomHostStartMatch(), "host starts match");
+        ui.SyncFromBackend(140);
+        CHECK(ui.Page() == CE_ONLINE_PAGE_CONNECTING && !ui.ConnectingCancellable() && be.ticketReadyCalls == 1,
+              "ticket received and non-cancellable Connecting active");
+
+        // Room disappears while launch IS pending -> remain on Connecting screen
+        be.room.active = false;
+        be.launchPending = true;
+        ui.SyncFromBackend(160);
+        CHECK(ui.Page() == CE_ONLINE_PAGE_CONNECTING && !ui.ConnectingCancellable(),
+              "active launch handoff stays on Connecting screen");
+
+        // Launch no longer pending and room still absent without opErr -> MUST recover cleanly (no soft-lock!)
+        be.launchPending = false;
+        ui.SyncFromBackend(180);
+        CHECK(ui.Page() == CE_ONLINE_PAGE_BROWSER && ui.ConnectingCancellable(),
+              "Connecting screen recovers to Browser when room vanishes without launch pending");
+        CHECK(ui.StatusIsError() && ui.StatusNotice() == "Match launch could not complete.",
+              "Connecting recovery displays clear error notice");
+    }
+
+    // 6. L3-P2-4: Create and Join-by-Code passwords clear across submit, re-entry, and Close()
+    {
+        FakeOnlineBackend be;
+        CeOnlineUiModel ui;
+        ui.SetBackend(&be);
+        ui.Open(false);
+        ui.EnterCreate(CE_ONLINE_PAGE_HOME);
+        ui.SetCreateRoomName("Secret Lobby");
+        ui.SetCreatePassword("roomA-pass");
+        CHECK(ui.CreateSubmit() && be.lastCreate.password == "roomA-pass", "create sent roomA-pass");
+        CHECK(ui.CreatePassword().empty(), "CreatePassword cleared immediately after submit");
+        ui.EnterCreate(CE_ONLINE_PAGE_HOME);
+        CHECK(ui.CreatePassword().empty(), "EnterCreate starts with empty password");
+        ui.SetCreatePassword("stale-create");
+        ui.Close();
+        CHECK(ui.CreatePassword().empty(), "Close clears CreatePassword");
+
+        ui.Open(false);
+        ui.EnterJoinCode(CE_ONLINE_PAGE_BROWSER);
+        ui.SetJoinCodeInput("ROOMA1");
+        ui.SetJoinPasswordInput("secretA");
+        CHECK(ui.JoinCodeSubmit(), "submit Room A code");
+        be.pendingResolve = CeOnlineUiResolveResult();
+        be.pendingResolve.resolved = true;
+        be.pendingResolve.found = true;
+        be.pendingResolve.roomId = "rm_roomA";
+        be.pendingResolve.hasPassword = true;
+        be.pendingResolve.state = "lobby";
+        be.hasPendingResolve = true;
+        ui.SyncFromBackend(200);
+        CHECK(be.lastJoinPassword == "secretA", "Room A received secretA");
+        CHECK(ui.JoinPasswordInput().empty(), "JoinPassword cleared after Room A join submit");
+
+        // Now resolve Room B (also passworded): MUST prompt for password instead of reusing Room A's password!
+        ui.EnterJoinCode(CE_ONLINE_PAGE_BROWSER);
+        CHECK(ui.JoinPasswordInput().empty(), "EnterJoinCode clears JoinPassword");
+        ui.SetJoinCodeInput("ROOMB2");
+        CHECK(ui.JoinCodeSubmit(), "submit Room B code");
+        be.pendingResolve = CeOnlineUiResolveResult();
+        be.pendingResolve.resolved = true;
+        be.pendingResolve.found = true;
+        be.pendingResolve.roomId = "rm_roomB";
+        be.pendingResolve.hasPassword = true;
+        be.pendingResolve.state = "lobby";
+        be.hasPendingResolve = true;
+        ui.SyncFromBackend(220);
+        CHECK(ui.Page() == CE_ONLINE_PAGE_JOIN_CODE && ui.JoinCodeFocus() == CeOnlineUiModel::JOIN_PASSWORD_INPUT,
+              "Room B prompts for password rather than leaking Room A password");
+    }
+
+    // 7. L3-P2-5: 160-char lobby chat wraps across multiple <= 72-char lines without losing tail
+    {
+        FakeOnlineBackend be;
+        CeOnlineUiModel ui;
+        ui.SetBackend(&be);
+        ui.Open(false);
+        ui.EnterCreate(CE_ONLINE_PAGE_HOME);
+        ui.SetCreateRoomName("Chat Wrap Room");
+        CHECK(ui.CreateSubmit(), "create room for chat wrap test");
+        ui.SyncFromBackend(100);
+        be.room.chat.clear();
+        CeOnlineUiChatEntry longMsg;
+        longMsg.seq = 1;
+        longMsg.seat = 0;
+        longMsg.playerId = be.profile.playerId;
+        longMsg.callsign = "LongCallsignPilot";
+        longMsg.text = "Alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike "
+                       "november oscar papa quebec romeo sierra tango uniform victor whiskey TAILMARK99";
+        CHECK(longMsg.text.size() <= CE_ONLINE_UI_CHAT_MAX, "test chat message fits wire max 160");
+        be.room.chat.push_back(longMsg);
+        ui.SyncFromBackend(120);
+        std::vector<std::string> wrapped = ui.VisibleChatLines();
+        CHECK(wrapped.size() >= 2 && wrapped.size() <= CE_ONLINE_UI_CHAT_VISIBLE,
+              "160-char chat wraps into multiple lines within visible cap");
+        std::string joined;
+        for (size_t i = 0; i < wrapped.size(); ++i) {
+            CHECK(wrapped[i].size() <= 72u, "every wrapped chat line is <= 72 chars");
+            CHECK(CeOnlineStringIsFontSafe(wrapped[i]), "every wrapped chat line is BEA font-safe");
+            joined += wrapped[i];
+        }
+        CHECK(joined.find("TAILMARK99") != std::string::npos,
+              "wrapped 160-char chat preserves tail instead of truncating at 72 chars");
     }
 }
 

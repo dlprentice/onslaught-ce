@@ -801,7 +801,37 @@ void CeOnlineMatchSession::HandleDisconnectEvent(uint8_t sim_slot) {
             return;
         if (!TryConfirmFinalHash())
             return;
+        if (!CheckPendingHashes())
+            return;
     }
+}
+
+bool CeOnlineMatchSession::CheckPendingHashes() {
+    if (!mInitialised || !IsHost() || mState != CE_ONLINE_STATE_RUNNING || mRing.HashEvery() == 0u)
+        return true;
+    const uint32_t hashEvery = mRing.HashEvery();
+    const uint32_t curInterval = mRing.CurrentTick() / hashEvery;
+    const uint32_t maxIntervals = (uint32_t)(kRingSize / 2u);
+    const uint32_t minInterval = (curInterval >= maxIntervals) ? (curInterval - maxIntervals + 1u) : 1u;
+    for (uint32_t iv = minInterval; iv <= curInterval; ++iv) {
+        if (iv == 0u)
+            continue;
+        CeNPeerDesyncReport rep = {};
+        const CeNPeerHashResult hr = mRing.CheckHashes(iv * hashEvery, &rep);
+        if (hr == CE_NPEER_HASH_DESYNC) {
+            mLastDesync = RemapReportToSimSlots(rep);
+            if (mBridge)
+                mBridge->SendDesync(mLastDesync);
+            char msg[192];
+            snprintf(msg, sizeof(msg),
+                     "online match went out of step at tick %u (slot %u diverged from slot %u, mask 0x%02x)",
+                     mLastDesync.tick, (unsigned)mLastDesync.divergingSlot,
+                     (unsigned)mLastDesync.referenceSlot, (unsigned)mLastDesync.divergingMask);
+            SetFault(CE_ONLINE_STATE_DESYNC, msg);
+            return false;
+        }
+    }
+    return true;
 }
 
 void CeOnlineMatchSession::AppendChat(uint8_t sim_slot, const char *text) {
@@ -894,6 +924,16 @@ bool CeOnlineMatchSession::Poll(uint64_t now_ms) {
             return false;
         if (!TryConfirmFinalHash())
             return false;
+        CeNPeerHashOverdueReport overdue = {};
+        if (mRing.CheckHashOverdue(5u * mRing.HashEvery(), &overdue) &&
+            (overdue.presentMask & 1u) != 0u) {
+            char msg[192];
+            snprintf(msg, sizeof(msg),
+                     "online match peer state hash timed out at tick %u (missing mask 0x%02x)",
+                     overdue.tick, (unsigned)overdue.missingMask);
+            SetFault(CE_ONLINE_STATE_ERROR, msg);
+            return false;
+        }
     }
     return mState == CE_ONLINE_STATE_CONNECTING || mState == CE_ONLINE_STATE_RUNNING;
 }

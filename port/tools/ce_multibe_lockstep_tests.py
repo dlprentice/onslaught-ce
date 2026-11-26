@@ -492,11 +492,15 @@ static void TestDisconnectAndFutureResumeRebind() {
         Check(!hostA.CheckHashOverdue(20, &ovRep), "hostA tick 20 not falsely reported overdue");
     }
 
-    // 6b. Consume tick 20 with all 3 peers (0x07), disconnect slot 2 at 25, rebind slot 2 at 30 (at tick 26):
-    //     slot 2's valid in-flight hash for tick 20 MUST be accepted (NOT rejected with INACTIVE_SLOT).
+    // 6b. Consume tick 20 with all 3 peers (0x07):
+    //     - If slot 2 disconnects at tick 25 WITHOUT sending its tick 20 hash, DisconnectPeer releases
+    //       slot 2 from tick 20's unverified expectedMask so surviving slots 0 & 1 verify (or catch desync)
+    //       without waiting forever on a dropped peer.
+    //     - If slot 2 ALREADY submitted its tick 20 hash before disconnecting at tick 25 and rebinding at 30,
+    //       tick 20's snapshotted expectedMask preserves slot 2 even after ActiveMaskAt(20) strips slot 2.
     {
         CeNPeerLockstepRing<4, 64> hostB;
-        Check(hostB.Init(3, 0, 0, 20) == CE_NPEER_OK, "init hostB in-flight hash snapshot test");
+        Check(hostB.Init(3, 0, 0, 20) == CE_NPEER_OK, "init hostB disconnect-unmask hash test");
         CeNPeerInputPayload bOut[4] = {};
         auto StepHostB = [&](uint32_t targetTick) {
             while (hostB.CurrentTick() < targetTick) {
@@ -518,9 +522,35 @@ static void TestDisconnectAndFutureResumeRebind() {
 
         Check(hostB.SubmitHash(0, 20, 0xBB20ULL) == CE_NPEER_OK, "hostB hash slot 0 tick 20");
         Check(hostB.SubmitHash(1, 20, 0xBB20ULL) == CE_NPEER_OK, "hostB hash slot 1 tick 20");
-        Check(hostB.CheckHashes(20) == CE_NPEER_HASH_PENDING, "hostB tick 20 still waits for slot 2");
-        Check(hostB.SubmitHash(2, 20, 0xBB20ULL) == CE_NPEER_OK, "hostB accepts valid in-flight slot 2 hash for tick 20");
-        Check(hostB.CheckHashes(20) == CE_NPEER_HASH_MATCH, "hostB tick 20 verifies with all 3 peers");
+        Check(hostB.CheckHashes(20) == CE_NPEER_HASH_MATCH, "hostB tick 20 verifies among surviving slots 0 & 1");
+        Check(hostB.SubmitHash(2, 20, 0xBB20ULL) == CE_NPEER_ERR_INACTIVE_SLOT, "hostB rejects dropped slot 2 late hash for tick 20");
+    }
+    {
+        CeNPeerLockstepRing<4, 64> hostC;
+        Check(hostC.Init(3, 0, 0, 20) == CE_NPEER_OK, "init hostC pre-disconnect hash snapshot test");
+        CeNPeerInputPayload cOut[4] = {};
+        auto StepHostC = [&](uint32_t targetTick) {
+            while (hostC.CurrentTick() < targetTick) {
+                const uint32_t t = hostC.CurrentTick();
+                const uint8_t m = hostC.ActiveMaskAt(t);
+                for (uint8_t s = 0; s < 3; ++s) {
+                    if ((m & (1u << s)) != 0u)
+                        Check(hostC.SubmitInput(s, t, MakeInput(t, s)) == CE_NPEER_OK, "hostC submit");
+                }
+                uint8_t cm = 0;
+                Check(hostC.ConsumeTick(cOut, &cm) == CE_NPEER_OK && cm == m, "hostC consume");
+            }
+        };
+        StepHostC(25);
+        Check(hostC.SubmitHash(2, 20, 0xCC20ULL) == CE_NPEER_OK, "hostC accepts slot 2 hash before disconnect");
+        Check(hostC.DisconnectPeer(2, 25) == CE_NPEER_OK, "hostC disconnect slot 2 at tick 25");
+        StepHostC(26);
+        Check(hostC.RebindPeer(2, 30) == CE_NPEER_OK, "hostC rebind slot 2 at tick 30");
+        Check(hostC.ActiveMaskAt(20) == 0x03u, "hostC ActiveMaskAt(20) stripped slot 2 due to pending rebind");
+
+        Check(hostC.SubmitHash(0, 20, 0xCC20ULL) == CE_NPEER_OK, "hostC hash slot 0 tick 20");
+        Check(hostC.SubmitHash(1, 20, 0xCC20ULL) == CE_NPEER_OK, "hostC hash slot 1 tick 20");
+        Check(hostC.CheckHashes(20) == CE_NPEER_HASH_MATCH, "hostC tick 20 verifies with preserved slot 2 hash");
     }
 }
 

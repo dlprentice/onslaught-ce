@@ -144,12 +144,19 @@ int main() {
     Step(&s, k0.wing, false, true, be, 8.2);
     Need(s.phase == kPhaseIdle && !fb.playing, "cinema start stops kiosk");
 
-    // Missing / dummy-audio refusal degrades cleanly without ducking music.
+    // Missing / dummy-audio refusal degrades cleanly without ducking music,
+    // and re-pressing the same kiosk advances past the missing clip to the next dispatch.
     fb.allowStart = false;
     Reset(&s);
     Need(!Operate(&s, 1, be, 10.0, false), "failed start returns false");
-    Need(s.phase == kPhaseUnavailable && DuckHundredths(s, 11.0) == 0,
+    Need(s.phase == kPhaseUnavailable && s.activeKiosk == 1 && s.trackIndex[1] == 0
+         && DuckHundredths(s, 11.0) == 0,
          "unavailable clip leaves music unducked");
+    fb.allowStart = true;
+    Need(Operate(&s, 1, be, 11.5, false), "repeat press after unavailable clip tries next dispatch");
+    Need(s.phase == kPhasePlaying && s.trackIndex[1] == 1
+         && std::strcmp(fb.lastStem, kKiosks[1].tracks[1].stem) == 0,
+         "unavailable repeat press advances trackIndex to next dispatch");
 
     std::printf("ce_museum_audio_kiosk_tests: all checks passed\n");
     return 0;
@@ -166,6 +173,7 @@ MUTANTS = [
      "(void)now;"),
     ("ignore-pause-hold", "if (s->phase == kPhasePlaying && !paused)", "if (s->phase == kPhasePlaying)"),
     ("no-track-advance", "s->trackIndex[kiosk] = (s->trackIndex[kiosk] + 1) % kTracksPerKiosk;", "(void)kiosk;"),
+    ("no-unavailable-advance", "s->trackIndex[kiosk] = nextTrack;", "(void)nextTrack;"),
 ]
 
 
@@ -215,8 +223,12 @@ def main():
     cinema = CINEMA.read_text()
     check("runtime uses COggFileRead + CreateSampleFromData with 1 MiB cap",
           "COggFileRead" in cpp and "kMaxDecodeBytes" in cpp and "CreateSampleFromData" in cpp)
-    check("runtime checks dummy-audio / playback failure and cleans up",
-          "SOUND.IsInitialised()" in cpp and "IsSamplePlaying" in cpp and "ReleaseSample();" in cpp)
+    check("runtime keeps COggFileRead on stack and 1 MiB PCM buffer on CRT heap (off retail heap)",
+          "COggFileRead reader;" in cpp and "new COggFileRead" not in cpp
+          and "std::malloc(kMaxDecodeBytes)" in cpp and "std::free(pcm)" in cpp)
+    check("runtime checks dummy-audio / playback failure and cleans up including gOwner.Shutdown()",
+          "SOUND.IsInitialised()" in cpp and "IsSamplePlaying" in cpp and "ReleaseSample();" in cpp
+          and "gOwner.Shutdown();" in cpp[cpp.index("void RuntimeShutdown()"):])
     check("PortCeMuseumMusicDuck combines cinema and kiosk ducking",
           "CeMuseumAudioKiosk::RuntimeMusicDuckHundredths()" in cinema)
     check("no forbidden words in kiosk labels",

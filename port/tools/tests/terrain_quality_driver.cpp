@@ -18,7 +18,7 @@ static void Check(bool value, int line)
 }
 #define CHECK(value) Check((value), __LINE__)
 
-static int stored, reads, layerCalls, logs;
+static int stored = -1, reads, layerCalls, logs;
 static bool resourcesReady = true;
 static bool ResourcesReady() { return resourcesReady; }
 bool PortCeLayer()
@@ -29,9 +29,9 @@ bool PortCeLayer()
 extern "C" int CE_SettingGetBool(const char *key, int fallback)
 {
     CHECK(!strcmp(key, "terrain_detail_distance"));
-    CHECK(fallback == 0);
+    CHECK(fallback == 1);
     ++reads;
-    return stored;
+    return stored >= 0 ? stored : fallback;
 }
 static char lastReport[2048];
 static size_t longestReport;
@@ -82,16 +82,17 @@ int main(int argc, char **argv)
     } else if (!strcmp(mode, "default")) {
         CHECK(CeTerrainGeometryDistanceSquared(100.f) == 100.f);
         CeTerrainQualityBeginFrame();
-        CHECK(CeTerrainGeometryDistanceSquared(100.f) == 100.f);
-        CHECK(CE_TerrainDetailChoice() == 0 && reads == 1 && logs == 0);
+        CHECK(CeTerrainGeometryDistanceSquared(100.f) == 25.f);
+        CHECK(CE_TerrainDetailChoice() == 1 && reads == 1 && logs == 1);
     } else if (!strcmp(mode, "stored")) {
-        stored = 1;
-        CHECK(CE_TerrainDetailChoice() == 1);
+        stored = 0;
+        CHECK(CE_TerrainDetailChoice() == 0);
         CHECK(CeTerrainGeometryDistanceSquared(100.f) == 100.f);
         CeTerrainQualityBeginFrame();
-        CHECK(CeTerrainGeometryDistanceSquared(100.f) == 25.f);
+        CHECK(CeTerrainGeometryDistanceSquared(100.f) == 100.f);
         CHECK(reads == 1);
     } else if (!strcmp(mode, "switch")) {
+        stored = 0;
         CeTerrainQualityBeginFrame();
         CHECK(!CE_TerrainDetailRequest(-1) && !CE_TerrainDetailRequest(2));
         CHECK(CE_TerrainDetailRequest(1));
@@ -151,6 +152,7 @@ int main(int argc, char **argv)
         CeTerrainQualityBeginFrame();
         CHECK(CE_TerrainDetailStatus() == CE_TERRAIN_DETAIL_ACTIVE);
     } else if (!strcmp(mode, "domain")) {
+        stored = 0;
         const uint32_t patterns[] = {0, 0x80000000u, 0x3f800000u, 0x7f800000u,
                                     0xff800000u, 0x7fc01234u, 0xbf800000u};
         CeTerrainQualityBeginFrame();
@@ -167,6 +169,7 @@ int main(int argc, char **argv)
         for (float value : {1.f, 16.f, 256.f, 1048576.f})
             CHECK(CeTerrainGeometryDistanceSquared(value) == value * .25f);
     } else if (!strcmp(mode, "diagnostics")) {
+        stored = 0;
         CeTerrainQualityBeginFrame();
         for (int i=0; i<12000; ++i) {
             CeTerrainQualityPatch(0); CeTerrainQualityPatch(2); CeTerrainQualityPatch(-1);
@@ -204,6 +207,7 @@ int main(int argc, char **argv)
         CHECK(seen[8]);
     } else if (!strcmp(mode, "diagnostic-fields")) {
         // One window of frames with known reserve traffic and one deliberately slow frame.
+        stored = 0;
         CeTerrainQualityBeginFrame();
         for (int i=0; i<5; ++i) CeTerrainQualityReserveUse(1, true);
         for (int i=0; i<2; ++i) CeTerrainQualityReserveUse(1, false);
@@ -232,6 +236,7 @@ int main(int argc, char **argv)
         CHECK(Field("frame_us_max") < 25000);
     } else if (!strcmp(mode, "diagnostic-off")) {
         // Without the diagnostic nothing is counted, timed or logged, and the accessor says so.
+        stored = 0;
         CHECK(!CeTerrainQualityDiagnostics());
         CeTerrainQualityBeginFrame();
         CeTerrainQualityReserveUse(1, true);

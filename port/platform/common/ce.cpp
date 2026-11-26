@@ -424,6 +424,10 @@ static char *ce_ini_read_raw_dynamic(size_t *outLen, int *outMissing)
 	char *text = (char *)malloc(cap);
 	if (!text) { fclose(f); ce_settings_dir_close(&dir); return NULL; }
 	bool bad = false;
+#ifndef _WIN32
+	struct stat before, after, named;
+	if (fstat(fileno(f), &before) != 0 || before.st_size < 0 || before.st_size > (off_t)limit) bad = true;
+#endif
 	char buf[4096];
 	while (!bad && (got = fread(buf, 1, sizeof(buf), f)) > 0)
 	{
@@ -442,6 +446,16 @@ static char *ce_ini_read_raw_dynamic(size_t *outLen, int *outMissing)
 		len += got;
 	}
 	if (ferror(f) || !feof(f) || len > limit) bad = true;
+#ifndef _WIN32
+	auto same = [](const struct stat &a, const struct stat &b) {
+		return a.st_dev == b.st_dev && a.st_ino == b.st_ino && a.st_mode == b.st_mode &&
+			a.st_nlink == b.st_nlink && a.st_size == b.st_size &&
+			a.st_mtim.tv_sec == b.st_mtim.tv_sec && a.st_mtim.tv_nsec == b.st_mtim.tv_nsec &&
+			a.st_ctim.tv_sec == b.st_ctim.tv_sec && a.st_ctim.tv_nsec == b.st_ctim.tv_nsec;
+	};
+	if (!bad && (fstat(fileno(f), &after) != 0 || fstatat(dir.fd, "ce.ini", &named, AT_SYMLINK_NOFOLLOW) != 0 ||
+		!same(before, after) || !same(after, named) || (size_t)after.st_size != len)) bad = true;
+#endif
 	if (fclose(f) != 0) bad = true;
 	ce_settings_dir_close(&dir);
 	if (bad) { free(text); return NULL; }

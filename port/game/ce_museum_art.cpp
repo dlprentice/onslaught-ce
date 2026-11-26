@@ -672,6 +672,11 @@ void RuntimeDraw(float floorZ, bool ownStateBlock) {
 }
 
 } // namespace CeMuseumArt
+
+extern "C" void PortCeMuseumArtDeleteDeviceObjects(void) {
+    CeMuseumArt::ReleaseFrameGpuBuffers();
+    CeMuseumArt::ReleaseAllTextures();
+}
 #else
 #include "ce_museum_art.h"
 namespace CeMuseumArt {

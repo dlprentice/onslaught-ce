@@ -292,7 +292,7 @@ def main():
         ('multiplayer-cues', [('guidance.inc', 'GAME.IsMultiplayer() || ', '', 1)], 'multiplayer', 'dodge cue admission'),
         ('wrong-wheel', [('guidance.inc', '"Mouse wheel up", "Mouse wheel down"', '"Mouse wheel down", "Mouse wheel up"', 1)], 'normal', 'actual default wheel'),
         ('unplugged-pad', [('pad_info.inc', 'd->pad && SDL_GamepadConnected(d->pad)', 'd->pad', 1)], 'pad-disconnected', 'dodge names the current keys'),
-        ('ignore-custom', [('gamepad.inc', 'if (!n && NoJoystickBindings())', 'if (!n)', 1)], 'pad-incomplete', 'dodge names the current keys'),
+        ('ignore-custom', [('gamepad.inc', 'if (!n && NoJoystickBindings(pad))', 'if (!n)', 1)], 'pad-incomplete', 'dodge names the current keys'),
         ('ignore-axis-capability', [('pad_info.inc', 'if (SDL_GamepadHasAxis(d->pad, axes[i])) result.axes |= 1u << i;', 'result.axes |= 1u << i;', 1)],
          'pad-missing-axis', 'dodge names the current keys'),
         ('unrotated-pad-buttons', [('guidance.inc', 'int raw = rotated && button < 4 ? (button + 1) % 4 : button;', 'int raw = button;', 1)],

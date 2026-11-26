@@ -16,6 +16,7 @@ int CountedRand() { ++draws; return std::rand(); }
 #define rand CountedRand
 static bool recording = false;
 bool PortRecording() { return recording; }
+bool PortCeMenus() { return false; }
 extern "C" bool SDL_OpenURL(const char *) { return false; }	// ce.cpp's report page, never called here
 extern "C" unsigned long long SDL_GetTicks(void) { return 0; }	// ce.cpp's settings retry clock, never read here
 extern "C" int CE_CompatibilityRuntimeMutation(char *, size_t) { return 1; }	// ce.cpp's cheat gate: no network session in this fixture

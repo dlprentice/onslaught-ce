@@ -53,8 +53,10 @@ int				sShownCount;
 
 void	Copy(WCHAR *out, int n, const WCHAR *in)
 {
+	if (!out || n <= 0)
+		return;
 	int i = 0;
-	for (; in[i] && (i < n - 1); i++)
+	for (; in && in[i] && (i < n - 1); i++)
 		out[i] = in[i];
 	out[i] = 0;
 }
@@ -404,10 +406,12 @@ void	GoodiesHint(int index, WCHAR *help, WCHAR *extra, int n)
 	if (firstTitle)
 	{
 		static WCHAR joined[200];
-		const int title = int(wcslen(firstTitle));
-		Copy(joined, int(sizeof(joined) / sizeof(WCHAR)), extra);
-		Copy(joined + 7, int(sizeof(joined) / sizeof(WCHAR)) - 7, firstTitle);
-		Copy(joined + 7 + title, int(sizeof(joined) / sizeof(WCHAR)) - 7 - title, extra + 7 + length);
+		const int room = int(sizeof(joined) / sizeof(WCHAR));
+		Copy(joined, room, extra);
+		Copy(joined + 7, room - 7, firstTitle);
+		const int copied = int(wcslen(joined));
+		if (copied < room - 1)
+			Copy(joined + copied, room - copied, extra + 7 + length);
 		Copy(extra, n, joined);
 	}
 }

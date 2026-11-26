@@ -68,10 +68,10 @@
 +#ifdef CE_VERSION
 +			if (PortCeSanctuaryActive())
 +			{
-+				PortCeSanctuaryClampBeam(mPos.X, mPos.Y, mPos.Z, &mVelocity.X, &mVelocity.Y, &mVelocity.Z);
-+				if (mBeamStart.X != mPos.X || mBeamStart.Y != mPos.Y || mBeamStart.Z != mPos.Z)
++				FVector ceBeamSeg = (mPos + mVelocity) - mBeamStart;
++				if (PortCeSanctuaryClampBeam(mBeamStart.X, mBeamStart.Y, mBeamStart.Z, &ceBeamSeg.X, &ceBeamSeg.Y, &ceBeamSeg.Z))
 +				{
-+					PortCeSanctuaryClampBeam(mBeamStart.X, mBeamStart.Y, mBeamStart.Z, &mVelocity.X, &mVelocity.Y, &mVelocity.Z);
++					mVelocity = (mBeamStart + ceBeamSeg) - mPos;
 +				}
 +			}
 +#endif

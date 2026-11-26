@@ -1,5 +1,3 @@
-# SPDX-License-Identifier: GPL-3.0-only
-# Frozen production negative control: strip later observation and undo lifecycle correction; original source SHA stays pinned.
 --- a/dsound.cpp
 +++ b/dsound.cpp
 @@ -23,7 +23,6 @@
@@ -10,7 +8,7 @@
  #include <math.h>
  #include <new>
  #include <stdio.h>
-@@ -31,19 +30,8 @@
+@@ -31,62 +30,22 @@
  #include <stdarg.h>
  #include <stdint.h>
  #include <string.h>
@@ -30,7 +28,15 @@
  unsigned long long PortClockFrames();		// port/platform/common/clock.cpp
  bool PortClockVirtual();
  unsigned long long PortClockPeekNs();
-@@ -51,34 +39,13 @@
+ void PortAudioGuardCheck();			// port/platform/common/audioguard.cpp
+-bool PortCeLayer() __attribute__((weak));
+-
+-static int gAudioFocused = 1;
+-
+-extern "C" void PortAudioSetFocused(int focused)
+-{
+-	__atomic_store_n(&gAudioFocused, focused ? 1 : 0, __ATOMIC_RELEASE);
+-}
  
  namespace
  {
@@ -66,7 +72,7 @@
  bool SameGuid(REFIID a, const GUID &b) { return memcmp(&a, &b, sizeof(GUID)) == 0; }
  
  const int kRate = 44100;			// the mix's rate; voices are resampled to it
-@@ -87,7 +54,6 @@
+@@ -95,7 +54,6 @@
  struct Buffer;
  struct Buffer3D;
  struct Listener;
@@ -74,7 +80,7 @@
  
  // ---- the mixer: one per process, shared by every IDirectSound8
  
-@@ -110,23 +76,10 @@
+@@ -118,23 +76,10 @@
  	int users = 0;
  	Buffer *voices[kMaxVoices];
  	int numVoices = 0;
@@ -98,7 +104,7 @@
  	Uint32 wavBytes = 0;
  	Uint32 wavHeaderAt = 0;
  	float *scratch = NULL;
-@@ -134,9 +87,7 @@
+@@ -142,9 +87,7 @@
  	Uint64 mixed = 0;				// frames mixed since the first device opened
  	bool virt = false;				// BEA_PORT_CLOCK: the mix follows the port's virtual clock (CatchUp)
  	Uint64 virtBase = 0;			// the virtual time the mix started at
@@ -108,7 +114,7 @@
  	SDL_AudioStream *monitor = NULL;	// BEA_AUDIO_MONITOR with the virtual clock: the mix, written only, to the device
  	bool monitorAudioInit = false;
  	bool monitorPlaying = false;
-@@ -146,7 +97,6 @@
+@@ -154,7 +97,6 @@
  	void Stop();
  	void Mix(Sint16 *out, int frames);		// called with lock held
  	void CatchUp();
@@ -116,7 +122,7 @@
  	void Record(const Sint16 *pcm, int frames);
  	void FinishWav();
  };
-@@ -196,13 +146,7 @@
+@@ -204,13 +146,7 @@
  	SDL_UnlockMutex(gCallLock);
  }
  inline unsigned long P(const void *p) { return (unsigned long)(uintptr_t)p; }
@@ -131,7 +137,24 @@
  
  // ---- buffers
  
-@@ -230,26 +174,14 @@
+@@ -228,16 +164,6 @@
+ 	bool dirty = false;
+ };
+ 
+-struct NotifyIface final : public IDirectSoundNotify
+-{
+-	Buffer *owner;
+-	explicit NotifyIface(Buffer *b) : owner(b) {}
+-	HRESULT STDMETHODCALLTYPE QueryInterface(REFIID r, LPVOID *o) override;
+-	ULONG STDMETHODCALLTYPE AddRef() override;
+-	ULONG STDMETHODCALLTYPE Release() override;
+-	HRESULT STDMETHODCALLTYPE SetNotificationPositions(DWORD n, LPCDSBPOSITIONNOTIFY p) override;
+-};
+-
+ struct Buffer final : public IDirectSoundBuffer8
+ {
+ 	LONG refs = 1;
+@@ -248,27 +174,14 @@
  	LONG pan = 0;
  	DWORD frequency;
  	bool playing = false, looping = false;
@@ -152,14 +175,15 @@
  	DWORD numNotes = 0;
  	Buffer3D *b3d = NULL;
  	Listener *listener = NULL;
+-	NotifyIface notify;
  	float lastGain[2] = {0, 0};	// the previous mix's gains, ramped to avoid clicks
  
--	Buffer(LPCDSBUFFERDESC d, Data *shared, bool adopt = false)
+-	Buffer(LPCDSBUFFERDESC d, Data *shared, bool adopt = false) : notify(this)
 +	Buffer(LPCDSBUFFERDESC d, Data *shared)
  	{
  		flags = d->dwFlags;
  		memset(&format, 0, sizeof(format));
-@@ -270,133 +202,37 @@
+@@ -289,133 +202,37 @@
  		if (shared)
  		{
  			data = shared;
@@ -302,7 +326,7 @@
  		for (DWORD i = 0; i < numNotes; i++)
  		{
  			DWORD off = notes[i].dwOffset;
-@@ -405,19 +241,13 @@
+@@ -424,19 +241,13 @@
  			double o = off;
  			bool passed = wrapped ? (o >= from || o < to) : (o >= from && o < to);
  			if (passed)
@@ -322,7 +346,7 @@
  		for (int i = 0; i < gMixer.numVoices; i++)
  			if (gMixer.voices[i] == this)
  			{
-@@ -492,18 +322,8 @@
+@@ -511,18 +322,8 @@
  	HRESULT STDMETHODCALLTYPE Lock(DWORD off, DWORD n, LPVOID *p1, LPDWORD n1, LPVOID *p2, LPDWORD n2, DWORD lockFlags) override
  	{
  		gMixer.CatchUp();
@@ -342,7 +366,7 @@
  		{
  			CallLog("Lock obj=%08lX offset=%lu bytes=%lu flags=%lx got=0/0 hr=%lx", P(this), (unsigned long)off, (unsigned long)n,
  					(unsigned long)lockFlags, (unsigned long)DSERR_INVALIDCALL);
-@@ -554,7 +374,6 @@
+@@ -573,7 +374,6 @@
  					(unsigned long)priority, (unsigned long)playFlags, h, peak, bytes ? 1 : 0, (unsigned long)bytes,
  					(unsigned long)cp, (unsigned long)cw);
  		}
@@ -350,7 +374,7 @@
  		SDL_LockMutex(gMixer.lock);
  		looping = (playFlags & DSBPLAY_LOOPING) != 0;
  		if (!playing && Bytes() && !(flags & DSBCAPS_PRIMARYBUFFER) && gMixer.numVoices < kMaxVoices)
-@@ -564,32 +383,8 @@
+@@ -583,32 +383,8 @@
  			playing = true;
  			lastGain[0] = lastGain[1] = -1;		// start at the target gain, without a ramp
  			gMixer.voices[gMixer.numVoices++] = this;
@@ -383,7 +407,7 @@
  		return DS_OK;
  	}
  	HRESULT STDMETHODCALLTYPE SetCurrentPosition(DWORD p) override
-@@ -604,14 +399,8 @@
+@@ -623,14 +399,8 @@
  	HRESULT STDMETHODCALLTYPE SetFormat(LPCWAVEFORMATEX f) override
  	{
  		// The primary buffer's format: the mix stays at 44.1 kHz stereo and SDL converts for the device.
@@ -398,7 +422,7 @@
  		return DS_OK;
  	}
  	HRESULT STDMETHODCALLTYPE SetVolume(LONG v) override
-@@ -658,14 +447,11 @@
+@@ -677,14 +447,11 @@
  		if (playing)
  			Halt();
  		SDL_UnlockMutex(gMixer.lock);
@@ -414,7 +438,7 @@
  		// DirectSound rejects an unlock larger than the buffer (the game unlocks its samples with twice their size and
  		// gets this error in retail too; the data is written either way)
  		HRESULT hr = (n1 > Bytes() || n2 > Bytes()) ? DSERR_INVALIDPARAM : DS_OK;
-@@ -727,25 +513,18 @@
+@@ -746,25 +513,18 @@
  	HRESULT STDMETHODCALLTYPE QueryInterface(REFIID r, LPVOID *o) override { return owner->QueryInterface(r, o); }
  	ULONG STDMETHODCALLTYPE AddRef() override { return owner->AddRef(); }
  	ULONG STDMETHODCALLTYPE Release() override { return owner->ReleaseQuiet(); }
@@ -449,7 +473,7 @@
  		CallLog("port.3D.SetAllParameters obj=%08lX pos=%d,%d,%d vel=%d,%d,%d cone=%lu,%lu orient=%d,%d,%d outvol=%ld min=%d max=%d mode=%lu "
  				"apply=%lu hr=0", P(this), F(n->vPosition.x), F(n->vPosition.y), F(n->vPosition.z), F(n->vVelocity.x),
  				F(n->vVelocity.y), F(n->vVelocity.z), (unsigned long)n->dwInsideConeAngle, (unsigned long)n->dwOutsideConeAngle,
-@@ -757,54 +536,38 @@
+@@ -776,54 +536,38 @@
  	}
  	HRESULT STDMETHODCALLTYPE SetConeAngles(DWORD i, DWORD o, DWORD a) override
  	{
@@ -504,7 +528,7 @@
  		CallLog("3D.SetVelocity obj=%08lX x=%d y=%d z=%d apply=%lu hr=0", P(this), F(x), F(y), F(z), (unsigned long)a);
  		return Change(a, [&](DS3DBUFFER &d) { d.vVelocity.x = x; d.vVelocity.y = y; d.vVelocity.z = z; });
  	}
-@@ -851,21 +614,16 @@
+@@ -870,21 +614,16 @@
  	HRESULT STDMETHODCALLTYPE QueryInterface(REFIID r, LPVOID *o) override { return owner->QueryInterface(r, o); }
  	ULONG STDMETHODCALLTYPE AddRef() override { return owner->AddRef(); }
  	ULONG STDMETHODCALLTYPE Release() override { return owner->ReleaseQuiet(); }
@@ -533,7 +557,7 @@
  		CallLog("port.Listener.SetAllParameters pos=%d,%d,%d vel=%d,%d,%d front=%d,%d,%d top=%d,%d,%d distance=%d doppler=%d rolloff=%d "
  				"apply=%lu hr=0", F(n->vPosition.x), F(n->vPosition.y), F(n->vPosition.z), F(n->vVelocity.x), F(n->vVelocity.y),
  				F(n->vVelocity.z), F(n->vOrientFront.x), F(n->vOrientFront.y), F(n->vOrientFront.z), F(n->vOrientTop.x),
-@@ -877,20 +635,14 @@
+@@ -896,20 +635,14 @@
  	}
  	HRESULT STDMETHODCALLTYPE SetDistanceFactor(D3DVALUE v, DWORD a) override
  	{
@@ -554,7 +578,7 @@
  		return Change(a, [&](DS3DLISTENER &d) {
  			d.vOrientFront.x = fx; d.vOrientFront.y = fy; d.vOrientFront.z = fz;
  			d.vOrientTop.x = tx; d.vOrientTop.y = ty; d.vOrientTop.z = tz;
-@@ -898,20 +650,14 @@
+@@ -917,20 +650,14 @@
  	}
  	HRESULT STDMETHODCALLTYPE SetPosition(D3DVALUE x, D3DVALUE y, D3DVALUE z, DWORD a) override
  	{
@@ -575,7 +599,49 @@
  		return Change(a, [&](DS3DLISTENER &d) { d.vVelocity.x = x; d.vVelocity.y = y; d.vVelocity.z = z; });
  	}
  	HRESULT STDMETHODCALLTYPE CommitDeferredSettings() override
-@@ -1002,13 +748,6 @@
+@@ -954,21 +681,26 @@
+ 	}
+ };
+ 
+-HRESULT STDMETHODCALLTYPE NotifyIface::QueryInterface(REFIID r, LPVOID *o) { return owner->QueryInterface(r, o); }
+-ULONG STDMETHODCALLTYPE NotifyIface::AddRef() { return owner->AddRef(); }
+-ULONG STDMETHODCALLTYPE NotifyIface::Release() { return owner->ReleaseQuiet(); }
+-HRESULT STDMETHODCALLTYPE NotifyIface::SetNotificationPositions(DWORD n, LPCDSBPOSITIONNOTIFY p)
+-{
+-	gMixer.CatchUp();
+-	CallLog("Notify.SetNotificationPositions obj=%08lX count=%lu hr=0", P(this), (unsigned long)n);
+-	for (DWORD i = 0; i < n; i++)
+-		CallLog("  notify[%lu] offset=%lu event=%08lX", (unsigned long)i, (unsigned long)p[i].dwOffset, P(p[i].hEventNotify));
+-	SDL_LockMutex(gMixer.lock);
+-	owner->numNotes = n < 32 ? n : 32;
+-	memcpy(owner->notes, p, owner->numNotes * sizeof(DSBPOSITIONNOTIFY));
+-	SDL_UnlockMutex(gMixer.lock);
+-	return DS_OK;
+-}
++struct NotifyIface final : public IDirectSoundNotify
++{
++	Buffer *owner;
++	explicit NotifyIface(Buffer *b) : owner(b) {}
++	HRESULT STDMETHODCALLTYPE QueryInterface(REFIID r, LPVOID *o) override { return owner->QueryInterface(r, o); }
++	ULONG STDMETHODCALLTYPE AddRef() override { return owner->AddRef(); }
++	ULONG STDMETHODCALLTYPE Release() override { return owner->ReleaseQuiet(); }
++	HRESULT STDMETHODCALLTYPE SetNotificationPositions(DWORD n, LPCDSBPOSITIONNOTIFY p) override
++	{
++		gMixer.CatchUp();
++		CallLog("Notify.SetNotificationPositions obj=%08lX count=%lu hr=0", P(this), (unsigned long)n);
++		for (DWORD i = 0; i < n; i++)
++			CallLog("  notify[%lu] offset=%lu event=%08lX", (unsigned long)i, (unsigned long)p[i].dwOffset, P(p[i].hEventNotify));
++		SDL_LockMutex(gMixer.lock);
++		owner->numNotes = n < 32 ? n : 32;
++		memcpy(owner->notes, p, owner->numNotes * sizeof(DSBPOSITIONNOTIFY));
++		SDL_UnlockMutex(gMixer.lock);
++		return DS_OK;
++	}
++};
+ 
+ void Buffer::TracePlay()
+ {
+@@ -1016,13 +748,6 @@
  Buffer::~Buffer()
  {
  	SDL_LockMutex(gMixer.lock);
@@ -589,7 +655,7 @@
  	if (playing)
  		Halt();
  	SDL_UnlockMutex(gMixer.lock);
-@@ -1016,7 +755,7 @@
+@@ -1030,7 +755,7 @@
  		Destroy(b3d);
  	if (listener)
  		Destroy(listener);
@@ -598,7 +664,7 @@
  	{
  		free(data->bytesPtr);
  		free(data);
-@@ -1025,32 +764,21 @@
+@@ -1039,29 +764,21 @@
  
  HRESULT STDMETHODCALLTYPE Buffer::QueryInterface(REFIID riid, LPVOID *out)
  {
@@ -623,16 +689,13 @@
  	}
  	else if (SameGuid(riid, IID_IDirectSoundNotify) && (flags & DSBCAPS_CTRLPOSITIONNOTIFY))
 -	{
--		NotifyIface *nf = Make<NotifyIface>(this);		// small; freed with the process
--		if (!nf)
--			return E_OUTOFMEMORY;
--		*out = static_cast<IDirectSoundNotify *>(nf);
+-		*out = static_cast<IDirectSoundNotify *>(&notify);
 -	}
 +		*out = static_cast<IDirectSoundNotify *>(Make<NotifyIface>(this));		// small; freed with the process
  	else if (SameGuid(riid, IID_IDirectSoundBuffer) || SameGuid(riid, IID_IDirectSoundBuffer8) || SameGuid(riid, IID_IUnknown))
  		*out = static_cast<IDirectSoundBuffer8 *>(this);
  	else
-@@ -1103,21 +831,16 @@
+@@ -1114,21 +831,16 @@
  {
  	float g = DbToGain(volume);
  	float left = g, right = g;
@@ -657,7 +720,7 @@
  		{
  			if (dist > maxD)
  			{
-@@ -1126,45 +849,30 @@
+@@ -1137,45 +849,30 @@
  				dist = maxD;
  			}
  			if (att > 0.0f)	// DirectSound's rolloff: 6 dB per doubling of distance at a rolloff factor of 1
@@ -715,7 +778,7 @@
  		}
  	}
  	else if (pan)
-@@ -1174,43 +882,20 @@
+@@ -1185,44 +882,20 @@
  		else
  			right *= DbToGain(pan);
  	}
@@ -760,14 +823,25 @@
  		scratchFrames = frames;
  	}
 -	memset(scratch, 0, sizeof(float) * 2 * (size_t)frames);
+-	const bool focused = __atomic_load_n(&gAudioFocused, __ATOMIC_ACQUIRE) != 0;
 -	int musicSpan = 0, filmSpan = 0;
 +	memset(scratch, 0, sizeof(float) * 2 * frames);
  	for (int v = numVoices - 1; v >= 0; v--)
  	{
  		Buffer *b = voices[v];
-@@ -1227,28 +912,21 @@
+@@ -1235,38 +908,25 @@
+ 		float gain[2];
+ 		double step;
+ 		b->Gains(gain, &step);
+-		if (!focused && !(b->flags & DSBCAPS_GLOBALFOCUS))
+-		{
+-			gain[0] = 0.0f;
+-			gain[1] = 0.0f;
+-		}
+ 		float g0[2] = {b->lastGain[0] < 0 ? gain[0] : b->lastGain[0], b->lastGain[1] < 0 ? gain[1] : b->lastGain[1]};
  		b->lastGain[0] = gain[0];
  		b->lastGain[1] = gain[1];
+-		const bool silentBlock = (g0[0] == 0.0f && g0[1] == 0.0f && gain[0] == 0.0f && gain[1] == 0.0f);
  		int ch = b->format.nChannels;
 -		double pos = b->cursor;
 -		if (!isfinite(pos) || pos < 0.0)
@@ -801,35 +875,71 @@
  				}
  				else
  				{
-@@ -1256,11 +934,10 @@
+@@ -1274,56 +934,37 @@
  					break;
  				}
  			}
--			DWORD f0 = (DWORD)pos;
- 			float ramp = (float)i / frames;
- 			float gl = g0[0] + (gain[0] - g0[0]) * ramp, gr = g0[1] + (gain[1] - g0[1]) * ramp;
- 			float sl, sr;
--			double frac = pos - (double)f0;
+-			if (!silentBlock)
++			float ramp = (float)i / frames;
++			float gl = g0[0] + (gain[0] - g0[0]) * ramp, gr = g0[1] + (gain[1] - g0[1]) * ramp;
++			float sl, sr;
 +			double frac = pos - f0;
- 			if (step == 1.0 && frac == 0.0)
++			if (step == 1.0 && frac == 0.0)
  			{
- 				sl = b->Sample(f0, 0);
-@@ -1268,12 +945,7 @@
- 			}
- 			else
- 			{
--				int phase = isfinite(frac) ? (int)(frac * kPhases + 0.5) : 0;
--				if (phase < 0)
--					phase = 0;
--				else if (phase > kPhases)
--					phase = kPhases;
--				const float *k = gKernel[phase];
+-				DWORD f0 = (DWORD)pos;
+-				float ramp = (float)i / frames;
+-				float gl = g0[0] + (gain[0] - g0[0]) * ramp, gr = g0[1] + (gain[1] - g0[1]) * ramp;
+-				float sl, sr;
+-				double frac = pos - (double)f0;
+-				if (step == 1.0 && frac == 0.0)
+-				{
+-					sl = b->Sample(f0, 0);
+-					sr = ch > 1 ? b->Sample(f0, 1) : sl;
+-				}
+-				else
++				sl = b->Sample(f0, 0);
++				sr = ch > 1 ? b->Sample(f0, 1) : sl;
++			}
++			else
++			{
 +				const float *k = gKernel[(int)(frac * kPhases + 0.5)];
- 				sl = sr = 0;
- 				for (int t = 0; t < kTaps; t++)
++				sl = sr = 0;
++				for (int t = 0; t < kTaps; t++)
  				{
-@@ -1293,14 +965,6 @@
- 			scratch[2 * i + 1] += sr * gr;
+-					int phase = isfinite(frac) ? (int)(frac * kPhases + 0.5) : 0;
+-					if (phase < 0)
+-						phase = 0;
+-					else if (phase > kPhases)
+-						phase = kPhases;
+-					const float *k = gKernel[phase];
+-					sl = sr = 0;
+-					for (int t = 0; t < kTaps; t++)
++					long f = (long)f0 + t - (kTaps / 2 - 1);
++					if (f < 0 || f >= (long)total)
+ 					{
+-						long f = (long)f0 + t - (kTaps / 2 - 1);
+-						if (f < 0 || f >= (long)total)
+-						{
+-							if (!b->looping)
+-								continue;
+-							f = ((f % (long)total) + (long)total) % (long)total;
+-						}
+-						float l = b->Sample((DWORD)f, 0);
+-						sl += k[t] * l;
+-						sr += k[t] * (ch > 1 ? b->Sample((DWORD)f, 1) : l);
++						if (!b->looping)
++							continue;
++						f = ((f % (long)total) + (long)total) % (long)total;
+ 					}
++					float l = b->Sample((DWORD)f, 0);
++					sl += k[t] * l;
++					sr += k[t] * (ch > 1 ? b->Sample((DWORD)f, 1) : l);
+ 				}
+-				scratch[2 * i] += sl * gl;
+-				scratch[2 * i + 1] += sr * gr;
+ 			}
++			scratch[2 * i] += sl * gl;
++			scratch[2 * i + 1] += sr * gr;
  			pos += step;
  		}
 -		// Every voice starts at this block's frame zero; only its end can shorten that prefix. Max per-role
@@ -840,10 +950,12 @@
 -			if (b->mediaKind == PORT_SESSION_MUSIC && i > musicSpan) musicSpan = i;
 -			if (b->mediaKind == PORT_SESSION_FILM && i > filmSpan) filmSpan = i;
 -		}
+-		if (!b->looping && pos >= (double)total)
+-			ended = true;
  		if (pos >= total && b->looping)
  		{
  			pos = fmod(pos, (double)total);
-@@ -1323,13 +987,6 @@
+@@ -1346,13 +987,6 @@
  	}
  	Record(out, frames);
  	Monitor(out, frames);
@@ -857,7 +969,7 @@
  	mixed += frames;
  }
  
-@@ -1403,56 +1060,12 @@
+@@ -1426,56 +1060,12 @@
  	}
  	SDL_LockMutex(gMixer.lock);
  	gMixer.Mix(buf, frames);
@@ -914,7 +1026,7 @@
  	SDL_free(buf);
  }
  
-@@ -1465,89 +1078,39 @@
+@@ -1488,89 +1078,39 @@
  {
  	if (!virt)
  		return;
@@ -978,10 +1090,7 @@
 -	if (!isfinite(exact) || exact <= 0.0)
 -		gMixer.timerFrac = 0.0;
 -	else if (exact > (double)kMaxTimerBacklog)
-+	int n = (int)frames;
-+	gMixer.timerFrac = frames - n;
-+	if (n > 0)
- 	{
+-	{
 -		remaining = kMaxTimerBacklog;
 -		gMixer.timerFrac = 0.0;
 -	}
@@ -991,7 +1100,10 @@
 -		gMixer.timerFrac = exact - (double)remaining;
 -	}
 -	while (remaining > 0)
--	{
++	int n = (int)frames;
++	gMixer.timerFrac = frames - n;
++	if (n > 0)
+ 	{
 -		int chunk = remaining > kRate ? kRate : remaining;
 -		remaining -= chunk;
 -		if ((size_t)chunk > SIZE_MAX / 4u)
@@ -1018,7 +1130,7 @@
  	return interval;
  }
  
-@@ -1563,40 +1126,20 @@
+@@ -1586,40 +1126,20 @@
  		BuildKernel();
  	}
  	const char *rec = SDL_getenv("BEA_AUDIO_RECORD");
@@ -1065,7 +1177,7 @@
  	bool timerOnly = virt || (clock && SDL_strcmp(clock, "timer") == 0);
  	if (!timerOnly)
  	{
-@@ -1606,36 +1149,8 @@
+@@ -1629,36 +1149,8 @@
  			stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, Feed, NULL);
  			if (stream)
  			{
@@ -1103,7 +1215,7 @@
  			}
  			else
  			{
-@@ -1665,13 +1180,9 @@
+@@ -1688,13 +1180,9 @@
  	}
  	if (!stream)
  	{
@@ -1117,7 +1229,7 @@
  		if (!timer) PortSessionLog(PORT_SESSION_AUDIO, true, "audio timer start failed: %.200s", SDL_GetError());
  	}
  	// so a run's log shows where the sound went (SDL's "dummy" driver and the timer clock are silent)
-@@ -1712,27 +1223,17 @@
+@@ -1735,27 +1223,17 @@
  {
  	if (--users)
  		return;
@@ -1150,7 +1262,7 @@
  	SDL_LockMutex(lock);
  	if (monitor)
  	{
-@@ -1749,7 +1250,6 @@
+@@ -1772,7 +1250,6 @@
  		trace = NULL;
  	}
  	SDL_UnlockMutex(lock);
@@ -1158,7 +1270,7 @@
  	PortSessionSummary();
  }
  
-@@ -1774,19 +1274,10 @@
+@@ -1797,19 +1274,10 @@
  			Destroy(this);
  		return (ULONG)r;
  	}
@@ -1180,7 +1292,7 @@
  		{
  			CallLog("CreateSoundBuffer ds=%08lX flags=%lx bytes=%lu tag=%u ch=%u rate=%lu bits=%u alg3d=%08lx out=00000000 hr=%lx",
  					P(this), (unsigned long)d->dwFlags, (unsigned long)d->dwBufferBytes, w ? w->wFormatTag : 0, w ? w->nChannels : 0,
-@@ -1794,17 +1285,7 @@
+@@ -1817,17 +1285,7 @@
  					d->dwSize >= sizeof(DSBUFFERDESC) ? (unsigned long)d->guid3DAlgorithm.Data1 : 0UL, (unsigned long)DSERR_INVALIDPARAM);
  			return DSERR_INVALIDPARAM;
  		}
@@ -1199,7 +1311,7 @@
  		CallLog("CreateSoundBuffer ds=%08lX flags=%lx bytes=%lu tag=%u ch=%u rate=%lu bits=%u alg3d=%08lx out=%08lX hr=0", P(this),
  				(unsigned long)d->dwFlags, (unsigned long)d->dwBufferBytes, w ? w->wFormatTag : 0, w ? w->nChannels : 0,
  				w ? (unsigned long)w->nSamplesPerSec : 0UL, w ? w->wBitsPerSample : 0,
-@@ -1813,8 +1294,6 @@
+@@ -1836,8 +1294,6 @@
  	}
  	HRESULT STDMETHODCALLTYPE GetCaps(LPDSCAPS c) override
  	{
@@ -1208,7 +1320,22 @@
  		DWORD size = c->dwSize;
  		memset(c, 0, size);
  		c->dwSize = size;
-@@ -1827,13 +1306,7 @@
+@@ -1846,28 +1302,11 @@
+ 		c->dwMinSecondarySampleRate = DSBFREQUENCY_MIN;
+ 		c->dwMaxSecondarySampleRate = DSBFREQUENCY_MAX;
+ 		c->dwPrimaryBuffers = 1;
+-		if (PortCeLayer && PortCeLayer())
+-		{
+-			c->dwMaxHwMixingAllBuffers = 64;
+-			c->dwMaxHwMixingStaticBuffers = 64;
+-			c->dwFreeHwMixingAllBuffers = 64;
+-			c->dwFreeHwMixingStaticBuffers = 64;
+-			c->dwMaxHw3DAllBuffers = 64;
+-			c->dwMaxHw3DStaticBuffers = 64;
+-			c->dwFreeHw3DAllBuffers = 64;
+-			c->dwFreeHw3DStaticBuffers = 64;
+-		}
+ 		return DS_OK;
  	}
  	HRESULT STDMETHODCALLTYPE DuplicateSoundBuffer(LPDIRECTSOUNDBUFFER src, LPDIRECTSOUNDBUFFER *out) override
  	{
@@ -1222,7 +1349,7 @@
  		DSBUFFERDESC d;
  		memset(&d, 0, sizeof(d));
  		d.dwSize = sizeof(d);
-@@ -1841,11 +1314,7 @@
+@@ -1875,11 +1314,7 @@
  		d.dwBufferBytes = s->Bytes();
  		d.lpwfxFormat = &s->format;
  		// a duplicate shares its source's memory (DirectSound's rule) and starts stopped at position 0
@@ -1235,7 +1362,7 @@
  		CallLog("DuplicateSoundBuffer ds=%08lX src=%08lX new=%08lX hr=0", P(this), P(src), P(*out));
  		return DS_OK;
  	}
-@@ -1860,68 +1329,6 @@
+@@ -1894,68 +1329,6 @@
  	HRESULT STDMETHODCALLTYPE Initialize(const GUID *) override { return DSERR_ALREADYINITIALIZED; }
  	HRESULT STDMETHODCALLTYPE VerifyCertification(LPDWORD c) override { *c = 0; return DS_OK; }
  };
@@ -1304,7 +1431,7 @@
  } // namespace
  
  #ifdef CE_VERSION
-@@ -1935,114 +1342,15 @@
+@@ -1969,114 +1342,15 @@
  }
  #endif
  

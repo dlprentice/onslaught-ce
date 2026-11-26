@@ -47,17 +47,25 @@ NM = TOOLS / "llvm-nm"
 CXX = TOOLS / "i686-w64-mingw32-clang++"
 EXE = None          # --exe
 OBJECTS = None      # --objects
+REQUIRE_BINARY = False  # --require-binary
 
 # The weak names a default CE program must hold with an address, and what each is asked for.
 REQUIRED = {
     "_PortCeEditorActive": "the save fence asks it: no career write during a map editor session",
     "_PortCeMuseumVisitActive": "the save fence asks it: no career write during a museum visit",
+    "_PortCeMuseumActive": "museum runtime presence gate",
     "_PortCeMuseumMusicDuck": "patch 0258 asks it: the museum cinema ducks hall music while a film plays",
     "_PortBinkHasSound": "the museum cinema asks it: duck music to silence under a film with audio, bed without",
     "_PortBinkPause": "the museum cinema calls it: hold film sound and clock while the game is paused",
     "_PortCeCmdWorldViewToken": "the world view asks it for the commander's picture",
     "_PortCeEditorWorldViewToken": "the world view asks it for the editor's picture; the editor calls it directly",
     "_PortFeelOn": "the platform layer asks it before every frame-feel call",
+    "_PortCeSoundBeforeReinit": "audio reinit hook quiesces CE audio/video streams before DeviceShutdown",
+    "_PortCePlayUnitDrawWorld": "play-unit world render hook",
+    "_PortCeLivingSandboxDrawHud": "Living Sandbox HUD overlay hook",
+    "_PortCeCarrierClashDrawHud": "Carrier Clash HUD overlay hook",
+    "_PortCeFlagshipDuelDrawHud": "Flagship Duel HUD overlay hook",
+    "_PortCeMultiBeDrawHud": "Multi-BE HUD overlay hook",
 }
 
 LINE = re.compile(r"^(?:.*?: )?([0-9a-fA-F]{8,16})?\s*([A-Za-z?-]) (\S+)\s*$")
@@ -249,9 +257,15 @@ class ProgramTests(unittest.TestCase):
         named = EXE or os.environ.get("BEA_WINDOWS_EXE")
         exe = Path(named) if named else build.BUILD / "windows/bea.exe"
         if not exe.is_file():
-            self.skipTest(f"SKIPPED, NOT PASSED: no Windows program at {exe} (build with --target windows or all, or pass --exe)")
+            msg = f"no Windows program at {exe} (build with --target windows or all, or pass --exe)"
+            if REQUIRE_BINARY:
+                self.fail(msg)
+            self.skipTest(f"SKIPPED, NOT PASSED: {msg}")
         if not NM.is_file():
-            self.skipTest(f"SKIPPED, NOT PASSED: no llvm-nm at {NM}")
+            msg = f"no llvm-nm at {NM}"
+            if REQUIRE_BINARY:
+                self.fail(msg)
+            self.skipTest(f"SKIPPED, NOT PASSED: {msg}")
         program = nm(exe)
         self.assertGreater(len(program), 1000, "the program has no symbols to read: the check needs the unstripped build")
         folder = Path(OBJECTS) if OBJECTS else exe.parent
@@ -270,7 +284,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--exe", help="the Windows program to read (default: this checkout's local-data/port/build/windows/bea.exe)")
     parser.add_argument("--objects", help="the folder whose objects were linked into it (default: the program's folder)")
+    parser.add_argument("--require-binary", action="store_true", help="fail instead of skipping when the Windows binary or llvm-nm is missing")
     parser.add_argument("-v", action="store_true")
     args = parser.parse_args()
-    EXE, OBJECTS = args.exe, args.objects
+    EXE, OBJECTS, REQUIRE_BINARY = args.exe, args.objects, args.require_binary
     unittest.main(verbosity=2 if args.v else 1, argv=sys.argv[:1])

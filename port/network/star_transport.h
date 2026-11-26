@@ -17,6 +17,7 @@
 
 struct _ENetHost;
 struct _ENetPeer;
+struct _ENetEvent;
 class CeIceBridge;
 
 constexpr uint16_t CE_STAR_PROTO_VERSION = 1;
@@ -318,6 +319,9 @@ private:
                        uint8_t out_key[32]) const noexcept;
     void SendGuestHello(uint64_t now_ms);
     void CleanupPendingPeer(_ENetPeer* peer) noexcept;
+    void ConfigurePeerTimeouts(_ENetPeer* peer) noexcept;
+    static int InterceptCallback(_ENetHost* host, _ENetEvent* event);
+    int IngressCheck(_ENetHost* host, uint64_t now_ms) noexcept;
 #if defined(CE_NETWORK_ICE)
     bool TryRetryGuestOverRelay() noexcept;
 #endif
@@ -330,12 +334,21 @@ private:
     bool guest_hello_sent_ = false;
     bool host_lost_ = false;
     bool critical_overflow_ = false;
+    bool ingress_inited_ = false;
     CeStarError last_error_ = CeStarError::Ok;
     uint32_t rejected_packets_ = 0;
     uint32_t chat_send_seq_ = 0;
     uint64_t last_ping_broadcast_ms_ = 0;
     uint64_t last_keepalive_tx_ms_ = 0;
     uint64_t created_at_ms_ = 0;
+    uint64_t ingress_at_ms_ = 0;
+    uint64_t packet_credit_ = 0;
+    uint64_t byte_credit_ = 0;
+    uint64_t packet_burst_ = 0;
+    uint64_t packet_rate_ = 0;
+    uint64_t byte_burst_ = 0;
+    uint64_t byte_rate_ = 0;
+    uint32_t incoming_metadata_limit_ = 0;
 
     // Host uses slots_[1..max_guests] (slot 0 unused on Host). Guest uses slots_[0] for Host link.
     std::vector<PeerSlot> slots_;

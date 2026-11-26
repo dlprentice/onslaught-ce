@@ -24,7 +24,7 @@ MUTANTS = (
     ("held-reads-physical", "pad-quick-tap", "port/game/ce_gamepad.cpp",
      "return sCurrent[pad][button];", "return LT.JoyButtonOn(pad, button);"),
     ("focus-state-ignored", "pad-edge-missing-focus-event", "port/platform/common/dinput.cpp",
-     "if (focused != d->ceFocused)", "if (false)"),
+     "if (focused != d->ceFocused || min != d->ceMinimized)", "if (false)"),
     ("only-owner-pad-updated", "pad-edge-cross-binding", "port/game/ce_gamepad.cpp",
      "for (int pad = 0; pad < LT.mJoypads && pad < MAX_JOYPADS; ++pad) PortCeGamepadUpdate(pad);",
      "PortCeGamepadUpdate(consumer);"),

@@ -24,15 +24,25 @@ int PortCeIsSplitScreen()
 	return (GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() != 1) ? 1 : 0;
 }
 
-// Whether the camera should use retail's half-height 2P horizontal-split aspect (0.5f instead of 0.75f).
-// Single-viewport multiplayer (vp == 1) and 3P/4P quad-split (vp == 3 or 4, quarter-screen with full aspect)
-// keep the normal 0.75f aspect ratio. Faithful/replay runs keep GAME.IsMultiplayer() unchanged.
+// Whether the camera should use split-screen aspect:
+// 0 = normal (0.75f: 1P, single-viewport MP, 3P/4P quad-split)
+// 1 = 2P horizontal split (0.5f)
+// 2 = 2P vertical split (1.5f)
+// Faithful/replay runs keep GAME.IsMultiplayer() unchanged (0 or 1).
+namespace {
+struct CeGameSplitAccess : CGame {
+	static bool Horizontal() { return static_cast<const CGame &>(GAME).*(&CeGameSplitAccess::mHorizontalSplitscreen); }
+};
+}
+
 int PortCeCameraSplitAspect()
 {
 	if (!PortCeLayer())
 		return GAME.IsMultiplayer() ? 1 : 0;
 	const int vp = ENGINE.GetNumViewpoints();
-	return (GAME.IsMultiplayer() && vp != 1 && vp != 3 && vp != 4) ? 1 : 0;
+	if (!GAME.IsMultiplayer() || vp == 1 || vp == 3 || vp == 4)
+		return 0;
+	return CeGameSplitAccess::Horizontal() ? 1 : 2;
 }
 
 // Whether the HUD about to be drawn is pinned to the corners: the HUD scale's gate with ce.ini's hud_anchor, for a single

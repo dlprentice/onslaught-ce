@@ -716,6 +716,7 @@ public:
     virtual void OnMatchTicketReady(const CeOnlineStartTicketView &ticket) { (void)ticket; }
     virtual bool TakeOpError(std::string *out) { (void)out; return false; }
     virtual void FlushLeave(uint64_t nowMs) { (void)nowMs; }
+    virtual bool IsLaunchPending() const { return false; }
 };
 
 // ---------------------------------------------------------------------------
@@ -1020,6 +1021,9 @@ public:
         mStatusIsError = false;
         mBrowserFetchError.clear();
         mPasswordPromptOpen = false;
+        mPasswordPromptInput.clear();
+        mCreatePassword.clear();
+        mJoinPassword.clear();
         mChatComposing = false;
         mChatDraft.clear();
         mJoinPendingResolve = false;
@@ -1045,6 +1049,9 @@ public:
         mRoom = CeOnlineRoomView();
         mActive = false;
         mPasswordPromptOpen = false;
+        mPasswordPromptInput.clear();
+        mCreatePassword.clear();
+        mJoinPassword.clear();
         mChatComposing = false;
         mChatDraft.clear();
         mJoinPendingResolve = false;
@@ -1124,7 +1131,9 @@ public:
                     SetStatusNotice("This lobby requires a password. Enter password and choose Join.", false);
                 } else {
                     std::string err;
-                    if (mBackend->RequestJoinRoom(res.roomId, mJoinPassword, "", &err)) {
+                    const std::string joinPwd = mJoinPassword;
+                    mJoinPassword.clear();
+                    if (mBackend->RequestJoinRoom(res.roomId, joinPwd, "", &err)) {
                         BeginConnecting("Joining Lobby", "Connecting to lobby...", true);
                     } else {
                         mPage = CE_ONLINE_PAGE_JOIN_CODE;
@@ -1210,10 +1219,11 @@ public:
                 EnterBrowser(CE_ONLINE_PAGE_HOME);
                 SetStatusNotice(opErr.empty() ? "Disconnected from lobby." : opErr, true);
             } else if (mPage == CE_ONLINE_PAGE_CONNECTING && !mConnectingCancellable &&
-                       mLastTicketMatchId.empty()) {
+                       !mBackend->IsLaunchPending()) {
                 mRoom = CeOnlineRoomView();
                 mPendingStartMatch = false;
                 mConnectingCancellable = true;
+                mLastTicketMatchId.clear();
                 mLastRoomMap = -1;
                 ClearOptimisticRoomState();
                 EnterBrowser(CE_ONLINE_PAGE_HOME);
@@ -1612,6 +1622,7 @@ public:
         mFormReturnPage = returnTo;
         mPage = CE_ONLINE_PAGE_CREATE;
         mCreateFocus = CREATE_NAME;
+        mCreatePassword.clear();
         if (mCreateRoomName.empty()) {
             std::string base = CeOnlineSanitizeForFont(mProfile.callsign);
             if (base.size() > 18) base.resize(18);
@@ -1773,6 +1784,7 @@ public:
             SetStatusNotice(err.empty() ? "Could not create lobby." : err, true);
             return false;
         }
+        mCreatePassword.clear();
         BeginConnecting("Creating Lobby", "Registering lobby with server...", true);
         return true;
     }
@@ -1784,6 +1796,7 @@ public:
         mFormReturnPage = returnTo;
         mPage = CE_ONLINE_PAGE_JOIN_CODE;
         mJoinCodeFocus = JOIN_CODE_INPUT;
+        mJoinPassword.clear();
         mJoinPendingResolve = false;
         if (mProfile.connStatus == CE_ONLINE_CONN_OFFLINE || mProfile.connStatus == CE_ONLINE_CONN_ERROR) {
             SetStatusNotice(!mProfile.statusDetail.empty() ? mProfile.statusDetail : "Not connected to lobby server.", true);
@@ -2315,13 +2328,45 @@ public:
     }
 
     std::vector<std::string> VisibleChatLines() const {
+        static const size_t kLineWidth = 72u;
+        static const size_t kMaxWrappedLines = 4u;
         std::vector<std::string> filtered;
         for (size_t i = 0; i < mRoom.chat.size(); ++i) {
             const CeOnlineUiChatEntry &msg = mRoom.chat[i];
             if (IsPlayerMuted(msg.playerId)) continue;
             std::string who = CeOnlineSanitizeForFont(msg.callsign.empty() ? std::string("Pilot") : msg.callsign);
             std::string body = CeOnlineSanitizeForFont(msg.text);
-            filtered.push_back(CeOnlineTruncateFontSafe(who + ": " + body, 72));
+            std::string full = who + ": " + body;
+            if (full.size() <= kLineWidth) {
+                filtered.push_back(full);
+                continue;
+            }
+            size_t pos = 0;
+            for (size_t line = 0; line < kMaxWrappedLines && pos < full.size(); ++line) {
+                const std::string prefix = (line == 0) ? std::string() : std::string("  ");
+                const size_t avail = kLineWidth - prefix.size();
+                if (full.size() - pos <= avail) {
+                    filtered.push_back(prefix + full.substr(pos));
+                    pos = full.size();
+                    break;
+                }
+                if (line + 1 == kMaxWrappedLines) {
+                    filtered.push_back(CeOnlineTruncateFontSafe(prefix + full.substr(pos), kLineWidth));
+                    pos = full.size();
+                    break;
+                }
+                size_t cut = avail;
+                const size_t minBreak = avail / 2u;
+                for (size_t k = avail; k > minBreak; --k) {
+                    if (full[pos + k] == ' ') {
+                        cut = k;
+                        break;
+                    }
+                }
+                filtered.push_back(prefix + full.substr(pos, cut));
+                pos += cut;
+                while (pos < full.size() && full[pos] == ' ') ++pos;
+            }
         }
         if (filtered.size() > CE_ONLINE_UI_CHAT_VISIBLE) {
             filtered.erase(

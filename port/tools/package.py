@@ -798,7 +798,10 @@ for arg in "$@"; do
 done
 if [ "$preflight" = 1 ] && [ "${BEA_SKIP_PREFLIGHT:-}" != 1 ]; then "$HERE/preflight.sh" || exit 1; fi
 export DXVK_WSI_DRIVER=SDL3 DXVK_LOG_LEVEL=${DXVK_LOG_LEVEL:-none}
-export LD_LIBRARY_PATH="$HERE/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+if [ -z "${BEA_ORIG_LD_LIBRARY_PATH+x}" ]; then
+	export BEA_ORIG_LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+fi
+export LD_LIBRARY_PATH="$HERE/lib${BEA_ORIG_LD_LIBRARY_PATH:+:$BEA_ORIG_LD_LIBRARY_PATH}"
 exec "$HERE/onslaught-ce-launch" "$@"
 '''
 
@@ -837,6 +840,15 @@ check libstdc++.so.6   lib32-gcc-libs     libstdc++6:i386
 check libgcc_s.so.1    lib32-gcc-libs     libgcc-s1:i386
 check libz.so.1        lib32-zlib         zlib1g:i386
 check libvulkan.so.1   lib32-vulkan-icd-loader libvulkan1:i386
+case "${SDL_VIDEODRIVER:-}" in
+	offscreen|dummy) ;;
+	x11)
+		check libX11.so.6      lib32-libx11       libx11-6:i386
+		check libXext.so.6     lib32-libxext      libxext6:i386
+		for o in libXrandr.so.2 libXcursor.so.1 libXi.so.6 libXfixes.so.3; do
+			have "$o" || echo "onslaught-ce: note: no 32-bit $o (SDL works without it, with fewer display features)" >&2
+		done ;;
+	*)
 if [ -n "${WAYLAND_DISPLAY:-}" ]; then
 	check libwayland-client.so.0 lib32-wayland libwayland-client0:i386
 	check libwayland-cursor.so.0 lib32-wayland libwayland-cursor0:i386
@@ -848,6 +860,8 @@ else
 		have "$o" || echo "onslaught-ce: note: no 32-bit $o (SDL works without it, with fewer display features)" >&2
 	done
 fi
+		;;
+esac
 # A 32-bit Vulkan driver: an ICD manifest whose library resolves to a 32-bit ELF (Arch names the library without a
 # path, shared by both architectures; Debian installs per-architecture manifests with absolute paths).
 # The Vulkan loader's own override (VK_DRIVER_FILES, or the older VK_ICD_FILENAMES: what the Steam Linux Runtime's
@@ -861,7 +875,7 @@ else
 fi
 for f in "${files[@]}"; do
 	[ -e "$f" ] || continue
-	lib=$(sed -n 's/.*"library_path"[^"]*"\([^"]*\)".*/\1/p' "$f")
+	lib=$(sed -n 's/.*"library_path"[^"]*"\([^"]*\)".*/\1/p' "$f" | head -n1)
 	ok=0
 	case "$lib" in
 		/*) [ -e "$lib" ] && is32 "$lib" && ok=1 ;;
@@ -875,7 +889,7 @@ for f in "${files[@]}"; do
 	# extension names cannot offer it (Ubuntu 22.04's Mesa 23.2, Debian 12's 22.3). The push-constant size cannot be seen
 	# here (Fedora 40's Intel driver, Mesa 24.1, offers 128 bytes and is refused).
 	usable=1
-	v=$(sed -n 's/.*"api_version"[^"]*"1\.\([0-9]*\)\..*/\1/p' "$f")
+	v=$(sed -n 's/.*"api_version"[^"]*"1\.\([0-9]*\)\..*/\1/p' "$f" | head -n1)
 	[ -n "$v" ] && [ "$v" -lt 3 ] && usable=0
 	case "$lib" in /*) path=$lib ;; *) path=$(where32 "$lib") ;; esac
 	case "${path##*/}" in
@@ -937,10 +951,24 @@ def strip(src: Path, dst: Path, windows: bool):
 def machine_paths(path: Path) -> list:
     home = str(Path.home())
     private = [p for p in os.environ.get("BEA_PRIVATE_PATHS", "").split(":") if p]
-    pat = re.compile("|".join(re.escape(p) for p in [home, home.replace("/", "\\"), str(ROOT), Path.home().name] + private))
+    parts = [re.escape(p) for p in [home, home.replace("/", "\\"), str(ROOT)] + private]
+    if Path.home().name:
+        parts.append(r"(?:^|[/\\:])" + re.escape(Path.home().name) + r"(?:[/\\:]|$)")
+    pat = re.compile("|".join(parts))
     out = subprocess.run(["strings", "-a", str(path)], capture_output=True, text=True, errors="replace").stdout
     out += subprocess.run(["strings", "-a", "-el", str(path)], capture_output=True, text=True, errors="replace").stdout
     return sorted({l for l in out.splitlines() if pat.search(l)})
+
+
+def check_compiled_version(path: Path, version: str):
+    """Verify a real ELF/PE binary was compiled with CE_VERSION == version (prevents stale-version packaging)."""
+    data = path.read_bytes()
+    if not data.startswith((b"\x7fELF", b"MZ")):
+        return
+    ver = version.encode("ascii")
+    pat = rb"(?:^|[\x00 \"V])" + re.escape(ver) + rb"(?:[\x00 \"\r\n]|$)"
+    if not re.search(pat, data):
+        sys.exit(f"{path}: compiled CE_VERSION does not match requested package version {version!r}; rebuild with --ce-version {version}")
 
 
 def links_enet(symbols: str) -> bool:
@@ -1075,9 +1103,11 @@ def glibc_needed(elfs) -> str:
     """The newest GLIBC_2.N symbol version any of elfs requires (readelf's version needs), as "2.N"."""
     newest = 0
     for f in elfs:
-        out = subprocess.run(["readelf", "-V", "-W", str(f)], capture_output=True, text=True, check=True).stdout
-        for m in re.finditer(r"Name: GLIBC_2\.(\d+)", out):
-            newest = max(newest, int(m.group(1)))
+        for names in version_needs(f).values():
+            for name in names:
+                m = re.fullmatch(r"GLIBC_2\.(\d+)", name)
+                if m:
+                    newest = max(newest, int(m.group(1)))
     return f"2.{newest}"
 
 
@@ -1213,6 +1243,8 @@ def package(a):
         if with_ice:
             package_ice_inputs.check_snapshot(saved, ice_payload["binaries"]["game"])
             src = saved
+        if not a.test:
+            check_compiled_version(src, a.version)
         stripped = out / ("stage-" + exe)
         strip(src, stripped, windows)
         bad = machine_paths(stripped)
@@ -1224,11 +1256,13 @@ def package(a):
         launcher_name = launcher.name
         if b"CE-UPDATER-TEST-BUILD" in launcher.read_bytes():
             sys.exit(f"{launcher}: an updater test build (test key, test hooks); build the release launcher")
+        saved_launcher = out / "symbols" / (f"onslaught-ce-{a.version}.exe" if windows else f"onslaught-ce-launch-{a.version}")
+        shutil.copy2(launcher, saved_launcher)
         if with_ice:
-            saved_launcher = out / "symbols" / (f"onslaught-ce-{a.version}.exe" if windows else f"onslaught-ce-launch-{a.version}")
-            shutil.copy2(launcher, saved_launcher)
             package_ice_inputs.check_snapshot(saved_launcher, ice_payload["binaries"]["launcher"])
             launcher = saved_launcher
+        if not a.test:
+            check_compiled_version(launcher, a.version)
         lstripped = out / ("stage-" + launcher_name)
         strip(launcher, lstripped, windows)
         if machine_paths(lstripped):

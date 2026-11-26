@@ -137,11 +137,26 @@ UINT64 gFreqValue;
 bool gGpuTried, gGpuUsable;
 unsigned gGpuMissed;
 
+void GpuRelease()
+{
+	for (GpuSlot &s : gGpu)
+	{
+		if (s.start) { s.start->Release(); s.start = NULL; }
+		if (s.end) { s.end->Release(); s.end = NULL; }
+		s.startIssued = s.endIssued = false;
+		s.frame = ~0u;
+	}
+	if (gFreq) { gFreq->Release(); gFreq = NULL; }
+	gFreqValue = 0;
+	gGpuUsable = false;
+	gGpuTried = false;
+}
+
 void GpuInit(IDirect3DDevice9 *dev)
 {
 	if (gGpuTried) return;
 	gGpuTried = true;
-	if (!gGpuOn) return;
+	if (!gGpuOn || !dev) return;
 	if (FAILED(dev->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ, &gFreq)) || !gFreq)
 	{
 		gFreq = NULL;
@@ -149,12 +164,15 @@ void GpuInit(IDirect3DDevice9 *dev)
 	}
 	for (GpuSlot &s : gGpu)
 	{
-		if (FAILED(dev->CreateQuery(D3DQUERYTYPE_TIMESTAMP, &s.start)) || FAILED(dev->CreateQuery(D3DQUERYTYPE_TIMESTAMP, &s.end)))
+		if (FAILED(dev->CreateQuery(D3DQUERYTYPE_TIMESTAMP, &s.start)) || !s.start ||
+			FAILED(dev->CreateQuery(D3DQUERYTYPE_TIMESTAMP, &s.end)) || !s.end)
 		{
-			if (s.start) { s.start->Release(); s.start = NULL; }
-			if (s.end) { s.end->Release(); s.end = NULL; }
+			GpuRelease();
+			gGpuTried = true;
 			return;
 		}
+		s.frame = ~0u;
+		s.startIssued = s.endIssued = false;
 	}
 	gFreq->Issue(D3DISSUE_END);
 	gGpuUsable = true;
@@ -672,28 +690,28 @@ extern "C" int PortFeelKeyDue(unsigned *scancode, unsigned *raw, int *down)
 extern "C" void PortFeelDeviceCreated(void *device, void **table, PortFeelInstallFn install)
 {
 	if (!PortFeelOn() || !table || !install) return;
-	if (gHookedTable == (void *)table) return;
-	gHookedTable = table;
-	// What each entry holds now is what the wrapper calls: the device's own, or a hook installed before this one.
-	gBegin = (BeginFn)table[41];
-	gEnd = (EndFn)table[42];
-	gXform = (XformFn)table[44];
-	gDraw = (DrawFn)table[81];
-	gDrawIdx = (DrawIdxFn)table[82];
-	gDrawUP = (DrawUPFn)table[83];
-	gDrawIdxUP = (DrawIdxUPFn)table[84];
-	install(table, 41, (void *)&HookBegin);
-	install(table, 42, (void *)&HookEnd);
-	install(table, 44, (void *)&HookXform);
-	install(table, 81, (void *)&HookDraw);
-	install(table, 82, (void *)&HookDrawIdx);
-	install(table, 83, (void *)&HookDrawUP);
-	install(table, 84, (void *)&HookDrawIdxUP);
-	gGpuTried = false;
-	gGpuUsable = false;
-	for (GpuSlot &s : gGpu) { s.start = s.end = NULL; s.frame = ~0u; s.startIssued = s.endIssued = false; }
+	if (gHookedTable != (void *)table)
+	{
+		gHookedTable = table;
+		// What each entry holds now is what the wrapper calls: the device's own, or a hook installed before this one.
+		gBegin = (BeginFn)table[41];
+		gEnd = (EndFn)table[42];
+		gXform = (XformFn)table[44];
+		gDraw = (DrawFn)table[81];
+		gDrawIdx = (DrawIdxFn)table[82];
+		gDrawUP = (DrawUPFn)table[83];
+		gDrawIdxUP = (DrawIdxUPFn)table[84];
+		install(table, 41, (void *)&HookBegin);
+		install(table, 42, (void *)&HookEnd);
+		install(table, 44, (void *)&HookXform);
+		install(table, 81, (void *)&HookDraw);
+		install(table, 82, (void *)&HookDrawIdx);
+		install(table, 83, (void *)&HookDrawUP);
+		install(table, 84, (void *)&HookDrawIdxUP);
+	}
+	GpuRelease();
 	gDevice = (IDirect3DDevice9 *)device;
-	if (device) GpuInit(gDevice);
+	if (gDevice) GpuInit(gDevice);
 	PortFeelNote(gGpuUsable ? "device created: gpu timestamps on" : "device created: gpu timestamps unavailable");
 }
 
@@ -701,17 +719,7 @@ extern "C" void PortFeelBeforeReset(void)
 {
 	if (!PortFeelOn()) return;
 	// Default-pool resources, queries among them, must be gone before a real Direct3D 9 Reset.
-	for (GpuSlot &s : gGpu)
-	{
-		if (s.start) { s.start->Release(); s.start = NULL; }
-		if (s.end) { s.end->Release(); s.end = NULL; }
-		s.startIssued = s.endIssued = false;
-		s.frame = ~0u;
-	}
-	if (gFreq) { gFreq->Release(); gFreq = NULL; }
-	gFreqValue = 0;
-	gGpuUsable = false;
-	gGpuTried = false;			// made again at the next Present
+	GpuRelease();			// made again at the next Present
 	PortFeelNote("device reset");
 }
 

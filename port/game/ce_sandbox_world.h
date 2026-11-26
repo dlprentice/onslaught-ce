@@ -974,7 +974,9 @@ inline bool VerifyWorldBody(const uint8_t *buf, unsigned len, WorldSummary *out)
 			return false;
 		}
 	}
-	return !r.err && !out->sawForbiddenUnit && !out->sawUnitInsideKeepOut;
+	// Version-50 trailing block (2+4 + 2+4+4 + 2 + 20 + 8 + 16 + 12 + 4 = 78 bytes).
+	r.skip(78u);
+	return !r.err && r.pos == r.len && !out->sawForbiddenUnit && !out->sawUnitInsideKeepOut;
 }
 
 // Synthesizes the 325-byte PMSH/PMS2 chunk header that CMesh::Deserialize reads

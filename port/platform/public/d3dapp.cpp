@@ -253,7 +253,7 @@ struct ModeChange
           createFlags(owner.m_dwCreateFlags), desktop(owner.m_Adapters[adapterIndex].d3ddmDesktop),
           caps(owner.GetCurrentDevice()->d3dCaps), parameters(owner.m_d3dpp),
           windowed(presentationTransition || presentationFailureOwner == &owner ? owner.m_bWindowed :
-                   window.published ? TRUE : owner.m_pd3dDevice ? owner.m_d3dpp.Windowed : owner.m_bWindowed),
+                   window.published ? TRUE : owner.m_bWindowed),
           screenShape(owner.mScreenShapeScale), committed(false)
     {
         // The resize caller has already written its requested dimensions into the presentation parameters.
@@ -973,7 +973,7 @@ VOID CD3DApplication::Pause(BOOL paused)
         if (!pauseDepth++ && m_bFrameMoving) DXUtil_Timer(TIMER_STOP);
     }
     else if (pauseDepth && !--pauseDepth && m_bFrameMoving) DXUtil_Timer(TIMER_START);
-    m_bReady = pauseDepth == 0 && !DeviceRecoveryPending() && presentationFailureOwner != this;
+    m_bReady = pauseDepth == 0 && !DeviceRecoveryPending() && presentationFailureOwner != this && m_pd3dDevice != NULL && deviceObjectsLive;
 }
 
 VOID CD3DApplication::Cleanup3DEnvironment()

@@ -283,13 +283,15 @@ int PortSharpUi()
 // HUD scale anchors follows because its anchors are made from the same HUD_OFFSET_X. PortHudBegin decides once per pass:
 // the objective panel's own PortHudInset terms are drawn inside it.
 static bool gHudAnchored;
+static bool gHudNarrowViewport;
 static int gHudLogged = -1;	// the answer last told to the developer log (-1: none yet)
-float PortHudInset(float viewportWidth) { return gActive && !gHudAnchored ? viewportWidth * (1.f - 1.f / gX) * 0.5f : 0.f; }
+float PortHudInset(float viewportWidth) { return gActive && !gHudAnchored && !gHudNarrowViewport ? viewportWidth * (1.f - 1.f / gX) * 0.5f : 0.f; }
 static float gHudOriginal;
 float PortHudBegin(float offset, float viewportWidth)
 {
 	gHudOriginal = offset;
 	gHudAnchored = PortHudAnchored() != 0;
+	gHudNarrowViewport = viewportWidth > 0.f && viewportWidth * 3.f <= float(gH) * 4.f + 0.5f;
 	float shifted = offset + PortHudInset(viewportWidth);
 	if (gHudLogged != (int)gHudAnchored)
 	{

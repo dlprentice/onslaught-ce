@@ -304,6 +304,16 @@ void Scan()
 {
 	for (int i = 0; i < gNRecs; ++i) gRecs[i].seen = false;
 	gDropped = 0;
+	{
+		ListIterator<CSquad> it(&WORLD.GetSquadNB());
+		for (CSquad *squad = it.First(); squad; squad = it.Next())
+		{
+			if (Rec *r = Find(squad, squad->GetThingNumber()))
+				r->seen = true;
+		}
+	}
+	for (int i = 0; i < gNRecs; ++i)
+		if (gRecs[i].alive && !gRecs[i].seen) { gRecs[i].alive = false; gRecs[i].squad = NULL; gRecs[i].died = gTick; }
 	ListIterator<CSquad> it(&WORLD.GetSquadNB());
 	for (CSquad *squad = it.First(); squad; squad = it.Next())
 	{
@@ -311,8 +321,21 @@ void Scan()
 		Rec *r = Find(squad, thing);
 		if (!r)
 		{
-			if (gNRecs >= kMaxSquads) { ++gDropped; continue; }
-			r = &gRecs[gNRecs++];
+			if (gNRecs < kMaxSquads)
+			{
+				r = &gRecs[gNRecs++];
+			}
+			else
+			{
+				int victim = -1;
+				for (int i = 0; i < gNRecs; ++i)
+				{
+					if (!gRecs[i].alive && (victim < 0 || gRecs[i].died < gRecs[victim].died))
+						victim = i;
+				}
+				if (victim < 0) { ++gDropped; continue; }
+				r = &gRecs[victim];
+			}
 			memset(r, 0, sizeof(*r));
 			r->squad = squad;
 			r->thing = thing;
@@ -324,8 +347,6 @@ void Scan()
 		r->alive = true;
 		r->seen = true;
 	}
-	for (int i = 0; i < gNRecs; ++i)
-		if (gRecs[i].alive && !gRecs[i].seen) { gRecs[i].alive = false; gRecs[i].squad = NULL; gRecs[i].died = gTick; }
 }
 
 // The live units of a squad, in member order.
@@ -1417,6 +1438,7 @@ void CeCmdSquadGone(const void* departed) {
         if (record.squad != departed) continue;
         record.alive = false;
         record.squad = NULL;
+        record.died = gTick;
     }
 }
 

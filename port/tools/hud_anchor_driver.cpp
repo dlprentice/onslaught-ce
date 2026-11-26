@@ -37,6 +37,7 @@ FakeEngine ENGINE;
 // widescreen.cpp's state, which the cut-out statements read.
 bool gActive = true;
 float gX = 4.f / 3.f;
+unsigned gH = 1080u;
 int PortHudAnchored();	// production ce_hud_anchor.cpp
 int PortCeIsSplitScreen();
 int PortCeCameraSplitAspect();
@@ -96,7 +97,10 @@ int main(int argc, char **argv)
 	check(PortCeIsSplitScreen() && PortCeCameraSplitAspect(), "faithful layer keeps retail multiplayer splitscreen");
 	layer = true;
 	ENGINE.viewpoints = 2;
-	check(PortCeIsSplitScreen() && PortCeCameraSplitAspect(), "2P splitscreen keeps splitscreen layout and 0.5 aspect");
+	check(PortCeIsSplitScreen() && PortCeCameraSplitAspect() == 1, "2P horizontal splitscreen keeps splitscreen layout and 0.5 aspect");
+	GAME.SetHorizontalSplitscreen(false);
+	check(PortCeIsSplitScreen() && PortCeCameraSplitAspect() == 2, "2P vertical splitscreen reports 1.5 aspect");
+	GAME.SetHorizontalSplitscreen(true);
 	check(!PortHudAnchored(), "2P splitscreen keeps the 4:3 columns");
 	ENGINE.viewpoints = 4;
 	check(PortCeIsSplitScreen() && !PortCeCameraSplitAspect(), "4P quad-split keeps splitscreen HUD but full 0.75 aspect");
@@ -108,18 +112,19 @@ int main(int argc, char **argv)
 	check(PortHudAnchored() == (wanted ? 1 : 0), "one viewpoint again");
 
 	// The inset: PortHudBegin decides, PortHudInset (the objective panel's own terms) follows it.
-	struct Shape { float w, gx, inset; } shapes[] = {
-		{1920.f, 4.f / 3.f, 240.f},			// 16:9 1080p: W / 8
-		{2560.f, 4.f / 3.f, 320.f},			// 16:9 1440p
-		{3840.f, 4.f / 3.f, 480.f},			// 16:9 4K
-		{2560.f, 1.7777778f, 560.f},		// 21:9 2560 x 1080
-		{1920.f, 1.2f, 160.f},				// 16:10 1920 x 1200
-		{1280.f, 1.f, 0.f},					// 5:4 or 4:3: nothing widened
+	struct Shape { float w; unsigned h; float gx, inset; } shapes[] = {
+		{1920.f, 1080u, 4.f / 3.f, 240.f},			// 16:9 1080p: W / 8
+		{2560.f, 1440u, 4.f / 3.f, 320.f},			// 16:9 1440p
+		{3840.f, 2160u, 4.f / 3.f, 480.f},			// 16:9 4K
+		{2560.f, 1080u, 1.7777778f, 560.f},		// 21:9 2560 x 1080
+		{1920.f, 1200u, 1.2f, 160.f},				// 16:10 1920 x 1200
+		{1280.f, 1024u, 1.f, 0.f},					// 5:4 or 4:3: nothing widened
 	};
 	for (const Shape &s : shapes)
 	{
 		gActive = true;
 		gX = s.gx;
+		gH = s.h;
 		float began = PortHudBegin(0.f, s.w);
 		float explicitTerm = PortHudInset(s.w);
 		check(near(began, wanted ? 0.f : s.inset) && near(explicitTerm, wanted ? 0.f : s.inset), "pinned: no inset; else the 4:3 columns");
@@ -133,6 +138,7 @@ int main(int argc, char **argv)
 	}
 	gActive = true;
 	gX = 4.f / 3.f;
+	gH = 1080u;
 	check(near(PortHudBegin(5.f, 1920.f), wanted ? 5.f : 245.f) && near(PortHudOriginal(), 5.f), "an offset other than 0 is kept, with or without the shift");
 	gActive = false;
 	check(near(PortHudBegin(0.f, 1920.f), 0.f) && near(PortHudInset(1920.f), 0.f), "a back buffer that is not widened has no shift");
@@ -183,6 +189,7 @@ int main(int argc, char **argv)
 	GAME.multiplayer = true;
 	ENGINE.viewpoints = 2;
 	PortHudBegin(0.f, 1920.f);
+	check(near(PortHudBegin(0.f, 960.f), 0.f) && near(PortHudInset(960.f), 0.f), "vertical split narrow viewport has no inset");
 	GAME.multiplayer = false;
 	ENGINE.viewpoints = 1;
 	PortHudBegin(0.f, 1920.f);

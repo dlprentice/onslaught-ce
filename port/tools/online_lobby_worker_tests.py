@@ -1189,10 +1189,11 @@ class WorkerdIntegrationTests(unittest.TestCase):
         self.assertEqual([0, 1, 2, 3], [s["seat"] for s in ticket["slots"]])
         self.assertEqual([0, 1, 2, 3], [s["sim_slot"] for s in ticket["slots"]])
 
-        # match_secret must NEVER leak to non-member or directory listing.
+        # Non-member GET /rooms/:id MUST be rejected with 403 not_a_member (zero chat/code/player_id/ticket leak).
         code, _, out_poll = srv.api("GET", f"/ce-lobby/v1/rooms/{rid}", token=outsider["session_token"])
-        self.assertEqual(200, code)
-        self.assertEqual("", out_poll["start_ticket"]["match_secret"])
+        self.assertEqual(403, code)
+        self.assertEqual("not_a_member", out_poll["error"])
+        self.assertNotIn(ticket["match_secret"], json.dumps(out_poll))
         code, _, dir_list = srv.api("GET", "/ce-lobby/v1/lobbies", token=outsider["session_token"])
         self.assertEqual(200, code)
         self.assertNotIn(ticket["match_secret"], json.dumps(dir_list))
@@ -1878,6 +1879,197 @@ class WorkerdIntegrationTests(unittest.TestCase):
         self.assertEqual(200, code)
         self.assertEqual("starting", still_m2["state"])
         self.assertEqual(mid2, still_m2["start_ticket"]["match_id"])
+
+    def test_signal_hardening_nonhost_heartbeat_rev_guard_privacy_and_pw_ratelimit(self):
+        # 1. Signal direction (offer=host->guest, answer=guest->host), coalescing, rate-limit (20/60s -> 429),
+        #    and pagination (<= 16 msgs / <= 48 KiB returning page max seq).
+        srv = self.make_server(heartbeat_timeout_ms=900, starting_timeout_ms=1100, match_timeout_ms=1500)
+        _, h = srv.auth_player("HardHost")
+        _, g1 = srv.auth_player("HardGuest1")
+        _, outsider = srv.auth_player("HardOutsider")
+
+        code, _, room = srv.api(
+            "POST", "/ce-lobby/v1/lobbies", token=h["session_token"],
+            body={
+                "name": "Private Hardened", "mode": "versus_2v2", "map": 851, "max_seats": 2,
+                "visibility": "unlisted", "password": "correct-horse-battery",
+            },
+        )
+        self.assertEqual(200, code)
+        rid = room["room_id"]
+        rcode = room["code"]
+        self.assertEqual(200, srv.api("POST", f"/ce-lobby/v1/rooms/{rid}/chat", token=h["session_token"],
+                                      body={"text": "secret lobby chat"})[0])
+
+        # Non-member poll on unlisted room -> 403 not_a_member, zero leak of chat/code/player_id.
+        code, _, nonmem = srv.api("GET", f"/ce-lobby/v1/rooms/{rid}", token=outsider["session_token"])
+        self.assertEqual(403, code)
+        self.assertEqual("not_a_member", nonmem["error"])
+        nonmem_blob = json.dumps(nonmem)
+        self.assertNotIn("secret lobby chat", nonmem_blob)
+        self.assertNotIn(rcode, nonmem_blob)
+        self.assertNotIn(h["player_id"], nonmem_blob)
+
+        # Password hashing uses PBKDF2-SHA256 and brute-force wrong passwords trigger 429 after 5 failures!
+        for attempt in range(5):
+            code, _, err = srv.api(
+                "POST", f"/ce-lobby/v1/rooms/{rid}/join", token=outsider["session_token"],
+                body={"password": f"wrong-{attempt}"},
+            )
+            self.assertEqual(403, code)
+            self.assertEqual("wrong_password", err["error"])
+        code, _, err = srv.api(
+            "POST", f"/ce-lobby/v1/rooms/{rid}/join", token=outsider["session_token"],
+            body={"password": "correct-horse-battery"},
+        )
+        self.assertEqual(429, code)
+        self.assertEqual("rate_limited", err["error"])
+
+        # Another guest with the correct password still joins cleanly!
+        code, _, joined = srv.api(
+            "POST", f"/ce-lobby/v1/rooms/{rid}/join", token=g1["session_token"],
+            body={"password": "correct-horse-battery"},
+        )
+        self.assertEqual(200, code)
+        self.assertEqual(200, srv.api("POST", f"/ce-lobby/v1/rooms/{rid}/update", token=g1["session_token"], body={"ready": True})[0])
+        code, _, started = srv.api("POST", f"/ce-lobby/v1/rooms/{rid}/start", token=h["session_token"], body={})
+        self.assertEqual(200, code)
+        mid = started["start_ticket"]["match_id"]
+
+        # Direction enforcement: guest sending offer -> 403 invalid_signal_direction; host sending answer -> 403!
+        code, _, err = srv.api(
+            "POST", f"/ce-lobby/v1/rooms/{rid}/signal", token=g1["session_token"],
+            body={"match_id": mid, "from_seat": 1, "to_seat": 0, "kind": "offer", "sdp": "v=0"},
+        )
+        self.assertEqual(403, code)
+        self.assertEqual("invalid_signal_direction", err["error"])
+        code, _, err = srv.api(
+            "POST", f"/ce-lobby/v1/rooms/{rid}/signal", token=h["session_token"],
+            body={"match_id": mid, "from_seat": 0, "to_seat": 1, "kind": "answer", "sdp": "v=0"},
+        )
+        self.assertEqual(403, code)
+        self.assertEqual("invalid_signal_direction", err["error"])
+
+        # Coalescing + rate limit: 20 host offers coalesce to 1 latest message; 21st hits 429!
+        last_seq = 0
+        for i in range(20):
+            code, _, sig = srv.api(
+                "POST", f"/ce-lobby/v1/rooms/{rid}/signal", token=h["session_token"],
+                body={"match_id": mid, "from_seat": 0, "to_seat": 1, "kind": "offer", "sdp": f"v=0\r\na=offer:{i}"},
+            )
+            self.assertEqual(200, code)
+            last_seq = sig["seq"]
+        code, _, rl = srv.api(
+            "POST", f"/ce-lobby/v1/rooms/{rid}/signal", token=h["session_token"],
+            body={"match_id": mid, "from_seat": 0, "to_seat": 1, "kind": "offer", "sdp": "v=0\r\na=offer:overflow"},
+        )
+        self.assertEqual(429, code)
+        self.assertEqual("rate_limited", rl["error"])
+
+        code, _, g_inbox = srv.api(
+            "GET", f"/ce-lobby/v1/rooms/{rid}/signal?match_id={mid}&since=0", token=g1["session_token"],
+        )
+        self.assertEqual(200, code)
+        self.assertEqual(1, len(g_inbox["messages"]))
+        self.assertEqual(last_seq, g_inbox["seq"])
+        self.assertEqual("v=0\r\na=offer:19", g_inbox["messages"][0]["sdp"])
+
+        # Verify PBKDF2 hash stored in SQLite, monotonic directory rev column, AND paginated GET /signal (<= 48 KiB / <= 16 msgs).
+        srv.stop()
+        room_docs = srv.read_room_sqlite()
+        self.assertEqual(1, len(room_docs))
+        self.assertTrue(room_docs[0]["password_hash"].startswith("pbkdf2$100000$"))
+
+        # Inject 20 x 3.8 KiB signals addressed to seat 1 into room_kv SQLite to exercise byte & count pagination directly.
+        room_root = srv.state_dir / "ce-online-lobby-room-test-v1"
+        fresh_ms = int(time.time() * 1000) + 10000
+        for db_path in sorted(room_root.glob("*.sqlite")):
+            if db_path.name == "metadata.sqlite":
+                continue
+            with sqlite3.connect(str(db_path)) as conn:
+                rows = conn.execute("SELECT value FROM room_kv WHERE name = 'room'").fetchall()
+                for (val,) in rows:
+                    doc = json.loads(val)
+                    if doc["room_id"] == rid:
+                        doc["last_heartbeat_ms"] = fresh_ms
+                        doc["signals"] = [
+                            {"seq": 100 + k, "from_seat": 0, "to_seat": 1, "kind": "offer",
+                             "sdp": f"v=0\r\na=pad-{k:02d}:" + ("A" * 3800), "ts": int(time.time())}
+                            for k in range(20)
+                        ]
+                        doc["signal_seq"] = 119
+                        conn.execute("UPDATE room_kv SET value = ? WHERE name = 'room'", (json.dumps(doc),))
+                        conn.commit()
+        # Also test LobbyDirectory monotonic rev guard: bump SQLite rev higher than room.rev, verify stale summary doesn't regress state!
+        dir_root = srv.state_dir / "ce-online-lobby-dir-test-v1"
+        for db_path in sorted(dir_root.glob("*.sqlite")):
+            if db_path.name == "metadata.sqlite":
+                continue
+            with sqlite3.connect(str(db_path)) as conn:
+                tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                if "rooms" in tables:
+                    conn.execute(
+                        "UPDATE rooms SET last_heartbeat_ms = ?, state = 'in_match', rev = 999 WHERE room_id = ?",
+                        (fresh_ms, rid),
+                    )
+                    conn.commit()
+        srv.start()
+
+        # Drain all 20 signals across bounded pages (each page <= 16 msgs and <= 48 KiB)!
+        since = 0
+        collected = []
+        pages = 0
+        while True:
+            code, _, page = srv.api(
+                "GET", f"/ce-lobby/v1/rooms/{rid}/signal?match_id={mid}&since={since}", token=g1["session_token"],
+            )
+            self.assertEqual(200, code)
+            if not page["messages"]:
+                break
+            pages += 1
+            self.assertLessEqual(len(page["messages"]), 16)
+            self.assertLessEqual(len(json.dumps(page).encode("utf-8")), 52000)
+            self.assertEqual(page["messages"][-1]["seq"], page["seq"])
+            collected.extend(m["seq"] for m in page["messages"])
+            since = page["seq"]
+        self.assertGreaterEqual(pages, 2)
+        self.assertEqual(list(range(100, 120)), collected)
+
+        # Trigger a room update whose rev (< 999) is lower than LobbyDirectory's rev=999 -> directory must NOT revert state!
+        code, _, _ = srv.api("POST", f"/ce-lobby/v1/rooms/{rid}/update", token=h["session_token"], body={"rtt_ms": 42})
+        self.assertEqual(200, code)
+        code, _, res_dir = srv.api("POST", "/ce-lobby/v1/lobbies/resolve", token=h["session_token"], body={"code": rcode})
+        self.assertEqual(200, code)
+        self.assertEqual("in_match", res_dir["state"])
+        srv.stop()
+
+        # 2. Non-host calls (/signal GET/POST, /turn, /update) MUST NOT keep a room alive after host stops heartbeating!
+        srv2 = self.make_server(heartbeat_timeout_ms=600, starting_timeout_ms=1100, match_timeout_ms=1400)
+        _, h2 = srv2.auth_player("SilentHost")
+        _, g2 = srv2.auth_player("ChattyGuest")
+        r2 = srv2.api(
+            "POST", "/ce-lobby/v1/lobbies", token=h2["session_token"],
+            body={"name": "NoGuestKeepalive", "mode": "coop_defence", "map": 856, "max_seats": 2},
+        )[2]
+        rid2 = r2["room_id"]
+        self.assertEqual(200, srv2.api("POST", f"/ce-lobby/v1/rooms/{rid2}/join", token=g2["session_token"], body={})[0])
+        self.assertEqual(200, srv2.api("POST", f"/ce-lobby/v1/rooms/{rid2}/update", token=g2["session_token"], body={"ready": True})[0])
+        mid2 = srv2.api("POST", f"/ce-lobby/v1/rooms/{rid2}/start", token=h2["session_token"], body={})[2]["start_ticket"]["match_id"]
+        # Host goes completely silent; guest repeatedly polls /signal, sends answer, and requests /turn past 1.1s starting TTL.
+        expired = False
+        for step in range(8):
+            time.sleep(0.22)
+            c1, _, _ = srv2.api("GET", f"/ce-lobby/v1/rooms/{rid2}/signal?match_id={mid2}&since=0", token=g2["session_token"])
+            if c1 == 404:
+                expired = True
+                break
+            if step == 1:
+                srv2.api("POST", f"/ce-lobby/v1/rooms/{rid2}/signal", token=g2["session_token"],
+                         body={"match_id": mid2, "from_seat": 1, "to_seat": 0, "kind": "answer", "sdp": "v=0"})
+            if step == 2:
+                srv2.api("POST", f"/ce-lobby/v1/rooms/{rid2}/turn", token=g2["session_token"],
+                         body={"match_id": mid2, "guest_seat": 1})
+        self.assertTrue(expired, "Room MUST expire when host goes silent even while guest polls /signal and requests /turn")
 
 
 def main() -> int:

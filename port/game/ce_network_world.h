@@ -30,6 +30,7 @@ int CE_WorldLocalWon(int game_state);
 float CE_WorldViewAspect(float original_aspect);
 int CE_WorldInvertPitch(uint32_t player, int grounded, int original);
 int CE_WorldWalkerBindingType(uint32_t player, int original_type);
+int CE_WorldMouseGroundAim(uint32_t player, int original);
 int CE_WorldLockstepValidInput(const CE_WorldInput *input);
 void CE_WorldMouseAxis(int on);
 // Clock and automation policy checked by admitted co-op starts: NULL when ordinary, else a fixed local reason.

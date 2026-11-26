@@ -417,9 +417,17 @@ HRESULT STDMETHODCALLTYPE Reset(IDirect3DDevice9 *device, D3DPRESENT_PARAMETERS 
 #ifdef CE_VERSION
 	CeCursorBeforeModeChange cursorBefore(focus, pp);
 #endif
+	const UINT prevBoxW = gBoxW, prevBoxH = gBoxH;
+	SDL_Window *prevBoxWindow = gBoxWindow;
 	DesktopFullscreen(focus, pp);
 	if (PORT_FEEL_ON()) PortFeelBeforeReset();
 	HRESULT hr = gReset(device, pp);
+	if (FAILED(hr))
+	{
+		gBoxW = prevBoxW;
+		gBoxH = prevBoxH;
+		gBoxWindow = prevBoxWindow;
+	}
 #ifdef CE_VERSION
 	cursorBefore.RestoreIfFailed(hr);
 #endif

@@ -28,6 +28,7 @@
 #include "player.h"
 #include "BattleEngine.h"
 #include "engine.h"
+#include "eventmanager.h"
 #include "ltshell.h"
 #endif
 
@@ -91,14 +92,17 @@ void DropExhibitDefinitions();
 
 bool gHaveStart;
 bool gAuthoredMap;
-unsigned gMuseumSprintTicks = 0;
+int gCarrierBaseWorldLevel = -1;
+float gMuseumSprintUntil = -1.0f;
 // The visitor's place in the hall of numbered displays (ce_museum_visit_places.h): it tells the labels when a place's name at the top is left.
 CeMuseumVisitPlaces gPlaces;
 FVector gStartPosition;
 FMatrix gStartOrientation;
 }
 extern "C" void PortCeMuseumSprintSignal(void) {
-    gMuseumSprintTicks = 6u;
+    // 20 Hz sim tick signal (50 ms); hold sprint across all render frames for 120 ms of sim time
+    // so gamepad/non-Shift sprint never drops out at high framerates (>120 FPS).
+    gMuseumSprintUntil = EVENT_MANAGER.GetTime() + 0.12f;
 }
 #else
 extern "C" void PortCeMuseumSprintSignal(void) {}
@@ -110,6 +114,8 @@ extern "C" bool PortCeMuseumAuthoredMap() {
 }
 void CeMuseumVisit::ApplyAuthoredIdentity() {
     if (PortCeMuseumAuthoredMap()) {
+        if (WORLD.mBaseWorldLevel >= 0 && WORLD.mBaseWorldLevel != CeMuseumWorld::kBase)
+            gCarrierBaseWorldLevel = WORLD.mBaseWorldLevel;
         WORLD.mWorldLevel=CeMuseumWorld::kWorld;
         WORLD.mBaseWorldLevel=CeMuseumWorld::kBase;
     }
@@ -120,8 +126,9 @@ void CeMuseumVisit::ReleaseRuntimeResources() {
     PortCeMuseumLabelsClear();
     CeMuseumHallClear();
     if (gAuthoredMap) { MAP.mGeometryLoaded=FALSE; MAP.mPropertiesLoaded=FALSE; gAuthoredMap=false; }
+    if (gCarrierBaseWorldLevel >= 0) WORLD.mBaseWorldLevel = gCarrierBaseWorldLevel;
     gHaveStart = false;
-    gMuseumSprintTicks = 0u;
+    gMuseumSprintUntil = -1.0f;
 }
 extern "C" void PortCeMuseumAuthoredInstall() {
     if (!PortCeMuseumAuthoredSource()) return;
@@ -134,6 +141,14 @@ extern "C" void PortCeMuseumAuthoredInstall() {
     std::memset(MAP.mHeightData,0,CeMuseumWorld::kHeightSamples*sizeof(SWORD));
     MAP.mGridShiftX=MAP.mGridShiftY=CeMuseumWorld::kGridShift;
     MAP.mHeightScale=1.0f; MAP.mWaterLevel=CeMuseumWorld::kWaterBelow;
+    SExtents ext = {};
+    ext.mMinX = 0;
+    ext.mMinY = 0;
+    ext.mMaxX = 511;
+    ext.mMaxY = 511;
+    ext.mWaterLevel = MAP.mWaterLevel;
+    static_assert(sizeof(ext) == sizeof(MAP.mUnknown000), "SExtents size mismatch");
+    std::memcpy(MAP.mUnknown000, &ext, sizeof(ext));
     const UBYTE archiveSkyCube = MAP.mHFP.mUnknown18[0];
     std::memset(&MAP.mHFP,0,sizeof(MAP.mHFP));
     // Crisp sunlit coastal daylight (warm sun key, sky-blue fill, balanced neutral ambient)
@@ -166,8 +181,9 @@ extern "C" void PortCeMuseumVisitCancel(void) {
     CeMuseumHallClear();
     if (gAuthoredMap) { MAP.mGeometryLoaded=FALSE; MAP.mPropertiesLoaded=FALSE; gAuthoredMap=false; }
     DropExhibitDefinitions();
+    gCarrierBaseWorldLevel = -1;
     gHaveStart = false;
-    gMuseumSprintTicks = 0u;
+    gMuseumSprintUntil = -1.0f;
     CeMuseumVisitPlacesDrop(&gPlaces);
 #endif
 }
@@ -590,8 +606,11 @@ extern "C" void PortCeMuseumVisitFrame(void) {
         gLastViewingPosition = dest;
     }
     FVector here = engine->GetPos();
-    const bool shiftDown = (LT.KeyDown[DIK_LSHIFT] != 0) || (LT.KeyDown[DIK_RSHIFT] != 0) || (gMuseumSprintTicks > 0u);
-    if (gMuseumSprintTicks > 0u) --gMuseumSprintTicks;
+    const float simNow = EVENT_MANAGER.GetTime();
+    if (gMuseumSprintUntil > 0.0f && (simNow > gMuseumSprintUntil || (gMuseumSprintUntil - simNow) > 0.25f))
+        gMuseumSprintUntil = -1.0f;
+    const bool shiftDown = (LT.KeyDown[DIK_LSHIFT] != 0) || (LT.KeyDown[DIK_RSHIFT] != 0) ||
+                           (gMuseumSprintUntil > 0.0f && simNow <= gMuseumSprintUntil);
 
     // Brisk on-foot gallery stride (1.65x base walk, 2.85x Shift sprint) applied cleanly to the
     // resolved horizontal step without mutating BattleEngine configuration or triggering dashes.
@@ -675,6 +694,7 @@ bool CeMuseumVisit::GenerateInstalled() {
     }
     UnitCensus();
 
+    DropExhibitDefinitions();
     gEnlargedCount = 0;
     SelectedExhibit selected[kNativeExhibits] = {};
     SelectionCounts counts = {};

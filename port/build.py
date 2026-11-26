@@ -587,9 +587,9 @@ def write_ice_link_receipt(target):
                    source_patches=dependency["source_patches"], source_tree_sha256=dependency["source_tree_sha256"],
                    build_recipe_sha256=digest(Path(__file__)), marker=ICE_BINARY_TAG,
                    system_clang=SYSTEM_CLANG, sysroot_name=deps.SYSROOT_NAME,
-                   test_build=any(flag.startswith(("-DCE_NET_TEST_AUTOMATION", "-DCE_COMMANDER_TEST", "-DCE_PLAYUNIT_TEST",
-                                                   "-DCE_LOCKSTEP_FENCE_CONTROL"))
-                                  for flag in CE_DEFINES) or TEST_KIT,
+                   test_build=bool(test_build_switches(CE_DEFINES)) or TEST_KIT,
+                   with_text_chat=WITH_TEXT_CHAT,
+                   online_lobby_url=ONLINE_LOBBY_URL,
                    libjuice=dict(name=row["name"], version=row["version"], licence=row["licence"],
                                  source_sha256=row["sha"], source_url=row["url"],
                                  build_receipt_sha256=digest(install / ".bea-ice-build.json"),
@@ -896,6 +896,8 @@ def ninja_file(target, sources, syntax, link, sdl_marker=None):
         # The rename list is an input of every renamed object: a changed list must recompile them (the command line
         # names only its path, so ninja would otherwise keep objects renamed by the old list).
         implicit = [] if syntax or rule == "cc" else [allocator_syms(target, out)]
+        if rule == "qcxx":
+            implicit.append(PORT / "tools/qifist.py")
         if sdl_marker:
             implicit.append(sdl_marker)
         renamed = " | " + " ".join(map(str, implicit)) if implicit else ""

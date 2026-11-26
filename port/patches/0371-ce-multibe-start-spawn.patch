@@ -1,17 +1,31 @@
+--- a/BattleEngine.h
++++ b/BattleEngine.h
+@@ -106,6 +106,9 @@
+ 	void	FireWeapon();
+ 	void    ChangeWeapon();
+ 	void	LoseWeaponCharge();
++#ifdef CE_VERSION
++	void	CeClearSlowMovement() { mSlowMovement = FALSE; }
++#endif
+ 
+ 	float   GetZoom() { return mZoom ; }
+ 	float   GetOldZoom() { return mOldZoom ; }	
 --- a/Start.cpp
 +++ b/Start.cpp
-@@ -6,6 +6,10 @@
+@@ -6,6 +6,12 @@
  #include "Start.h"
  #include "BattleEngine.h"
  #include "game.h"
 +#ifdef CE_VERSION
 +extern "C" void PortCeMultiBeApplyStartSlot(int *playerNumber, int retailInvert) __attribute__((weak));
++extern "C" int PortCeMultiBeResolveStartAllegiance(int playerNumber, int defaultAllegiance) __attribute__((weak));
 +extern "C" int PortCeMultiBeSelectStartConfig(int playerNumber, int p1Config, int p2Config) __attribute__((weak));
++extern "C" void PortCeMultiBeAdjustRespawnPos(int playerNumber, float *x, float *y, float *z, float *yaw, int *planeMode) __attribute__((weak));
 +#endif
  #include "world.h"
  #include "map.h"
  #include "mapwho.h"
-@@ -41,10 +45,23 @@
+@@ -41,10 +47,25 @@
  	mInit.mPitch = init->mPitch;
  	mInit.mRoll = init->mRoll;
  	mInit.mAllegiance = init->mAllegiance;
@@ -22,6 +36,8 @@
 +		PortCeMultiBeApplyStartSlot(&ceSlot, GAME.GetFrontEndSettings()->mInvertSides ? 1 : 0);
 +		mPlayerNumber = ceSlot;
 +	}
++	if (PortCeMultiBeResolveStartAllegiance)
++		mInit.mAllegiance = (EAllegiance)PortCeMultiBeResolveStartAllegiance((int)mPlayerNumber, (int)mInit.mAllegiance);
 +#endif
  	if (mPlayerNumber == 1)
  		mInit.mConfigurationId = GAME.GetFrontEndSettings()->mPlayer1Configuration;
@@ -35,20 +51,60 @@
  	mInit.mPlaneMode = ((CStartInitThing *)init)->mPlaneMode;
  	SpawnBattleEngine(FALSE);
  }
+@@ -52,6 +73,19 @@
+ CBattleEngine *CStart::SpawnBattleEngine(BOOL effects)	// FUNCTION: 0x004eaf20
+ {
+ 	mPlayerObject = (CBattleEngine *)SpawnThing(OID_CBattleEngine);
++#ifdef CE_VERSION
++	FVector savedPos = mInit.mPos;
++	float savedYaw = mInit.mYaw;
++	BOOL savedPlane = mInit.mPlaneMode;
++	FVector fxPos = mPos;
++	if (effects && PortCeMultiBeAdjustRespawnPos)
++	{
++		int planeMode = mInit.mPlaneMode ? 1 : 0;
++		PortCeMultiBeAdjustRespawnPos((int)mPlayerNumber, &mInit.mPos.X, &mInit.mPos.Y, &mInit.mPos.Z, &mInit.mYaw, &planeMode);
++		mInit.mPlaneMode = planeMode ? TRUE : FALSE;
++		fxPos = mInit.mPos;
++	}
++#endif
+ 	if (mPlayerObject.ToRead())
+ 	{
+ 		mPlayerObject->Init(&mInit);
+@@ -66,8 +100,17 @@
+ 		else
+ 			descriptor = PARTICLE_SET.GetPD("BE Respawn Ground Effect");
+ 		PARTICLE_MANAGER.AddParticle(descriptor, &effect);
++#ifdef CE_VERSION
++		effect.SetPos(fxPos);
++#else
+ 		effect.SetPos(mPos);
++#endif
+ 	}
++#ifdef CE_VERSION
++	mInit.mPos = savedPos;
++	mInit.mYaw = savedYaw;
++	mInit.mPlaneMode = savedPlane;
++#endif
+ 	return mPlayerObject.ToRead();
+ }
+ 
 --- a/SpawnPoint.cpp
 +++ b/SpawnPoint.cpp
-@@ -4,6 +4,10 @@
+@@ -4,6 +4,12 @@
  #include "SpawnPoint.h"
  #include "BattleEngine.h"
  #include "game.h"
 +#ifdef CE_VERSION
 +extern "C" void PortCeMultiBeApplyStartSlot(int *playerNumber, int retailInvert) __attribute__((weak));
++extern "C" int PortCeMultiBeResolveStartAllegiance(int playerNumber, int defaultAllegiance) __attribute__((weak));
 +extern "C" int PortCeMultiBeSelectStartConfig(int playerNumber, int p1Config, int p2Config) __attribute__((weak));
++extern "C" void PortCeMultiBeAdjustRespawnPos(int playerNumber, float *x, float *y, float *z, float *yaw, int *planeMode) __attribute__((weak));
 +#endif
  #include "world.h"
  #include "map.h"
  #include "mapwho.h"
-@@ -30,10 +34,23 @@
+@@ -30,10 +36,25 @@
  	mInit.mPitch = init->mPitch;
  	mInit.mRoll = init->mRoll;
  	mInit.mAllegiance = init->mAllegiance;
@@ -59,6 +115,8 @@
 +		PortCeMultiBeApplyStartSlot(&ceSlot, GAME.GetFrontEndSettings()->mInvertSides ? 1 : 0);
 +		mPlayerNumber = ceSlot;
 +	}
++	if (PortCeMultiBeResolveStartAllegiance)
++		mInit.mAllegiance = (EAllegiance)PortCeMultiBeResolveStartAllegiance((int)mPlayerNumber, (int)mInit.mAllegiance);
 +#endif
  	if (mPlayerNumber == 1)
  		mInit.mConfigurationId = GAME.GetFrontEndSettings()->mPlayer1Configuration;
@@ -72,3 +130,43 @@
  	mInit.mPlaneMode = ((CStartInitThing *)init)->mPlaneMode;
  	mActive = TRUE;
  }
+@@ -47,6 +68,19 @@
+ CBattleEngine *CSpawnPoint::SpawnBattleEngine(BOOL effects)	// FUNCTION: 0x004e47e0
+ {
+ 	CBattleEngine *engine = (CBattleEngine *)SpawnThing(OID_CBattleEngine);
++#ifdef CE_VERSION
++	FVector savedPos = mInit.mPos;
++	float savedYaw = mInit.mYaw;
++	BOOL savedPlane = mInit.mPlaneMode;
++	FVector fxPos = mPos;
++	if (effects && PortCeMultiBeAdjustRespawnPos)
++	{
++		int planeMode = mInit.mPlaneMode ? 1 : 0;
++		PortCeMultiBeAdjustRespawnPos((int)mPlayerNumber, &mInit.mPos.X, &mInit.mPos.Y, &mInit.mPos.Z, &mInit.mYaw, &planeMode);
++		mInit.mPlaneMode = planeMode ? TRUE : FALSE;
++		fxPos = mInit.mPos;
++	}
++#endif
+ 	if (engine)
+ 	{
+ 		engine->Init(&mInit);
+@@ -61,10 +95,19 @@
+ 		else
+ 			descriptor = PARTICLE_SET.GetPD("BE Respawn Ground Effect");
+ 		PARTICLE_MANAGER.AddParticle(descriptor, &effect);
++#ifdef CE_VERSION
++		effect.SetPos(fxPos);
++#else
+ 		effect.SetPos(mPos);
++#endif
+ 	}
++#ifdef CE_VERSION
++	mInit.mPos = savedPos;
++	mInit.mYaw = savedYaw;
++	mInit.mPlaneMode = savedPlane;
++#endif
+ 	return engine;
+ }
+ 
+ BOOL CSpawnPoint::Available()	// FUNCTION: 0x004e49f0
+ {

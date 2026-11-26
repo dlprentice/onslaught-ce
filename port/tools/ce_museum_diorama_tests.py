@@ -372,6 +372,13 @@ def main():
           and "((r & 255u) << 16)" not in cpp)
     check("diorama runtime keeps zero retail C++ new/delete or fopen calls",
           "new " not in cpp and "delete " not in cpp and "fopen(" not in cpp)
+    check("diorama inner bed drops to 1.020 m below terrain troughs",
+          "0.99f, 1.020f" in cpp and "1.02f, 1.048f" not in cpp)
+    check("diorama fallback unit mesh uses outward CW winding for D3DCULL_CCW",
+          "indices[iAt++] = b + 2u; indices[iAt++] = b + 1u;" in cpp
+          and "indices[iAt++] = b + 3u; indices[iAt++] = b + 2u;" in cpp)
+    check("diorama VFX evaluates each tracer once per frame and caches standalone state block",
+          cpp.count("EvaluateTracer(") == 1 and "d->stateBlock" in cpp)
     check("diorama player-facing strings stay free of forbidden technical jargon",
           not re.search(r'"[^"]*(?:prototype|experimental|ce\.ini)[^"]*"', hdr, re.I))
     check("diorama header stays free of non-canon Arctic/Kraken/XF-24/missing-mesh references",

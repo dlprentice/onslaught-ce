@@ -809,7 +809,8 @@ int main(int argc, char **argv) {
             SDL_UpdateJoysticks();
         }
         CHECK(SUCCEEDED(LT.InitDirectInput(reinterpret_cast<HWND>(1))));
-        CHECK(LT.canary == 0x12345678 && LT.mJoypads == (noPad ? 0 : !strcmp(test, "pad-limit") ? 4 : two ? 2 : 1));
+        const int wantPads = !strcmp(test, "pad-limit") ? 4 : (noPad && !BindableGamepadTriggers()) ? 0 : (two || BindableGamepadTriggers()) ? 2 : 1;
+        CHECK(LT.canary == 0x12345678 && LT.mJoypads == wantPads);
         if (!strncmp(test, "pad-neutral-", 12)) {
             bool blocked = !strncmp(test, "pad-neutral-record", 18) || !strncmp(test, "pad-neutral-tape", 16);
             for (int pad = 0; pad < (two ? 2 : 1); ++pad) {

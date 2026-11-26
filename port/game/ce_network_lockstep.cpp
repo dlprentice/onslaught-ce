@@ -335,7 +335,7 @@ bool Fail(const char *message, bool desync_queued = false) {
 	KeeperStop();
     CampaignStop(CE_CAMPAIGN_STOP_FAILURE);
 	if (L.online_multi && PortCeOnlineMatchStop) PortCeOnlineMatchStop(0);
-	if (L.online_multi && PortCeOnlineServiceFinishMatch) PortCeOnlineServiceFinishMatch(0);
+	if (L.online_multi && PortCeOnlineServiceFinishMatch) PortCeOnlineServiceFinishMatch(-1);
 	if (L.online_multi && PortCeOnlineServiceDetachMatchBridge) PortCeOnlineServiceDetachMatchBridge();
 	if (L.stage != FAILED) { fprintf(stderr, "onslaught-ce: co-op session stopped: %s\n", message); if (!last_error[0]) snprintf(last_error, sizeof last_error, "%s", message); }
 	L.stage = FAILED; L.outcome_error = true; L.notice[0] = 0;
@@ -1610,7 +1610,7 @@ int CE_LockstepBeginTeardown(int quit) {
 	if (L.stage == FINISHED) {
 		if (!L.final_confirmed) { fprintf(stderr, "onslaught-ce: co-op mission ended without final confirmation\n"); L.outcome_error = true; }
 		if (L.online_multi && PortCeOnlineMatchStop) PortCeOnlineMatchStop(1);
-		if (L.online_multi && PortCeOnlineServiceFinishMatch) PortCeOnlineServiceFinishMatch(0);
+		if (L.online_multi && PortCeOnlineServiceFinishMatch) PortCeOnlineServiceFinishMatch(L.final_confirmed ? L.online_won : -1);
 		if (L.online_multi && PortCeOnlineServiceDetachMatchBridge) PortCeOnlineServiceDetachMatchBridge();
 		ReportNetworkCounts(L.net);
 		if (L.net) (ChatRetire(), CE_NetClose(L.net)); L.stage = ENDED; return quit;
@@ -1622,7 +1622,7 @@ int CE_LockstepBeginTeardown(int quit) {
 	}
 	if (L.stage == RUNNING || L.stage == STOPPING || L.stage == PRERUN || L.stage == STARTING || L.stage == LOADED || L.stage == CONNECTING) {
 		if (L.online_multi && PortCeOnlineMatchStop) PortCeOnlineMatchStop(1);
-		if (L.online_multi && PortCeOnlineServiceFinishMatch) PortCeOnlineServiceFinishMatch(0);
+		if (L.online_multi && PortCeOnlineServiceFinishMatch) PortCeOnlineServiceFinishMatch(L.final_confirmed ? L.online_won : -1);
 		if (L.online_multi && PortCeOnlineServiceDetachMatchBridge) PortCeOnlineServiceDetachMatchBridge();
 		if (L.final_confirmed)
 			fprintf(stderr, "onslaught-ce: co-op ended at tick %u, %u state hashes compared, all equal\n", L.tick, L.hashes_compared);
@@ -1639,7 +1639,7 @@ void CE_LockstepAfterWorldShutdown(void) {
     CampaignCaptureReturn();
 	L.shown = false;
 	if (L.online_multi && PortCeOnlineMatchStop) PortCeOnlineMatchStop(0);
-	if (L.online_multi && PortCeOnlineServiceFinishMatch) PortCeOnlineServiceFinishMatch(0);
+	if (L.online_multi && PortCeOnlineServiceFinishMatch) PortCeOnlineServiceFinishMatch(L.final_confirmed ? L.online_won : -1);
 	if (L.online_multi && PortCeOnlineServiceDetachMatchBridge) PortCeOnlineServiceDetachMatchBridge();
 	if (L.online_multi && PortCeOnlineMatchClear) PortCeOnlineMatchClear();
 	L.online_multi = false;

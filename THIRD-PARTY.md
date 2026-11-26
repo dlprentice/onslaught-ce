@@ -30,7 +30,7 @@ in this repository except where a file says so. Release packages carry each ship
 | libxkbcommon | 1.13.2 | MIT | keyboard layouts for SDL3 on Linux; a shared library beside the program |
 | FFmpeg | 7.1.1 (decoders and demuxer only; no GPL or non-free parts) | LGPL-2.1-or-later | the game's films; shared libraries beside the program, which you may replace with your own build. Each release also offers the exact FFmpeg source it was built from. |
 | Monocypher | 4.0.2 | BSD-2-Clause OR CC0-1.0 | compiled into the launcher: the update feed's signature check |
-| zlib | 1.3.2 | Zlib | compressed game files and the launcher's update unpacking on Windows (a DLL beside the program); Linux uses the system's |
+| zlib | 1.3.2 | Zlib | compressed game files and the launcher's update unpacking on Windows (a DLL beside the program); default Linux builds use the system's (explicit `--with-native-signaling` Linux packages carry the pinned SDK copy in their signaling closure below) |
 | libogg, libvorbis | 1.0 | BSD-3-Clause | the game's music and voices, built with the game's original compiler into `libvorbis_vc6.a` (attached to the `vorbis-vc6-1` release and pinned by SHA-256 in `port/deps.lock`) by `port/vorbis/build.py`, from Xiph.Org's 1.0 source fetched from downloads.xiph.org by the SHA-256 pins in that script |
 | MinGW-w64 runtime | from llvm-mingw 20260922 | ZPL-2.1 and others (as the package notice says) | the Windows C runtime start-up, linked into `bea.exe` |
 | libc++, libc++abi, libunwind | from llvm-mingw 20260922 | Apache-2.0 WITH LLVM-exception | the Windows C++ runtime, linked into `bea.exe` |
@@ -62,6 +62,18 @@ patch, reconstruction instructions and original licence text and notices. `ICE-S
 records the MPL-2.0 source terms and additional GPL-3.0-only option for the combination under MPL section 3.3. The
 ordinary package path refuses ICE binaries. Source inclusion does not establish release or platform acceptance;
 Windows relay requests remain refused by the client.
+
+## Only in an explicit native-signaling build
+
+`--public --with-network --with-ice --with-native-signaling` adds HTTPS lobby and signaling support:
+
+- **Windows:** links the operating system's WinHTTP (`WINHTTP.dll`); no additional TLS library is bundled.
+- **Linux:** links `libcurl-gnutls.so.4` from the pinned Steam Runtime 3 (`sysroot-sniper`) SDK and packages its pinned
+  18-library shared closure (`libcurl-gnutls`, GnuTLS, Nettle, Hogweed, GMP, libgcrypt, libgpg-error, libidn2,
+  libunistring, libpsl, libssh2, libnghttp2, libbrotli, libtasn1, p11-kit, libffi, and zlib) listed in
+  `port/tools/package_signaling_sources.json`. `package.py --with-ice --with-native-signaling` embeds each library's
+  pinned upstream source archive under `source/native-signaling/`, its copyright and licence texts under
+  `licenses/native-signaling/`, and `NATIVE-SIGNALING-SOURCE-NOTICE.txt`.
 
 ## In this repository's source
 

@@ -192,6 +192,7 @@ def prepare(build, with_native_signaling=False):
                         "the static client configuration; the tree retains its CMake build files. See the\n"
                         "package root's ICE-SOURCE-NOTICE.txt for MPL source and additional GPL options.\n").encode()
         outputs = {}
+        seen_profiles = {}
         for target in ("linux", "windows"):
             expected, receipt_bytes = expected_receipt(build, target, ice, source_id, with_native_signaling)
             game_path = build / target / expected["binaries"]["game"]["name"]
@@ -207,6 +208,20 @@ def prepare(build, with_native_signaling=False):
                     raise SystemExit("native-signaling receipt requires --with-native-signaling")
             except ValueError:
                 raise SystemExit(f"{target}: ICE link receipt is invalid")
+            if isinstance(known, dict):
+                profile_pair = (
+                    known.get("with_text_chat") if "with_text_chat" in known else None,
+                    known.get("online_lobby_url") if "online_lobby_url" in known else None,
+                )
+                if "with_text_chat" in known:
+                    if type(known["with_text_chat"]) is not bool:
+                        raise SystemExit(f"{target}: ICE link receipt has non-boolean with_text_chat")
+                    expected["with_text_chat"] = known["with_text_chat"]
+                if "online_lobby_url" in known:
+                    if type(known["online_lobby_url"]) is not str:
+                        raise SystemExit(f"{target}: ICE link receipt has non-string online_lobby_url")
+                    expected["online_lobby_url"] = known["online_lobby_url"]
+                seen_profiles[target] = profile_pair
             if json.dumps(known, sort_keys=True) != json.dumps(expected, sort_keys=True):
                 raise SystemExit(f"{target}: ICE link receipt/profile/inputs changed; rebuild with --public --with-network --with-ice")
             if MARKER + b"\0" not in read_regular(Path(build) / target / expected["binaries"]["game"]["name"], 256 * 1024 * 1024):
@@ -238,6 +253,8 @@ def prepare(build, with_native_signaling=False):
                      "source/libjuice-build-recipe.py": recipe, "source/libjuice-ice-deps.lock": lock,
                      "ICE-SOURCE-NOTICE.txt": notice}
             outputs[target] = dict(files=files, notice=notice, binaries=expected["binaries"])
+        if len(seen_profiles) == 2 and seen_profiles["linux"] != seen_profiles["windows"]:
+            raise SystemExit("linux and windows ICE link receipts disagree on with_text_chat/online_lobby_url; rebuild both targets together")
         return outputs
 
 

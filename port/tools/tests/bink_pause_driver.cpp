@@ -152,7 +152,10 @@ int main(int argc, char **argv)
 		PortBinkPause(&v->pub, 0);
 		Need(PortBinkPause(&v->pub, 0) == 0 && b.plays == 2, "twice: a second resume changes nothing");
 		Video idle;
-		Need(PortBinkPause(&idle.pub, 1) == 0, "twice: a film not started is not held");
+		Need(PortBinkPause(&idle.pub, 1) == 1, "twice: a film paused before start records the hold");
+		Need(PortBinkPause(&idle.pub, 1) == 0, "twice: a second pre-start pause changes nothing");
+		Need(PortBinkPause(&idle.pub, 0) == 1, "twice: pre-start resume clears the hold");
+		Need(PortBinkPause(&idle.pub, 0) == 0, "twice: a second pre-start resume changes nothing");
 	}
 	if (run("loop-restart"))
 	{

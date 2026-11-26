@@ -228,10 +228,19 @@ static void Check(bool cond, const char *msg) {
 }
 
 static void TestMathAndZeroWrap() {
-    Check(CeTerrainMaxAtlasSize(4096, 4096) == 2048u, "4096 caps -> 2048 max atlas");
+    Check(CeTerrainMaxAtlasSize(4096, 4096) == 4096u, "4096 caps 1P -> 4096 max atlas");
+    Check(CeTerrainMaxAtlasSize(4096, 4096, 2) == 2048u, "4096 caps 2P -> 2048 max atlas");
     Check(CeTerrainMaxAtlasSize(2048, 2048) == 2048u, "2048 caps -> 2048 max atlas");
     Check(CeTerrainMaxAtlasSize(2048, 1024) == 1024u, "2048x1024 -> 1024 max atlas");
     Check(CeTerrainMaxAtlasSize(512, 512) == 0u, "512 -> retail fallback");
+
+    // 4096 atlas dimensions & UV scales (L1, L2, L3 hold the entire 64x64 map permanently; L4 holds 32x32 tiles).
+    Check(CeTerrainLevelAtlasPx(1, 4096u) == 1024u && CeTerrainLevelTilesPerAxis(1, 4096u) == 64, "L1 4096 -> 1024 whole map");
+    Check(CeTerrainLevelAtlasPx(2, 4096u) == 2048u && CeTerrainLevelTilesPerAxis(2, 4096u) == 64, "L2 4096 -> 2048 whole map");
+    Check(CeTerrainLevelAtlasPx(3, 4096u) == 4096u && CeTerrainLevelTilesPerAxis(3, 4096u) == 64, "L3 4096 -> 4096 whole map");
+    Check(CeTerrainLevelAtlasPx(4, 4096u) == 4096u && CeTerrainLevelTilesPerAxis(4, 4096u) == 32, "L4 4096 -> 4096 32x32");
+    Check(CeTerrainLevelUvScale(3, 4096u) == 1.0f / 512.0f, "L3 4096 UV scale 1/512");
+    Check(CeTerrainLevelUvScale(4, 4096u) == 1.0f / 256.0f, "L4 4096 UV scale 1/256");
 
     // 2048 atlas dimensions & UV scales.
     Check(CeTerrainLevelAtlasPx(1, 2048u) == 1024u && CeTerrainLevelTilesPerAxis(1, 2048u) == 64, "L1 1024 whole map");
@@ -253,7 +262,7 @@ static void TestMathAndZeroWrap() {
         {8.f, 8.f, -12.f, 0.707f, 0.707f, 0.f},      // Map corner diagonal
         {480.f, 32.f, -16.f, -0.95f, 0.31f, -0.1f},  // Looking slightly upward
     };
-    for (unsigned maxAtlas : {1024u, 2048u}) {
+    for (unsigned maxAtlas : {1024u, 2048u, 4096u}) {
         for (const Cam &c : cams) {
             const CeTerrainViewFocus f = CeTerrainComputeFocus(c.x, c.y, c.z, c.dx, c.dy, c.dz, -10.f, 5, 5, maxAtlas);
             std::map<int, UWORD> usedSlots[5];
@@ -330,7 +339,7 @@ static void TestLifecycleAndHalo() {
     int count = 0;
     const UWORD *tiles = CeTerrainTexturesDrawTiles(0, 3, &count);
     Check(count == 1 && tiles && tiles[0] == static_cast<UWORD>((32 << 6) | 32), "draw tile recorded");
-    Check(CeTerrainTexturesUvScale(0, 3) == 1.0f / 256.0f, "runtime L3 UV scale");
+    Check(CeTerrainTexturesUvScale(0, 3) == 1.0f / 512.0f, "runtime L3 UV scale (4096 whole map)");
     Check(CeTerrainTexturesGetTexture(0, 3) != nullptr, "runtime L3 GPU texture bound");
 
     // Second frame with same tile: 100% cache hit -> 0 renders, 0 UpdateTexture calls.
@@ -472,8 +481,9 @@ class TerrainTexturesTests(unittest.TestCase):
     def test_patch_leaves_faithful_build_unchanged(self):
         with tempfile.TemporaryDirectory(prefix="terrain-tex-patch-") as td:
             base = Path(td)
-            with_p = patched(base / "with", ("DXLandscape.cpp",))["DXLandscape.cpp"]
-            without_p = patched(base / "without", ("DXLandscape.cpp",), skip=("0354-ce-terrain-textures.patch",))["DXLandscape.cpp"]
+            # 0381's DXLandscape hunk shares trailing context with 0354; omit 0381 from both arms to isolate 0354 cleanly.
+            with_p = patched(base / "with", ("DXLandscape.cpp",), skip=("0381-ce-perf-surf-museum-fixes.patch",))["DXLandscape.cpp"]
+            without_p = patched(base / "without", ("DXLandscape.cpp",), skip=("0354-ce-terrain-textures.patch", "0381-ce-perf-surf-museum-fixes.patch"))["DXLandscape.cpp"]
         self.assertNotEqual(with_p, without_p)
         self.assertEqual(faithful(with_p), faithful(without_p))
 
@@ -482,7 +492,7 @@ class TerrainTexturesTests(unittest.TestCase):
         impl_orig = (GAME / "ce_terrain_textures.cpp").read_text()
         mutants = [
             ("oversized-safe-half-wraps", "math", "const int half = (n / 2) - 2;", "const int half = n / 2;"),
-            ("commander-l4-blocked", "math", "dist2 <= 90.0f * 90.0f", "dist2 <= 16.0f * 16.0f"),
+            ("commander-l4-blocked", "math", "const float l4Dist = f.maxAtlas >= 4096u ? 125.0f : 90.0f;", "const float l4Dist = 16.0f;"),
             ("drop-seam-halo", "impl", "for (int dy = -1; dy <= 1; ++dy)", "for (int dy = 0; dy <= 0; ++dy)"),
             ("drop-invalidate", "impl", "a.cache[slot] |= 0x8000u;", "(void)slot;"),
             ("leak-gpu-on-device-loss", "impl", "ReleaseAtlasGpu(gViews[v].atlases[l]);", "(void)l;"),

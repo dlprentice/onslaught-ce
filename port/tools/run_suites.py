@@ -105,7 +105,7 @@ FAILED_CASE = re.compile(r"^(?:FAIL|ERROR): \S+ \(", re.M)
 SCRIPT_FAILURE = re.compile(r"^\W*(?:(?:FAIL|FAILED|ERROR)\b|Traceback \(most recent call last\))", re.M)
 
 
-def judge(exit_code, text):
+def judge(exit_code, text, *, strict_skips=False):
     """Outcome of one finished suite from its exit code and its log: (outcome, ran, skipped).
 
     The exit code alone never passes a suite: a unittest log that says FAILED (or names a failed case) fails it whatever
@@ -128,6 +128,8 @@ def judge(exit_code, text):
         return "FAIL-zero-tests", ran, skipped
     if skipped >= ran:
         return "FAIL-all-skipped", ran, skipped
+    if strict_skips and skipped > 0:
+        return "FAIL-skipped", ran, skipped
     return "pass", ran, skipped
 
 
@@ -181,7 +183,7 @@ def blocked(row, allow, env, venv_python):
     return None
 
 
-def run_one(row, out, env, python, timeout, commit):
+def run_one(row, out, env, python, timeout, commit, *, strict_skips=False):
     if row["timeout"] != "-":
         timeout = int(row["timeout"])
     command = command_for(row, out, env, python)
@@ -199,7 +201,7 @@ def run_one(row, out, env, python, timeout, commit):
     if code == "TIMEOUT":
         outcome, ran, skipped = "FAIL-timeout", None, None
     else:
-        outcome, ran, skipped = judge(code, data.decode("utf-8", "replace"))
+        outcome, ran, skipped = judge(code, data.decode("utf-8", "replace"), strict_skips=strict_skips)
     return dict(suite=row["path"], outcome=outcome, exit=code, seconds=seconds, tests="" if ran is None else ran,
                 skipped="" if skipped is None else skipped, commit=commit, command=shlex.join(command[1:]),
                 log_sha256=hashlib.sha256(data).hexdigest(), log=str(log))
@@ -221,6 +223,7 @@ def main(argv=None):
     ap.add_argument("--only", nargs="*", default=[], help="run only suites whose path contains one of these")
     ap.add_argument("--timeout", type=int, default=1800, help="seconds per suite without a time limit of its own in the table")
     ap.add_argument("-j", "--jobs", type=int, default=1, help="maximum suites to run concurrently (default 1)")
+    ap.add_argument("--strict-skips", action="store_true", help="fail any unittest suite that skips one or more tests")
     ap.add_argument("--list", action="store_true", help="print the selection and exit")
     args = ap.parse_args(argv)
     if args.jobs < 1:
@@ -263,7 +266,7 @@ def main(argv=None):
                                  command=why, log_sha256="", log=""))
         elif args.jobs == 1:
             python = str(venv_python) if "venv" in row["needs"] else sys.executable
-            record_row(row, run_one(row, args.out, env, python, args.timeout, commit))
+            record_row(row, run_one(row, args.out, env, python, args.timeout, commit, strict_skips=args.strict_skips))
         else:
             runnable.append(row)
 
@@ -272,7 +275,8 @@ def main(argv=None):
             futures = {}
             for row in runnable:
                 python = str(venv_python) if "venv" in row["needs"] else sys.executable
-                futures[pool.submit(run_one, row, args.out, env, python, args.timeout, commit)] = row
+                futures[pool.submit(run_one, row, args.out, env, python, args.timeout, commit,
+                                    strict_skips=args.strict_skips)] = row
             for future in as_completed(futures):
                 record_row(futures[future], future.result())
     counts = {}

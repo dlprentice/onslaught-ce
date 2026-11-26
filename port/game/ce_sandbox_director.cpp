@@ -12,6 +12,8 @@
 #include "GameInterface.h"
 #include "PauseMenu.h"
 #include "world.h"
+#include "map.h"
+#include "eventmanager.h"
 #include "unit.h"
 #include "squad.h"
 #include "InitThing.h"
@@ -54,8 +56,15 @@ extern "C" int PortCePlayUnitIsDriven(const void *unit) __attribute__((weak));
 // The Commander may answer this itself (a live order on the squad); absent, the
 // director goes by what PortCeSandboxSquadPlayerOrder was last told.
 extern "C" int PortCeCmdSquadHasPlayerOrder(const void *squad) __attribute__((weak));
+extern "C" int PortCeSandboxActiveEventPoolCapacity(void);
 
 namespace {
+
+struct ActorWaterAccess : public CActor {
+	static void ClearInWater(CActor *a) {
+		if (a) static_cast<ActorWaterAccess *>(a)->mLastTimeInWater = -1000.0f;
+	}
+};
 
 CeSandboxDirector gDirector;
 CeSandboxPlatoonRegistry gPlatoons;
@@ -73,6 +82,8 @@ const char *gNotice = NULL;
 unsigned char gCareerSnapshot[sizeof(CCareer)];
 bool gCareerSnapshotHeld = false;
 bool gP0StasisApplied = false;
+float gLastRecallEventTime = -1000.0f;
+float gDirectorTickAccumSec = 0.0f;
 
 bool IsP0DrivingOtherUnit() {
 	return (PortCePlayUnitShowsBattleline && PortCePlayUnitShowsBattleline(0) != 0) ||
@@ -177,6 +188,8 @@ void RecallP0ToCitadelPad(CBattleEngine *be) {
 	padOri.MakeRotationYawF(CeSandboxWorld::kPlayerSpawnYaw);
 	be->TeleportOrientation(padOri);
 	be->CeResetPoseForRecall(CeSandboxWorld::kPlayerSpawnYaw);
+	ActorWaterAccess::ClearInWater(be);
+	gLastRecallEventTime = EVENT_MANAGER.GetTime();
 	if (st == BATTLE_ENGINE_STATE_JET) {
 		be->Morph();
 	}
@@ -187,6 +200,18 @@ void UpdateP0SurvivalAndStasis() {
 	CPlayer *p0 = GAME.GetPlayer(0);
 	CBattleEngine *be = p0 ? p0->GetBattleEngine() : NULL;
 	if (!be) return;
+
+	// Deep-water CBattleEngine::DeclareInWater() calls SUPERTYPE::DeclareInWater()
+	// after StartDieProcess() -> PortCeLivingSandboxRescuePlayer() returns, stamping
+	// mLastTimeInWater onto the already-rescued BE on the Citadel pad. Clear that
+	// stale timestamp while dry on the pad so water recall never fires 5-6x in 0.25 s.
+	const float now = EVENT_MANAGER.GetTime();
+	const bool recentlyRecalled = (gLastRecallEventTime > -999.0f &&
+	                               now >= gLastRecallEventTime &&
+	                               (now - gLastRecallEventTime) < 0.35f);
+	if (recentlyRecalled && be->IsInWater() && be->GetPos().Z < MAP.GetWaterLevel() - 1.0f) {
+		ActorWaterAccess::ClearInWater(be);
+	}
 
 	const bool drivingOther = IsP0DrivingOtherUnit();
 	CeSandboxPlayerStatus st = {};
@@ -244,10 +269,9 @@ bool SpawnSandboxUnit(const CeSandboxSpawnOrder &order) {
 	if (CeSandboxWorld::IsInsideCitadelKeepOut(order.x, order.y, CeSandboxWorld::kDirectorKeepOutRadius))
 		return false;
 
-	// Live mThingHeap safety guard before every dynamic spawn.
-	CeSandboxTelemetrySnapshot snap = {};
-	if (CeSandboxTelemetrySample(&snap) && snap.valid &&
-	    snap.thingHeapFreeBytes < gDirector.Config().minThingHeapFreeBytes) {
+	// Live mThingHeap safety guard before every dynamic spawn (O(1) free-byte check).
+	CMemoryHeap *thingHeap = MEM_MANAGER.GetThingHeap();
+	if (thingHeap && static_cast<uint32_t>(thingHeap->GetFreeSize()) < gDirector.Config().minThingHeapFreeBytes) {
 		return false;
 	}
 
@@ -714,6 +738,8 @@ extern "C" bool PortCeLivingSandboxBegin(void) {
 	CaptureCareerSnapshot();
 	gArmed = true;
 	gP0StasisApplied = false;
+	gLastRecallEventTime = -1000.0f;
+	gDirectorTickAccumSec = 0.0f;
 	gPlatoons.Clear();
 	ResetStripClocks();
 	CeSandboxProfileSetNonCampaignSession(true);
@@ -729,6 +755,8 @@ extern "C" void PortCeLivingSandboxCancel(void) {
 	gArmed = false;
 	gLoadRefused = false;
 	gP0StasisApplied = false;
+	gLastRecallEventTime = -1000.0f;
+	gDirectorTickAccumSec = 0.0f;
 	CeSandboxProfileSetNonCampaignSession(false);
 #ifdef CE_SANDBOX_HAS_CITADEL
 	CeSanctuaryCitadel::RuntimeShutdown();
@@ -809,6 +837,8 @@ extern "C" void PortCeLivingSandboxLevelBegin(int level) {
 	if (!PortCeLivingSandboxActive() || level != CeSandboxWorld::kArchiveLevel)
 		return;
 	gP0StasisApplied = false;
+	gLastRecallEventTime = -1000.0f;
+	gDirectorTickAccumSec = 0.0f;
 	const CeSandboxDirectorConfig cfg = BuildRuntimeConfig();
 	gDirector.BeginLevel(cfg);
 	gPlatoons.Clear();
@@ -823,7 +853,7 @@ extern "C" void PortCeLivingSandboxLevelBegin(int level) {
 	ListIterator<CUnit> it(&WORLD.GetUnitNB());
 	for (CUnit *u = it.First(); u; u = it.Next()) {
 		if (!u || !u->GetUnitData() || !u->GetUnitData()->mName) continue;
-		if (u->IsA(THING_TYPE_BATTLE_ENGINE)) continue;
+		if (u->IsA(THING_TYPE_BATTLE_ENGINE) || u->IsA(THING_TYPE_COMPONENT)) continue;
 		const char *def = u->GetUnitData()->mName;
 		if (CeSandboxWorld::StrEqualsIgnoreCase(def, CeSandboxWorld::kUnitForsetiHq) ||
 		    CeSandboxWorld::StrEqualsIgnoreCase(def, CeSandboxWorld::kUnitMuspellHq)) {
@@ -849,6 +879,8 @@ extern "C" void PortCeLivingSandboxLevelEnd(int level, int quit) {
 	CeSanctuaryCitadel::RuntimeShutdown();
 #endif
 	gP0StasisApplied = false;
+	gLastRecallEventTime = -1000.0f;
+	gDirectorTickAccumSec = 0.0f;
 	gPlatoons.Clear();
 	ResetStripClocks();
 	const bool keepForRetry = (quit == QT_RESTART_LEVEL) && !gLoadRefused;
@@ -861,7 +893,7 @@ extern "C" void PortCeLivingSandboxLevelEnd(int level, int quit) {
 extern "C" void PortCeLivingSandboxUnitSpawn(CUnit *unit, CInitThing *init) {
 	(void)init;
 	if (!PortCeLivingSandboxActive() || !gDirector.IsRunning() || !unit) return;
-	if (unit->IsA(THING_TYPE_BATTLE_ENGINE)) return;
+	if (unit->IsA(THING_TYPE_BATTLE_ENGINE) || unit->IsA(THING_TYPE_COMPONENT)) return;
 	CUnitData *data = unit->GetUnitData();
 	if (!data || !data->mName) return;
 	if (CeSandboxWorld::StrEqualsIgnoreCase(data->mName, CeSandboxWorld::kUnitForsetiHq) ||
@@ -877,6 +909,7 @@ extern "C" void PortCeLivingSandboxUnitSpawn(CUnit *unit, CInitThing *init) {
 
 extern "C" void PortCeLivingSandboxUnitDestroyed(CUnit *unit) {
 	if (!PortCeLivingSandboxActive() || !gDirector.IsRunning() || !unit) return;
+	if (unit->IsA(THING_TYPE_COMPONENT)) return;
 	const CeEntityHandle h = CeEntityHandleLookup(unit);
 	if (h != kCeEntityHandleInvalid) {
 		gDirector.OnUnitDestroyed(h);
@@ -914,6 +947,16 @@ extern "C" void PortCeLivingSandboxTickPre(void) {
 	CeSanctuaryCitadel::RuntimeTickSim();
 #endif
 
+	// Gate unit sampling and pressure collection on the director's 2 Hz cadence so
+	// 9/10 ticks skip stack allocation and world scans entirely.
+	gDirectorTickAccumSec += CLOCK_TICK;
+	const float stepSec = gDirector.Config().directorStepSec;
+	if (gDirectorTickAccumSec + 1e-5f < stepSec) {
+		return;
+	}
+	gDirectorTickAccumSec -= stepSec;
+	if (gDirectorTickAccumSec > stepSec) gDirectorTickAccumSec = 0.0f;
+
 	// The squad the player is piloting in (Play Any Unit), if any.
 	const CSquad *pilotedSquad = NULL;
 	if (PortCePlayUnitIsDriven) {
@@ -935,7 +978,7 @@ extern "C" void PortCeLivingSandboxTickPre(void) {
 	const float capR2 = gDirector.Config().captureRadius * gDirector.Config().captureRadius;
 	ListIterator<CUnit> it(&WORLD.GetUnitNB());
 	for (CUnit *u = it.First(); u; u = it.Next()) {
-		if (!u || u->IsDying() || u->IsShuttingDown() || u->GetLife() <= 0.0f) continue;
+		if (!u || u->IsA(THING_TYPE_COMPONENT) || u->IsDying() || u->IsShuttingDown() || u->GetLife() <= 0.0f) continue;
 		++liveUnits;
 
 		const FVector pos = u->GetPos();
@@ -969,28 +1012,30 @@ extern "C" void PortCeLivingSandboxTickPre(void) {
 		}
 	}
 
-	CeSandboxTelemetrySnapshot tel = {};
-	CeSandboxTelemetrySample(&tel);
+	// Read heap and event pressure directly in O(1) without walking free lists.
+	CMemoryHeap *thingHeap = MEM_MANAGER.GetThingHeap();
 	CeSandboxPressure pressure = {};
 	const float frameDt = GAME.GetRenderFrameLength();
 	pressure.frameTimeMs = (std::isfinite(frameDt) && frameDt > 0.0f)
 		? (((frameDt < 10.0f) ? frameDt : 10.0f) * (CLOCK_TICK * 1000.0f))
 		: 16.67f;
 	pressure.liveWorldUnits = liveUnits;
-	pressure.eventPending = tel.valid ? tel.eventManagerPending : 0;
-	pressure.eventCapacity = tel.valid ? tel.eventManagerCapacity : kCeRetailEventPoolCapacity;
-	pressure.thingHeapFreeBytes = tel.valid ? tel.thingHeapFreeBytes : (2u * 1024u * 1024u);
+	pressure.eventPending = static_cast<int>(EVENT_MANAGER.TotalEvents());
+	const int eventCap = PortCeSandboxActiveEventPoolCapacity();
+	pressure.eventCapacity = eventCap > 0 ? eventCap : kCeRetailEventPoolCapacity;
+	pressure.thingHeapFreeBytes = thingHeap ? static_cast<uint32_t>(thingHeap->GetFreeSize()) : (2u * 1024u * 1024u);
 	pressure.venturerAvailable = PortCeLivingSandboxVenturerReady();
 
 	CeSandboxStepOutput stepOut = {};
-	if (!gDirector.Tick(CLOCK_TICK, pressure, presence, samples, sampleCount, &stepOut)) {
+	if (!gDirector.Tick(stepSec, pressure, presence, samples, sampleCount, &stepOut)) {
 		return;
 	}
 
 	// Execute stuck-unit reaps first to reclaim heap headroom before spawning.
 	for (int i = 0; i < stepOut.reapCount; ++i) {
 		CUnit *u = CeEntityHandleResolveUnit(stepOut.reaps[i].handle);
-		if (u && !u->IsDying() && !u->IsShuttingDown() && !u->IsA(THING_TYPE_BATTLE_ENGINE)) {
+		if (u && !u->IsDying() && !u->IsShuttingDown() &&
+		    !u->IsA(THING_TYPE_BATTLE_ENGINE) && !u->IsA(THING_TYPE_COMPONENT)) {
 			// The handle goes before the thing does: a removed unit's slot is never
 			// left naming freed memory.
 			CeEntityHandleUnregister(u);
@@ -1002,7 +1047,7 @@ extern "C" void PortCeLivingSandboxTickPre(void) {
 	// Issue frontline movement / Sanctuary keep-out steer orders.
 	for (int i = 0; i < stepOut.moveCount; ++i) {
 		CUnit *u = CeEntityHandleResolveUnit(stepOut.moves[i].handle);
-		if (u && !u->IsDying() && !u->IsShuttingDown() &&
+		if (u && !u->IsDying() && !u->IsShuttingDown() && !u->IsA(THING_TYPE_COMPONENT) &&
 		    !PlatoonHeldByPlayer(u, u->GetSquad(), pilotedSquad)) {
 			u->GoToPoint(FVector(stepOut.moves[i].x, stepOut.moves[i].y, stepOut.moves[i].z), FALSE);
 		}

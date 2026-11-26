@@ -152,9 +152,29 @@
  
  	//***********************************************
  	//** Help Text
+@@ -2453,10 +2541,19 @@
+ void	CFEPGoodies::TransitionNotification(EFrontEndPage from)	// FUNCTION: 0x0045ffa0
+ {
+ 	mStartTime = PLATFORM.GetSysTimeFloat() + 2.f;
+ 
+ 	ResetGoodyState();
++#ifdef CE_VERSION
++	// patch 0199: a visitor's Row 0 omits the five race levels, so clamp a cursor left on the old tail
++	if (PortCeMuseumActive())
++	{
++		while (mCX > 0 && get_goodie_number(mCX, mCY) == -1)
++			--mCX;
++		EvaluateDest();
++	}
++#endif
+ }
+ 
+ //*********************************************************************************
+ void	CFEPGoodies::EvaluateDest()
+ {
 --- a/FrontEnd.cpp
 +++ b/FrontEnd.cpp
-@@ -31,6 +31,12 @@
+@@ -31,6 +31,13 @@
  #include	"mouse.h"
  
  #include	"game.h"
@@ -162,12 +182,13 @@
 +#ifdef CE_VERSION
 +extern "C" bool PortCeMuseumActive(void);		// patch 0199: port/game/ce_museum.cpp
 +extern "C" void PortCeMuseumEnd(void);
++extern "C" void PortCeMuseumHoldExitFade(bool hold);
 +extern "C" int PortCeMuseumPage(int current, int requested, int ce, int gallery, int ordinary_back);
 +#endif
  #ifdef CE_VERSION
  bool	PortCeBonusLevelEnd();			// port/game/ce_bonus.cpp (patch 0107)
  bool	PortCeBonusReturning();
-@@ -510,6 +516,24 @@
+@@ -510,6 +517,24 @@
  void	CFrontEnd::SetPage(EFrontEndPage page, SINT time)	// FUNCTION: 0x00466ae0
  {
  #ifdef CE_VERSION
@@ -192,3 +213,34 @@
  	PortSessionLog(PORT_SESSION_GAME, false, "frontend page=%d requested=%d transition_ticks=%d", (int)mActivePage, (int)page, time);
  #endif
  	// Shouldn't happen...
+@@ -519,6 +544,9 @@
+ 	if (time == 0)
+ 	{
+ 		mPages[mActivePage]->DeActiveNotification();
++#ifdef CE_VERSION
++		PortCeMuseumHoldExitFade(false);		// patch 0199: immediate page switch clears any pending exit fade
++#endif
+ 
+ 		// go straight there
+ 		mPages[page]->TransitionNotification(mActivePage);
+@@ -534,6 +562,9 @@
+ 		mTransitionCount = 0;
+ 		mTransitionTime = time;
+ 		mActivePage = FEP_TRANSITION;
++#ifdef CE_VERSION
++		PortCeMuseumHoldExitFade(mTransitionFrom == FEP_GOODIES && mTransitionTo != FEP_GOODIES);	// patch 0199: keep visitor visuals during exit fade
++#endif
+ 
+ 		mPages[mTransitionTo]->TransitionNotification(mTransitionFrom);
+ 	}
+@@ -608,6 +639,10 @@
+ 		if (mTransitionCount >= mTransitionTime)
+ 		{
+ 			mPages[mTransitionFrom]->DeActiveNotification();
++#ifdef CE_VERSION
++			if (mTransitionFrom == FEP_GOODIES)
++				PortCeMuseumHoldExitFade(false);		// patch 0199: exit fade complete
++#endif
+ 			mActivePage = mTransitionTo;
+ 			mPages[mActivePage]->ActiveNotification(mTransitionFrom);
+ 		}

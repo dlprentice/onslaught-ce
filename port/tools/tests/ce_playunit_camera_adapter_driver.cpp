@@ -22,6 +22,8 @@ struct CUnit {
 };
 const int kViewLook=1;
 bool gDriving=false, gOnFoot=true, gFootFirstPerson=false;
+struct { bool enabled = false; } gSpotter;
+static void CePlayUnitSpotterReset(void *) {}
 int gViewMode=kViewLook;
 float gLookYaw=0, gLookPitch=0;
 void *gFootRenderedView=NULL;

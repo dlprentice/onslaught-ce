@@ -141,6 +141,7 @@ bool PortCeBonusStartCarrierClash()
 		return false;
 	memcpy((void *)sCareer, (const void *)&CAREER, sizeof(CCareer));
 	sModLevel = false;
+	sFlagshipDuel2P = false;
 	sLevel = kCarrierClashLevel;
 	sActive = true;
 	sReturning = false;

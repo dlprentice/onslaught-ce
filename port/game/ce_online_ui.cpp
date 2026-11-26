@@ -30,7 +30,9 @@ bool PortCeNetOffered();
 int  PortCeGamepadEdge(int pad, int button, bool release);
 bool PortCeGamepadIsStick(int pad);
 extern "C" int CE_SettingGetBool(const char *key, int def);
+extern "C" uint64_t CE_NetNowMs(void) __attribute__((weak));
 extern "C" void PortCeNetOpenDirectFromOnline(void) __attribute__((weak));
+extern "C" void PortCeOnlineHostSetOutcomeNotice(const char *text, int is_error) __attribute__((weak));
 
 namespace {
 
@@ -386,6 +388,12 @@ void PortCeOnlineUiOpen(void) {
     SetKeyTrap(true);
 }
 
+void PortCeOnlineUiSetOutcomeNotice(const char *text, int good) {
+    if (PortCeOnlineHostSetOutcomeNotice && PortCeOnlineHostActive()) {
+        PortCeOnlineHostSetOutcomeNotice(text ? text : "", good == 0 ? 1 : 0);
+    }
+}
+
 void PortCeOnlineUiOpenFromMultiplayer(void) {
     if (!OnlineOffered()) return;
     EnsureHostOps();
@@ -434,7 +442,9 @@ void PortCeOnlineUiUpdate(void) {
     }
     if (!PortCeOnlineHostActive()) return;
     EnsureHostOps();
-    const uint64_t nowMs = static_cast<uint64_t>(PLATFORM.GetSysTimeFloat() * 1000.0);
+    const uint64_t nowMs = CE_NetNowMs
+        ? CE_NetNowMs()
+        : static_cast<uint64_t>(PLATFORM.GetSysTimeFloat() * 1000.0);
     PortCeOnlineHostUpdate(nowMs);
     if (CE_LobbyRestartDue()) {
         if (sLaunchStartedAt < 0.f) {

@@ -74,9 +74,10 @@ int main() {
     Need(IsInsideDome(112.0f, 392.0f, -89.9f), "just below apex is inside dome");
     Need(IsInsideDome(112.0f, 392.0f, -90.0f), "exact apex Z=-90 is on dome shell");
     Need(!IsInsideDome(112.0f, 392.0f, -90.2f), "above apex Z=-90.2 is outside dome");
-    Need(IsInsideDome(112.0f + 55.0f, 392.0f, -33.0f), "inside 2 m base skirt is inside dome");
-    Need(IsInsideDome(112.0f + 55.9f, 392.0f, -32.0f), "bottom edge of skirt Z=-32 is inside dome");
-    Need(!IsInsideDome(112.0f, 392.0f, -31.8f), "below skirt Z=-31.8 is outside dome");
+    Need(IsInsideDome(112.0f + 55.0f, 392.0f, -33.0f), "inside base skirt is inside dome");
+    Need(IsInsideDome(112.0f + 55.9f, 392.0f, -9.5f), "bottom edge of 24.5 m skirt Z=-9.5 is inside dome");
+    Need(IsInsideDome(132.8f, 341.2f, -30.54f), "SE Access Ramp inside R=56 is protected by 24.5 m dome skirt");
+    Need(!IsInsideDome(112.0f, 392.0f, -9.3f), "below 24.5 m skirt Z=-9.3 is outside dome");
     Need(!IsInsideDome(112.0f + 56.5f, 392.0f, -34.0f), "outside radius on floor is outside dome");
     Need(!IsInsideDome(std::nanf(""), 392.0f, -34.0f), "NaN coordinate rejected");
 
@@ -101,16 +102,20 @@ int main() {
         Need(hx < kCenterX && Near(DistToCenter3D(hx, hy, hz), kDomeRadius, 2e-2f),
              "pass-through shell stops on near (entry) face of dome, not exit face");
 
-        // Low grazing shot into 2 m cylindrical base skirt (Z = -32.8).
+        // Low grazing shot into 24.5 m cylindrical base skirt (Z = -32.8) and down onto SE Access Ramp (Z = -30.54).
         Need(InterceptIncomingSegment(190.0f, 392.0f, -32.8f, 112.0f, 392.0f, -32.8f, kFloorZ, &hx, &hy, &hz),
              "low skirt grazing round intercepted");
         Need(Near(hx, 168.0f, 1e-2f) && Near(hz, -32.8f, 1e-2f),
              "low skirt round stops at R=56 cylinder wall");
+        Need(InterceptIncomingSegment(180.0f, 300.0f, -25.0f, 132.8f, 341.2f, -30.54f, kFloorZ, &hx, &hy, &hz),
+             "valley shot aimed at SE Access Ramp intercepted by 24.5 m skirt");
+        Need(Near(std::hypot(hx - kCenterX, hy - kCenterY), kDomeRadius, 2e-2f),
+             "SE Access Ramp shot stops on outer R=56 dome skirt");
 
-        // Upward shot from cliff below plateau aiming up through floor into Sanctuary.
-        Need(InterceptIncomingSegment(112.0f, 392.0f, -15.0f, 112.0f, 392.0f, -45.0f, kFloorZ, &hx, &hy, &hz),
-             "upward shot from beneath plateau intercepted at skirt floor");
-        Need(Near(hz, -32.0f, 1e-2f), "upward shot stops at Z=-32 skirt seal");
+        // Upward shot from cliff below 24.5 m skirt aiming up through floor into Sanctuary.
+        Need(InterceptIncomingSegment(112.0f, 392.0f, -5.0f, 112.0f, 392.0f, -45.0f, kFloorZ, &hx, &hy, &hz),
+             "upward shot from beneath 24.5 m skirt intercepted at skirt floor");
+        Need(Near(hz, -9.5f, 1e-2f), "upward shot stops at Z=-9.5 skirt seal");
 
         // Clear exterior miss in the valley battle.
         Need(!InterceptIncomingSegment(250.0f, 200.0f, -20.0f, 310.0f, 180.0f, -18.0f, kFloorZ, &hx, &hy, &hz),
@@ -307,12 +312,12 @@ int main() {
     //     cornice clearance, C^1 cylindrical projection, and DomePerimeterGroundZ bounds.
     {
         // Visual radius clears all 4 brass bastion cornice corners (hypot(39.7, 39.7) = 56.144 m)
-        // while physical kDomeRadius (56.0 m) and kDomeSkirtDepth (2.0 m) remain untouched.
+        // while physical kDomeRadius (56.0 m) keeps its contract and kDomeSkirtDepth (24.5 m) matches visual skirt.
         const float bastionCornerR = std::hypot(39.7f, 39.7f);
         Need(kDomeVisualRadius > 56.14f && (kDomeVisualRadius - bastionCornerR) >= 0.20f,
              "visual dome radius clears all 4 retaining bastion/brass cornice corners by >= 20 cm");
-        Need(Near(kDomeRadius, 56.0f) && Near(kDomeSkirtDepth, 2.0f),
-             "physical dome radius and 2 m skirt depth remain untouched");
+        Need(Near(kDomeRadius, 56.0f) && Near(kDomeSkirtDepth, 24.5f),
+             "physical dome radius stays 56 m and skirt matches 24.5 m visual skirt");
         Need(kDomeVisualSkirtMaxZ >= 24.0f, "visual skirt reaches >= 24 m below floorZ");
 
         // C^1 continuity and cylindrical arc-length preservation across equator nz = 0.
@@ -688,6 +693,9 @@ MUTANTS = [
     ("mast-too-short",
      "constexpr float kSignalMastHeight = 25.9f;",
      "constexpr float kSignalMastHeight = 9.0f;"),
+    ("dome-skirt-too-shallow",
+     "constexpr float kDomeSkirtDepth = 24.5f;",
+     "constexpr float kDomeSkirtDepth = 2.0f;"),
 ]
 
 
@@ -795,12 +803,13 @@ def main():
           files == ["Round.cpp", "DXEngine.cpp"], f"got {files}")
     check("patch 0379 has zero CE_NETWORK_OFF or ce_hook_* calls",
           "CE_NETWORK_OFF" not in patch_txt and "ce_hook_" not in patch_txt)
-    check("patch 0379 disarms 4001/4000/DeclareOnGround (StartDieProcess BEFORE mUnknown120), clamps beams vs mPos+mBeamStart, and clears Cinema backbuffer",
+    check("patch 0379 disarms 4001/4000/DeclareOnGround (StartDieProcess BEFORE mUnknown120), clamps beam [mBeamStart, mPos+mVelocity], and clears Cinema backbuffer",
           patch_txt.count("+\t\t\tStartDieProcess();\n+\t\t\tmUnknown120 = TRUE;\n+\t\t\tmVelocity = FVector(0, 0, 0);\n+\t\t\treturn;") == 3
           and "!(PortCeSanctuaryActive() && (mFlags & TF_DYING))" in patch_txt
           and "void CRound::DeclareOnGround()" in patch_txt
-          and "PortCeSanctuaryClampBeam(mPos.X, mPos.Y, mPos.Z" in patch_txt
-          and "PortCeSanctuaryClampBeam(mBeamStart.X, mBeamStart.Y, mBeamStart.Z" in patch_txt
+          and "FVector ceBeamSeg = (mPos + mVelocity) - mBeamStart;" in patch_txt
+          and "PortCeSanctuaryClampBeam(mBeamStart.X, mBeamStart.Y, mBeamStart.Z, &ceBeamSeg.X, &ceBeamSeg.Y, &ceBeamSeg.Z)" in patch_txt
+          and "mVelocity = (mBeamStart + ceBeamSeg) - mPos;" in patch_txt
           and "LT.D3D_Clear(0, NULL, D3DCLEAR_TARGET, 0x000a0c12, 1.0f, 0L);" in patch_txt)
     check("citadel splits South balustrade & retaining skirt around SE ramp, keeps South Cinema portal open, guards SkipOutdoorWorld & keys, and renders 3P player in Cinema",
           "EmitBalustradeX(354.5f,  75.0f, 119.5f" in cit_cpp
@@ -855,7 +864,7 @@ def main():
           and "gCitadel->solids = MakeInteriorSolidLayout();" in cit_cpp
           and "EnforceInteriorUnitCollisions();" in cit_cpp
           and "ResolveInteriorCollision(gCitadel->solids," in cit_cpp
-          and "if (CinemaDisarmsWeapons(gCitadel->playerInsideCinema, gCitadel->insideCinema))\n        return true;" in cit_cpp)
+          and "if (CinemaDisarmsWeapons(gCitadel->playerInsideCinema, gCitadel->insideCinema)) {\n        ClearBattleEngineWeaponChargeAndSlowMovement();\n        return true;\n    }" in cit_cpp)
 
     # 2b. Collision is simulation, occupancy is read fresh, the roof is a height rule, the terrace is lit for night.
     def body(src, start, end):
@@ -866,7 +875,8 @@ def main():
     draw_fn = body(cit_cpp, "void RuntimeDrawWorld() {", "void RuntimeDrawDomeFx() {")
     fire_fn = body(cit_cpp, "bool RuntimeHandleFire(bool release, float value) {", "bool RuntimeIsInsideDome(")
     skip_fn = body(cit_cpp, 'extern "C" bool PortCeSanctuarySkipOutdoorWorld(void) {', 'extern "C" bool PortCeSanctuaryInterceptRound(')
-    enforce_fn = body(cit_cpp, "static void EnforceInteriorUnitCollisions() {", "static void RefreshCinemaOccupancy() {")
+    enforce_fn = body(cit_cpp, "static void EnforceInteriorUnitCollisions() {", "static void ClearBattleEngineWeaponChargeAndSlowMovement() {")
+    cam_occ_fn = body(cit_cpp, "static void RefreshCinemaCameraOccupancy() {", "static void RefreshCinemaOccupancy() {")
     sandbox_cpp = (GAME / "ce_sandbox_director.cpp").read_text()
     sb_tick = body(sandbox_cpp, 'extern "C" void PortCeLivingSandboxTickPre(void) {', 'extern "C" void PortCeLivingSandboxDrawWorld(')
     sb_draw = body(sandbox_cpp, 'extern "C" void PortCeLivingSandboxDrawWorld(', 'extern "C" bool PortCeLivingSandboxKey(')
@@ -877,9 +887,12 @@ def main():
           and "CeSanctuaryCitadel::RuntimeTickSim();" in sb_tick
           and "RuntimeTickSim" not in sb_draw
           and sb_tick.index("GAME.IsPaused()") < sb_tick.index("CeSanctuaryCitadel::RuntimeTickSim();"))
-    check("Cinema occupancy is read fresh before the outdoor-draw skip and at the trigger",
+    check("Cinema occupancy is read fresh at sim/trigger and camera-only memoized in outdoor-draw skip",
           "RefreshCinemaOccupancy();" in tick_fn
-          and skip_fn.index("RefreshCinemaOccupancy();") < skip_fn.index("gCitadel->insideCinema")
+          and skip_fn.index("RefreshCinemaCameraOccupancy();") < skip_fn.index("gCitadel->insideCinema")
+          and "RefreshCinemaOccupancy(" not in skip_fn
+          and "WORLD.GetUnitNB" not in cam_occ_fn
+          and "cameraOccupancyFrame" in cam_occ_fn
           and fire_fn.index("RefreshCinemaOccupancy();") < fire_fn.index("CinemaDisarmsWeapons(")
           and "ENGINE.GetCameraForViewpoint(0)" in cit_cpp
           and "gCitadel->playerInsideCinema = playerInside;" in cit_cpp)
@@ -909,9 +922,11 @@ def main():
           and "DomeShellGain(elev, insideBlend)" in dome_fn[:ripple_at]
           and "DomeRibGain(elev, insideBlend)" in dome_fn[:ripple_at]
           and "insideBlend" not in dome_fn[ripple_at:])
-    check("signal mast is built with its own contact shadow, AO footprint and lantern",
+    check("signal mast is built with its own contact shadow, AO footprint, inset cross-arm endcaps, and lantern",
           "const float mx = kSignalMastX, my = kSignalMastY;" in cit_cpp
           and "RegisterAoBox(kSignalMastX - 1.3f" in cit_cpp
+          and "mx + 0.50f" in cit_cpp
+          and "my + 0.28f" in cit_cpp
           and "kSignalMastHeight, kMatForsetiGlow" in cit_cpp)
 
     sys.path.insert(0, str(PORT))

@@ -89,7 +89,8 @@ def prepare(out):
     start = report.index('typedef struct CeSettingsDir')
     end = report.index('} CeSettingsDir;', start) + len('} CeSettingsDir;')
     ce = (PORT / 'platform/common/ce.cpp').read_text()
-    parts = [public_d3dapp_tests.function(report, r'^static inline void ce_user_dir\('), report[start:end],
+    parts = [public_d3dapp_tests.function(report, r'^static inline size_t ce_trim_sep_len\('),
+             public_d3dapp_tests.function(report, r'^static inline void ce_user_dir\('), report[start:end],
              public_d3dapp_tests.function(report, r'^static inline void ce_settings_dir_close\('),
              public_d3dapp_tests.function(report, r'^static inline int ce_settings_dir_open_ex\('),
              public_d3dapp_tests.function(report, r'^static inline int ce_settings_dir_open\('),

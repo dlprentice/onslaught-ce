@@ -122,7 +122,7 @@ def main():
     parser.add_argument("--glue", type=Path, help="another text of ce_dodge_assist.cpp to judge (the modes only)")
     args = parser.parse_args()
     failures = 0
-    texts = build.patched_text(["Controller.cpp"], network=False)
+    texts = build.patched_text(["Controller.h", "Controller.cpp"], network=False)
     glue = (args.glue or GLUE).read_text()
     for problem in text_problems(glue):
         print("FAIL " + problem)

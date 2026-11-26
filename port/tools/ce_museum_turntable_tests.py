@@ -207,6 +207,20 @@ int main() {
     Need(PickStud(eyeX, eyeY, eyeZ, 0.0f, 0.0f, 0.0f, CeMuseumTour::kWingCourtyard) == -1,
          "zero aim vector safely misses");
 
+    // 4b. North Atrium exhibits (#11 and #76) are pickable under kWingAtrium (no Hangar override).
+    for (unsigned i = 0; i < kManifestCount; ++i) {
+        if (kManifest[i].goodieId != 11 && kManifest[i].goodieId != 76) continue;
+        float nsx, nsy, nsz;
+        StudPosition(i, &nsx, &nsy, &nsz);
+        const float ex = nsx + kManifest[i].studDirX * 1.5f;
+        const float ey = nsy + kManifest[i].studDirY * 1.5f;
+        const float ez = 1.7f;
+        Need(PickStud(ex, ey, ez, nsx - ex, nsy - ey, nsz - ez, CeMuseumTour::kWingAtrium) == static_cast<int>(i),
+             "North Atrium exhibit stud is pickable under kWingAtrium");
+        Need(PickStud(ex, ey, ez, nsx - ex, nsy - ey, nsz - ez, CeMuseumTour::kWingHangar) == -1,
+             "North Atrium exhibit stud is not picked under kWingHangar");
+    }
+
     // 5. FocusExhibit picks nearest faced exhibit in current wing.
     Need(FocusExhibit(0.0f, 5.0f, 0.0f, 1.0f, CeMuseumTour::kWingCourtyard) == 0, "facing hero focuses hero");
     Need(FocusExhibit(0.0f, 5.0f, 0.0f, -1.0f, CeMuseumTour::kWingCourtyard) == -1, "facing away clears focus");
@@ -460,8 +474,12 @@ int main() {
               "PortCeMuseumInteractiveCard(",
               "PortCeMuseumHallDraw(",
           )))
-    check("museum hall adds spatial hysteresis for Atrium portal anticipation",
-          "gAnticipatedWing" in hall and "gExhibitionVisitor.y >= 43.0f" in hall)
+    check("museum hall passes actual room wing to CeMuseumTurntable::RuntimeUpdate without obsolete portal override",
+          "gAnticipatedWing" not in hall and "turntableWing" not in hall
+          and "CeMuseumTurntable::RuntimeUpdate(wing, dt, paused, eyeX, eyeY, eyeZ, aimX, aimY, aimZ);" in hall)
+    check("museum hall resolves architectural textures live without raw cached Gallery::texture[] pointers",
+          "gPtr->texture" not in hall and "IDirect3DTexture9 *texture[kMatCount]" not in hall
+          and "ReleaseHallGeometryBuffers()" in hall and "ReleaseOceanGpuBuffers()" in hall)
     check("museum hall builds static D3DPOOL_MANAGED GPU VB/IB for Hall, shadows, glass, and ocean",
           "CreateVertexBuffer(" in hall and "CreateIndexBuffer(" in hall
           and "D3DPOOL_MANAGED" in hall and "ReleaseHallGpuBuffers();" in hall
@@ -479,6 +497,13 @@ int main() {
           and "CeArchivePedestal::RuntimeDraw(gGrandFloorZ, false);" in draw_fn[:saved_restore]
           and "DrawFactionBanners(dev, gGrandFloorZ);" in draw_fn[:saved_restore]
           and "CeMuseumTurntable::RuntimeDraw(gGrandFloorZ);" in draw_fn[saved_restore:])
+    check("museum hall draws translucent skylight glass and sunbeams strictly after CeMuseumTurntable::RuntimeDraw",
+          "DrawHallGlassPass(dev);" in draw_fn
+          and draw_fn.index("DrawHallGlassPass(dev);") > draw_fn.index("CeMuseumTurntable::RuntimeDraw(gGrandFloorZ);")
+          and "gHallGpu.glassVb" not in draw_fn)
+    check("museum hall reuses a cached IDirect3DStateBlock9 instead of per-frame CreateStateBlock/Release",
+          "EnsureHallStateBlock(dev)" in draw_fn and "EnsureHallStateBlock(dev)" in backdrop_fn
+          and "CreateStateBlock(" not in draw_fn and "CreateStateBlock(" not in backdrop_fn)
     check("museum hall wires CeMuseumDiorama lifecycle, update, input, and cue hooks",
           "CeMuseumDiorama::RuntimeInit();" in hall
           and "CeMuseumDiorama::RuntimeShutdown();" in hall
@@ -536,6 +561,9 @@ int main() {
 
     check("runtime guards CMESHRENDERER::Render with local D3D9 state block",
           "CreateStateBlock(D3DSBT_ALL" in cpp and "savedState->Apply();" in cpp and "savedState->Release();" in cpp)
+    check("runtime caches its D3D9 state block and computes rotated vertical half-extent for banked flight exhibits",
+          "EnsureTurntableStateBlock(dev)" in cpp and "ReleaseTurntableStateBlock();" in cpp
+          and "std::fabs(rot.Row[2].X) * box->mAxes.X" in cpp)
     check("runtime invalidates LT cached state after state block restore",
           "LT.InvalidateAllStates();" in cpp)
     check("runtime invalidates LT cached state between stud draw and mesh draw",

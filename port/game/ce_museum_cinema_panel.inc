@@ -217,5 +217,11 @@ void CinemaPanelDraw() {
         font->DrawTextWithShadow(offsetX + line.x*scale, offsetY + line.y*scale,
             CinemaStyleColour(line.style), native, 0, 0, scale, scale);
     }
+    LT.SRS(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+    LT.SRS(D3DRS_ZENABLE, TRUE);
+    LT.SRS(D3DRS_ZWRITEENABLE, TRUE);
+    LT.SRS(D3DRS_CULLMODE, D3DCULL_CCW);
+    LT.SRS(D3DRS_ALPHATESTENABLE, TRUE);
+    LT.SetModulate(0);
 }
 } // namespace

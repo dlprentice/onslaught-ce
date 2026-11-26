@@ -149,18 +149,76 @@ static inline int ce_latest_tape(const char *user, char *out, size_t n)
 }
 
 /* A path as the player would type it, without their account name: ~/... on Linux, %APPDATA%\... on Windows. */
+static inline int ce_path_prefix_eq(const char *path, const char *base, size_t l)
+{
+#ifdef _WIN32
+	for (size_t i = 0; i < l; ++i)
+	{
+		unsigned char a = (unsigned char)path[i], b = (unsigned char)base[i];
+		if (a == '\\') a = '/';
+		if (b == '\\') b = '/';
+		if (a >= 'A' && a <= 'Z') a = (unsigned char)(a + ('a' - 'A'));
+		if (b >= 'A' && b <= 'Z') b = (unsigned char)(b + ('a' - 'A'));
+		if (a != b) return 0;
+	}
+	return 1;
+#else
+	return !strncmp(path, base, l);
+#endif
+}
+
+static inline int ce_path_has_component(const char *path, const char *needle)
+{
+	if (!path || !needle || !*needle) return 0;
+	size_t nl = strlen(needle);
+	for (const char *p = path; *p;)
+	{
+		while (*p == '/' || *p == '\\') ++p;
+		const char *s = p;
+		while (*p && *p != '/' && *p != '\\') ++p;
+		if ((size_t)(p - s) == nl && ce_path_prefix_eq(s, needle, nl)) return 1;
+	}
+	return 0;
+}
+
 static inline void ce_short_path(const char *path, char *out, size_t n)
 {
 #ifdef _WIN32
-	const char *base = getenv("APPDATA"), *name = "%APPDATA%";
+	static const struct { const char *env, *alias; } roots[] = {
+		{"APPDATA", "%APPDATA%"},
+		{"LOCALAPPDATA", "%LOCALAPPDATA%"},
+		{"USERPROFILE", "%USERPROFILE%"},
+	};
+	static const char *const user_envs[] = {"USERNAME"};
 #else
-	const char *base = getenv("HOME"), *name = "~";
+	static const struct { const char *env, *alias; } roots[] = {
+		{"HOME", "~"},
+	};
+	static const char *const user_envs[] = {"USER", "LOGNAME"};
 #endif
-	size_t l = ce_trim_sep_len(base, 0);
-	if (l && !strncmp(path, base, l) && (path[l] == '/' || path[l] == '\\'))
-		snprintf(out, n, "%s%s", name, path + l);
-	else
-		snprintf(out, n, "%s", path);
+	for (size_t i = 0; i < sizeof roots / sizeof *roots; ++i)
+	{
+		const char *base = getenv(roots[i].env);
+		size_t l = ce_trim_sep_len(base, 0);
+		if (l && ce_path_prefix_eq(path, base, l) && (path[l] == '/' || path[l] == '\\'))
+		{
+			snprintf(out, n, "%s%s", roots[i].alias, path + l);
+			return;
+		}
+	}
+	for (size_t i = 0; i < sizeof user_envs / sizeof *user_envs; ++i)
+	{
+		const char *uname = getenv(user_envs[i]);
+		if (uname && *uname && ce_path_has_component(path, uname))
+		{
+			const char *slash = strrchr(path, '/');
+			const char *bslash = strrchr(path, '\\');
+			const char *last = (!slash || (bslash && bslash > slash)) ? bslash : slash;
+			snprintf(out, n, "<user-folder>%s", last ? last : "");
+			return;
+		}
+	}
+	snprintf(out, n, "%s", path);
 }
 
 static inline void ce_url_encode(const char *in, char *out, size_t n)

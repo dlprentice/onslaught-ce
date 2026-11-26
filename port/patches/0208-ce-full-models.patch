@@ -81,7 +81,7 @@
  //******************************************************************************************
  void CRTTree::RenderImposter()	// FUNCTION: 0x004dd850
  {
-+	if (CeTreeModelsQualityEnabled()) return;
++	if (!gMirrorPass && CeTreeModelsQualityEnabled()) return;
  	FVector	cam = ENGINE.GetCamera()->GetPos();
  	FVector	pos;
  	pos = mThing->GetRenderPos();
@@ -90,7 +90,7 @@
  	{
  		if ((slope >= mMaxSlope) || (((CTree *)mThing)->mFalling))
 +		{
-+			CeModelQualityCount(CE_MODEL_TREE_IMPOSTOR);
++			gMirrorPass ? (void)0 : CeModelQualityCount(CE_MODEL_TREE_IMPOSTOR);
  			mImposter->Render(mThing, 255, 0);
 +		}
  		mImposterDrawn = TRUE;
@@ -101,7 +101,7 @@
  	BOOL	falling = (((CTree *)mThing)->mFalling != NULL);
  	BOOL	close = (beyond <= 0);
 -	if ((!close && !falling) || FORCE_OBJECT_IMPOSTERS)
-+	if (!CeTreeModelsQualityEnabled() && ((!close && !falling) || FORCE_OBJECT_IMPOSTERS))
++	if (!(!gMirrorPass && CeTreeModelsQualityEnabled()) && ((!close && !falling) || FORCE_OBJECT_IMPOSTERS))
  		return;
  
  	FMatrix	ori;
@@ -109,7 +109,7 @@
  	RENDERINFO.SetAmbient((((SINT)(red * 255.0f)) << 16) | (((SINT)(green * 255.0f)) << 8) | ((SINT)(blue * 255.0f)));
  
  	ENGINE.SetTreeLighting(TRUE);
-+	CeModelQualityCount(CE_MODEL_TREE);
++	if (!gMirrorPass) CeModelQualityCount(CE_MODEL_TREE);
  	CMeshRenderer::Render(&pos, &ori, mMesh, NULL, NULL, 0, true, 0);
  
  	RENDERINFO.SetAmbient(old_ambient);
@@ -125,7 +125,7 @@
  						{
  							float	td = TREE_MESH_DISTANCE + 10.f;
 -							if (d2 < td * td)
-+							if (CeTreeModelsQualityEnabled() || (d2 < td * td))
++							if ((!gMirrorPass && CeTreeModelsQualityEnabled()) || (d2 < td * td))
  							{
  								while (entry)
  								{
@@ -141,7 +141,7 @@
  	if (!mVBuf)
  		Build();
 +	// Keep lazy buffers and HideTree ownership current for a later live switch back.
-+	if (CeTreeModelsQualityEnabled()) return;
++	if (!gMirrorPass && CeTreeModelsQualityEnabled()) return;
 +
  
  	RENDERINFO.SetWorld(ZERO_FVECTOR, ID_FMATRIX);
@@ -150,7 +150,7 @@
  	LT.STS(2, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
  	LT.STS(3, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
  	RENDERINFO.Apply(true, false);
-+	CeModelQualityCount(CE_MODEL_TREE_BATCH);
++	if (!gMirrorPass) CeModelQualityCount(CE_MODEL_TREE_BATCH);
  	mVBuf->DrawIndexed(false, 0, 0);
  	RENDERINFO.mBillboard = FALSE;
  

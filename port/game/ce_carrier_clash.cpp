@@ -36,6 +36,7 @@ extern "C" bool PortCeMuseumActive(void) __attribute__((weak));
 extern "C" bool PortCeMuseumVisitActive(void) __attribute__((weak));
 extern "C" bool PortCeEditorActive(void) __attribute__((weak));
 extern "C" bool PortCeLivingSandboxActive(void) __attribute__((weak));
+extern "C" bool PortCeFlagshipDuelActive(void) __attribute__((weak));
 extern "C" int PortCePlayUnitShowsBattleline(int viewpoint) __attribute__((weak));
 extern "C" int PortCePlayUnitOwnsPilot(int player) __attribute__((weak));
 
@@ -90,6 +91,7 @@ bool CanBeginSession() {
 	if (PortCeMuseumVisitActive && PortCeMuseumVisitActive()) return false;
 	if (PortCeEditorActive && PortCeEditorActive()) return false;
 	if (PortCeLivingSandboxActive && PortCeLivingSandboxActive()) return false;
+	if (PortCeFlagshipDuelActive && PortCeFlagshipDuelActive()) return false;
 	return true;
 }
 
@@ -575,7 +577,7 @@ extern "C" void PortCeCarrierClashLevelBegin(int level) {
 	// Bind already-spawned units from the clean-room world body via 32-bit CeEntityHandles.
 	ListIterator<CUnit> it(&WORLD.GetUnitNB());
 	for (CUnit *u = it.First(); u; u = it.Next()) {
-		if (!u || !u->GetUnitData() || !u->GetUnitData()->mName) continue;
+		if (!u || u->IsA(THING_TYPE_COMPONENT) || !u->GetUnitData() || !u->GetUnitData()->mName) continue;
 		const CeEntityHandle h = CeEntityHandleFor(u);
 		if (h == kCeEntityHandleInvalid) continue;
 		gDirector.OnUnitSpawn(h, u->GetUnitData()->mName, static_cast<int>(u->GetAllegiance()),
@@ -602,6 +604,7 @@ extern "C" void PortCeCarrierClashLevelEnd(int level, int quit) {
 extern "C" void PortCeCarrierClashUnitSpawn(CUnit *unit, CInitThing *init) {
 	(void)init;
 	if (!PortCeCarrierClashActive() || !gDirector.IsRunning() || !unit) return;
+	if (unit->IsA(THING_TYPE_COMPONENT)) return;
 	CUnitData *data = unit->GetUnitData();
 	if (!data || !data->mName) return;
 	const CeEntityHandle h = CeEntityHandleFor(unit);
@@ -612,6 +615,7 @@ extern "C" void PortCeCarrierClashUnitSpawn(CUnit *unit, CInitThing *init) {
 
 extern "C" void PortCeCarrierClashUnitDestroyed(CUnit *unit) {
 	if (!PortCeCarrierClashActive() || !gDirector.IsRunning() || !unit) return;
+	if (unit->IsA(THING_TYPE_COMPONENT)) return;
 	const CeEntityHandle h = CeEntityHandleLookup(unit);
 	if (h != kCeEntityHandleInvalid) {
 		gDirector.OnUnitDestroyed(h);
@@ -668,7 +672,7 @@ extern "C" void PortCeCarrierClashTickPre(void) {
 		int liveUnits = 0;
 		ListIterator<CUnit> it(&WORLD.GetUnitNB());
 		for (CUnit *u = it.First(); u; u = it.Next()) {
-			if (u && !u->IsDying() && !u->IsShuttingDown()) ++liveUnits;
+			if (u && !u->IsA(THING_TYPE_COMPONENT) && !u->IsDying() && !u->IsShuttingDown()) ++liveUnits;
 		}
 
 		CeCarrierClashSpawnOrder spawns[4] = {};

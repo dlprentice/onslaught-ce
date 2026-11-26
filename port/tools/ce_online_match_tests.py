@@ -1178,6 +1178,164 @@ static void TestFinalConfirmationAndPostFinishedFaults() {
     }
 }
 
+static void TestWireInputWhitelistAndHashOverdue() {
+    // 1. L3-P0-2: CeOnlineWireInput enforces native_actions[] whitelist and strictly ascending ActionRank.
+    {
+        CE_WorldInput valid = {};
+        valid.count = 3u;
+        valid.actions[0] = { 25u, CE_WORLD_ACTION_BINDING, 1.0f };
+        valid.actions[1] = { 59u, CE_WORLD_ACTION_BINDING, 1.0f };
+        valid.actions[2] = { 21u, CE_WORLD_ACTION_BINDING, 0.5f };
+        CeOnlineWireInput wire;
+        Check(CeOnlineWireInput::FromWorldInput(valid, &wire) && wire.IsValid(),
+              "whitelisted ascending actions pass FromWorldInput and IsValid");
+
+        // Reject BUTTON_PAUSE (56) and loadout swaps (61, 62) in FromWorldInput, IsValid, and DecodeCompactBE.
+        const uint32_t forbiddenButtons[] = { 0u, 15u, 56u, 61u, 62u, 255u };
+        for (uint32_t btn : forbiddenButtons) {
+            CE_WorldInput bad = {};
+            bad.count = 1u;
+            bad.actions[0] = { btn, CE_WORLD_ACTION_BINDING, 1.0f };
+            CeOnlineWireInput tmp;
+            Check(!CeOnlineWireInput::FromWorldInput(bad, &tmp),
+                  "FromWorldInput rejects non-whitelisted button");
+
+            CeOnlineWireInput crafted;
+            crafted.count = 1u;
+            crafted.actions[0].button = (uint8_t)btn;
+            crafted.actions[0].source = CE_WORLD_ACTION_BINDING;
+            crafted.actions[0].value_bits = CeOnlineWireInput::FloatToBits(1.0f);
+            Check(!crafted.IsValid(), "IsValid rejects non-whitelisted button");
+
+            uint8_t compact[CeOnlineWireInput::kHeaderBytes + CeOnlineWireInput::kActionBytes] = {};
+            compact[12] = 1u;
+            compact[16] = (uint8_t)btn;
+            compact[17] = CE_WORLD_ACTION_BINDING;
+            const uint32_t oneBits = CeOnlineWireInput::FloatToBits(1.0f);
+            compact[18] = (uint8_t)(oneBits >> 24);
+            compact[19] = (uint8_t)(oneBits >> 16);
+            compact[20] = (uint8_t)(oneBits >> 8);
+            compact[21] = (uint8_t)(oneBits);
+            CeOnlineWireInput decoded;
+            Check(!decoded.DecodeCompactBE(compact, sizeof(compact)),
+                  "DecodeCompactBE rejects non-whitelisted button");
+        }
+
+        // Reject duplicate action button (25, 25) and out-of-order rank (27 before 25, 26 before 27).
+        {
+            CE_WorldInput dup = {};
+            dup.count = 2u;
+            dup.actions[0] = { 25u, CE_WORLD_ACTION_BINDING, 1.0f };
+            dup.actions[1] = { 25u, CE_WORLD_ACTION_BINDING, 1.0f };
+            CeOnlineWireInput tmp;
+            Check(!CeOnlineWireInput::FromWorldInput(dup, &tmp), "FromWorldInput rejects duplicate action");
+            tmp.Clear();
+            tmp.count = 2u;
+            tmp.actions[0] = { 25u, CE_WORLD_ACTION_BINDING, CeOnlineWireInput::FloatToBits(1.0f) };
+            tmp.actions[1] = { 25u, CE_WORLD_ACTION_BINDING, CeOnlineWireInput::FloatToBits(1.0f) };
+            Check(!tmp.IsValid(), "IsValid rejects duplicate action");
+
+            CE_WorldInput reversed = {};
+            reversed.count = 2u;
+            reversed.actions[0] = { 26u, CE_WORLD_ACTION_BINDING, 1.0f };
+            reversed.actions[1] = { 27u, CE_WORLD_ACTION_BINDING, 1.0f };
+            Check(!CeOnlineWireInput::FromWorldInput(reversed, &tmp),
+                  "FromWorldInput rejects out-of-order ActionRank (26 before 27)");
+            tmp.Clear();
+            tmp.count = 2u;
+            tmp.actions[0] = { 26u, CE_WORLD_ACTION_BINDING, CeOnlineWireInput::FloatToBits(1.0f) };
+            tmp.actions[1] = { 27u, CE_WORLD_ACTION_BINDING, CeOnlineWireInput::FloatToBits(1.0f) };
+            Check(!tmp.IsValid(), "IsValid rejects out-of-order ActionRank");
+        }
+
+        // Host rejects raw guest packet injecting BUTTON_PAUSE (56) over wire.
+        {
+            SimStarNetwork net(2);
+            CeOnlineMatchSession host;
+            Check(host.Init(MakeTicket(2, 2, 0, 850, 0), &net.bridges[0], 2u, 20u), "pause inject host init");
+            CeOnlineStarEvent badEv = {};
+            badEv.kind = CE_STAR_EVT_GUEST_INPUT;
+            badEv.from_sim_slot = 1u;
+            badEv.tick = 2u;
+            badEv.payload_len = CeOnlineWireInput::kHeaderBytes + CeOnlineWireInput::kActionBytes;
+            badEv.payload[12] = 1u;
+            badEv.payload[16] = 56u; // BUTTON_PAUSE
+            badEv.payload[17] = CE_WORLD_ACTION_BINDING;
+            net.DeliverTo(0u, badEv);
+            Check(!host.Poll(100) && host.State() == CE_ONLINE_STATE_ERROR,
+                  "host rejects forged guest BUTTON_PAUSE wire input");
+        }
+    }
+
+    // 2. L3-P1-7a: Mid-match disconnect clears dropped peer from prior pending HashFrame::expectedMask
+    //    and immediately unmasks desync among surviving peers!
+    {
+        SimStarNetwork net(3);
+        CeOnlineMatchSession peers[3];
+        for (uint8_t s = 0; s < 3; ++s) {
+            Check(peers[s].Init(MakeTicket(3, 3, s, 850, 0), &net.bridges[s], 2u, 20u), "disc-hash init");
+        }
+        for (uint8_t s = 0; s < 3; ++s)
+            Check(peers[s].SubmitLocalHash(0u, 0x1111ULL), "disc-hash tick 0");
+        for (int p = 0; p < 2; ++p)
+            for (uint8_t s = 0; s < 3; ++s) peers[s].Poll(100 + p);
+
+        CE_WorldInput sample = {}, slots[4] = {};
+        for (uint32_t t = 0; t < 25u; ++t) {
+            for (uint8_t s = 0; s < 3; ++s) peers[s].SubmitLocalInput(t + 2u, sample);
+            peers[0].Poll(200 + t * 10);
+            peers[1].Poll(200 + t * 10);
+            peers[2].Poll(200 + t * 10);
+            for (uint8_t s = 0; s < 3; ++s) peers[s].ConsumeTick(slots, nullptr);
+        }
+        // Host and Guest 1 disagree at tick 20, while Guest 2 never sends tick 20 hash and disconnects at tick 25.
+        Check(peers[0].SubmitLocalHash(20u, 0xAAAAULL), "disc-hash host tick 20");
+        Check(peers[1].SubmitLocalHash(20u, 0xBBBBULL), "disc-hash guest 1 diverging tick 20");
+        Check(peers[0].Poll(500) && peers[0].State() == CE_ONLINE_STATE_RUNNING,
+              "pending tick 20 hash waits while guest 2 still connected");
+        net.DisconnectGuest(2u);
+        Check(!peers[0].Poll(520) && peers[0].State() == CE_ONLINE_STATE_DESYNC &&
+              peers[0].LastDesync().tick == 20u,
+              "disconnecting guest 2 clears prior pending expectedMask and immediately catches surviving desync");
+    }
+
+    // 3. L3-P1-7b: CheckHashOverdue() faults Host when a connected guest withholds periodic hashes.
+    {
+        SimStarNetwork net(2);
+        CeOnlineMatchSession peers[2];
+        for (uint8_t s = 0; s < 2; ++s)
+            Check(peers[s].Init(MakeTicket(2, 2, s, 850, 0), &net.bridges[s], 2u, 20u), "overdue init");
+        for (uint8_t s = 0; s < 2; ++s)
+            Check(peers[s].SubmitLocalHash(0u, 0x2222ULL), "overdue tick 0");
+        for (int p = 0; p < 2; ++p)
+            for (uint8_t s = 0; s < 2; ++s) peers[s].Poll(100 + p);
+        Check(peers[0].IsStartConfirmed(), "overdue start confirmed");
+
+        CE_WorldInput sample = {}, slots[4] = {};
+        bool faulted = false;
+        for (uint32_t t = 0; t < 130u; ++t) {
+            for (uint8_t s = 0; s < 2; ++s) {
+                if (peers[s].State() == CE_ONLINE_STATE_RUNNING)
+                    peers[s].SubmitLocalInput(t + 2u, sample);
+            }
+            if (!peers[0].Poll(200 + t * 10)) {
+                faulted = true;
+                break;
+            }
+            peers[1].Poll(200 + t * 10);
+            for (uint8_t s = 0; s < 2; ++s) peers[s].ConsumeTick(slots, nullptr);
+            const uint32_t nextTick = t + 1u;
+            if ((nextTick % 20u) == 0u) {
+                // Only host submits periodic hash; guest withholds hashes permanently!
+                Check(peers[0].SubmitLocalHash(nextTick, 0x5555ULL ^ nextTick), "overdue host periodic hash");
+            }
+        }
+        Check(faulted && peers[0].State() == CE_ONLINE_STATE_ERROR &&
+              std::strstr(peers[0].LastError(), "timed out") != nullptr,
+              "host faults via CheckHashOverdue when guest withholds periodic hashes");
+    }
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) {
         std::puts("usage: driver <scratch-dir>");
@@ -1189,6 +1347,7 @@ int main(int argc, char **argv) {
     TestDisconnectAndHostLoss();
     TestCompatibilityAndCHooks();
     TestFinalConfirmationAndPostFinishedFaults();
+    TestWireInputWhitelistAndHashOverdue();
     if (!gFail)
         std::puts("online-match-ok");
     return gFail != 0;

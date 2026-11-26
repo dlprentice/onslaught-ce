@@ -107,6 +107,7 @@
 
 extern "C" bool PortCeMuseumVisitActive(void) __attribute__((weak));
 extern "C" bool PortCeSandboxSquadCommandable(const void *squad) __attribute__((weak));
+extern "C" bool PortCeSanctuaryFire(bool release, float value) __attribute__((weak));
 
 #include <d3dx9.h>
 #include <math.h>
@@ -401,7 +402,12 @@ public:
 			}
 			break;
 		// The mouse button (and a pad's right trigger) is BUTTON_MECH_CHARGE_GUN_POD while it is held and BUTTON_MECH_FIRE_GUN_POD when it is let go: either one fires the tank's gun.
-		case BUTTON_MECH_CHARGE_GUN_POD: case BUTTON_MECH_FIRE_GUN_POD: if (val > 0.5f) gIn.fire = true; break;
+		case BUTTON_MECH_CHARGE_GUN_POD: case BUTTON_MECH_FIRE_GUN_POD:
+#ifdef CE_VERSION
+			if (PortCeSanctuaryFire && PortCeSanctuaryFire(button == BUTTON_MECH_FIRE_GUN_POD, val)) break;
+#endif
+			if (val > 0.5f) gIn.fire = true;
+			break;
 		case BUTTON_MECH_CHANGE_ZOOM_IN:
             case BUTTON_MECH_CHANGE_ZOOM_OUT:
                 if (gViewMode == kViewLook)
@@ -466,19 +472,27 @@ CePilot *Pilot()
 	return &holder.pilot;
 }
 
+struct PlayUnitControllerStackAccess : CController
+{
+	static SPtrSet<CActiveReader<IController> > CController::*StackField() { return &PlayUnitControllerStackAccess::mToControlStack; }
+};
+
 // A pause/menu controller can be above the driver when a camera or level transition relinquishes possession. Pop only our own top entry when that menu returns.
 void ReconcileController()
 {
 	if (gDriving || !gControllerPending) return;
 	if (CCONTROLLER *controller = GAME.GetController(0))
-		if (controller->GetToControl() == Pilot())
+	{
+		SPtrSet<CActiveReader<IController> > &stack = controller->*PlayUnitControllerStackAccess::StackField();
+		if (stack.First() && controller->GetToControl() == Pilot())
 		{
 			controller->RelinquishControl();
 			gControllerPending = false;
 #ifdef CE_PLAYUNIT_TEST
-			Note("controller reconciliation: pending=0 player_on_top=%d", controller->GetToControl() == GAME.GetPlayer(0));
+			Note("controller reconciliation: pending=0 player_on_top=%d", stack.First() && controller->GetToControl() == GAME.GetPlayer(0));
 #endif
 		}
+	}
 }
 
 // ---- the world ----------------------------------------------------------------------------------------------------------------------
@@ -1009,11 +1023,18 @@ bool UnitViewPose(const FVector &place, CePlayUnitCameraPose &pose) {
     }
     const FVector eye = ClampUnitViewGround(FVector(pose.eye[0], pose.eye[1], pose.eye[2]));
     pose.eye[0] = eye.X; pose.eye[1] = eye.Y; pose.eye[2] = eye.Z;
+#ifdef CE_VERSION
+    gUnitViewHideBody = (gSpotter.enabled && gSpotter.mode != CE_SPOTTER_OFF) ? false : pose.hideBody;
+#else
     gUnitViewHideBody = pose.hideBody;
+#endif
     return true;
 }
 
 bool UnitViewHidesBody() {
+#ifdef CE_VERSION
+    if (gSpotter.enabled && gSpotter.mode != CE_SPOTTER_OFF) return false;
+#endif
     return gUnitViewMade && gUnitViewRig.valid ? gUnitViewHideBody : gFootFirstPerson;
 }
 
@@ -1109,6 +1130,7 @@ void LookShown(CUnit *unit, CGenericCamera *view)
 		float e[3], r[3], f[3], d[3];
 		if (CePlayUnitSpotterCameraPose(gSpotter, uArr, gLookYaw, terrainZ, e, r, f, d, surfaceAt, const_cast<float *>(&waterZ)))
 		{
+			gUnitViewHideBody = false;
 			view->mPos = FVector(e[0], e[1], e[2]);
 			view->mOrientation = FMatrix(FVector(r[0], f[0], d[0]), FVector(r[1], f[1], d[1]), FVector(r[2], f[2], d[2]));
 			view->mZoom = 1.f;
@@ -3369,6 +3391,7 @@ void Drive(CUnit *u, CPlayer *player, CBattleEngine *engine)
     {
         const bool nowOn = CePlayUnitSpotterToggle(&gSpotter, gBallisticArc.valid && gBallisticArc.hitsGround, gBallisticArc.impact);
         if (nowOn) { gUnitViewHideBody = false; gFootFirstPerson = false; }
+        else if (gUnitViewMade && gUnitViewRig.valid) { gFootFirstPerson = (gUnitViewState.view == kCePlayUnitCameraFirst); }
         gFootRenderedView = NULL;
         CePlayUnitNotice(nowOn ? "Spotter camera active." : "Spotter camera off.", nowOn ? "Press C to return to gun view." : NULL);
         CFrontEnd::PlaySound(FES_SELECT);
@@ -5243,7 +5266,8 @@ bool CePlayUnitTakeDelivery() {
         return false;
     }
     if (!Ready(&player, &engine, &controller)) {
-        CePlayUnitNotice(NotReadySentence(), "You still control your Battle Engine.");
+        const char *why = NotReadySentence();
+        CePlayUnitNotice(why ? why : "Your Battle Engine is not ready.", "You still control your Battle Engine.");
         return false;
     }
     CUnit *unit = CeFactoryLiveVehicle();
@@ -5576,42 +5600,25 @@ void CePlayUnitUpdate()
 	AnswerTake();
 }
 
-struct PlayUnitControllerStackAccess : CController
-{
-	static SPtrSet<CActiveReader<IController> > CController::*StackField() { return &PlayUnitControllerStackAccess::mToControlStack; }
-};
-
 void UnwindLevelEndController()
 {
 	if (!gControllerPending) return;
 	if (CCONTROLLER *controller = GAME.GetController(0))
 	{
 		IController *pilot = Pilot();
-		if (controller->GetToControl() == pilot)
+		SPtrSet<CActiveReader<IController> > &stack = controller->*PlayUnitControllerStackAccess::StackField();
+		for (;;)
 		{
-			controller->RelinquishControl();
-		}
-		else
-		{
-			SPtrSet<CActiveReader<IController> > &stack = controller->*PlayUnitControllerStackAccess::StackField();
-			int depth = -1, idx = 0;
+			CActiveReader<IController> *found = NULL;
 			ListIterator<CActiveReader<IController> > it(&stack);
-			for (CActiveReader<IController> *r = it.First(); r && idx < 8; r = it.Next(), ++idx)
-				if (r->ToRead() == pilot) { depth = idx; break; }
-			if (depth > 0)
+			for (CActiveReader<IController> *r = it.First(); r; r = it.Next())
 			{
-				IController *above[8];
-				int popped = 0;
-				while (popped < depth && controller->GetToControl() && controller->GetToControl() != pilot)
-				{
-					above[popped++] = controller->GetToControl();
-					controller->RelinquishControl();
-				}
-				if (controller->GetToControl() == pilot)
-					controller->RelinquishControl();
-				for (int i = popped - 1; i >= 0; --i)
-					if (above[i]) controller->SetToControl(above[i]);
+				if (r->ToRead() == pilot) { found = r; break; }
 			}
+			if (!found) break;
+			stack.Remove(found);
+			stack.Add(found);
+			controller->RelinquishControl();
 		}
 	}
 	gControllerPending = false;
@@ -5630,10 +5637,20 @@ void CePlayUnitLevelEnd()
 	ReconcileCamera();
 	if (gCamera)
 	{
+		if (GAME.IsFreeCameraOn(0))
+			GAME.ToggleFreeCameraOff(0);
+		if (GAME.mOldRemoteCamera == gCamera)
+			GAME.mOldRemoteCamera = NULL;
+		if (GAME.mRemoteCamera == gCamera)
+			GAME.mRemoteCamera = NULL;
 		if (GAME.GetCurrentCamera(0) == gCamera)
 			GAME.SetCurrentCamera(0, NULL, TRUE);
-		else if (GAME.GetCamera(0) != gCamera && GAME.mRemoteCamera != gCamera && GAME.mOldRemoteCamera != gCamera)
-			gCamera = NULL;
+		else
+		{
+			CCamera *saved = GAME.GetCurrentCamera(0);
+			GAME.SetCurrentCamera(0, gCamera, FALSE);
+			GAME.SetCurrentCamera(0, saved, TRUE);
+		}
 	}
 	CePlayUnitTextures::ReleaseAll();
 	Reset();

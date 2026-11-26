@@ -196,6 +196,11 @@ static void TestWorldSerializerAndPreflight() {
           realSum.muspellCount >= 10u && !realSum.sawForbiddenUnit &&
           !realSum.sawUnitInsideKeepOut,
           "real world contains balanced armies, 1 CStart, zero scripts, zero keep-out violations");
+    Check(!VerifyWorldBody(realBuf, realLen - 6u, &realSum), "truncated 78-byte world tail rejected");
+    if (realLen + 1u <= sizeof(realBuf)) {
+        realBuf[realLen] = 0xAAu;
+        Check(!VerifyWorldBody(realBuf, realLen + 1u, &realSum), "trailing bytes past world tail rejected");
+    }
 
     // Mutate one unit inside Sanctuary Dome keep-out -> MUST fail validation & writer.
     specs[3].position[0] = kCitadelCenterX + 10.0f;

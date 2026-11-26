@@ -64,7 +64,7 @@ class Policy(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(done.stdout, "PASS\n")
 
-    def test_normal_is_default(self):
+    def test_extended_is_default(self):
         self.passed("default")
 
     def test_stored_choice_waits_for_frame(self):
@@ -114,8 +114,8 @@ class Policy(unittest.TestCase):
             ("mid-frame", "requested = value;", "requested = value; extended = value == 1;", "switch", {}),
             ("ignore-faithful", "if (value && *value) return false;", "if (false && value && *value) return false;",
              "fenced", {"BEA_PORT_CLOCK": "1"}),
-            ("default-extended", 'CE_SettingGetBool("terrain_detail_distance", 0)',
-             'CE_SettingGetBool("terrain_detail_distance", 1)', "default", {}),
+            ("default-normal", 'CE_SettingGetBool("terrain_detail_distance", 1)',
+             'CE_SettingGetBool("terrain_detail_distance", 0)', "default", {}),
             ("wrong-range", "distanceSquared * 0.25f", "distanceSquared * 0.5f", "domain", {}),
             ("ignore-resources", "wantsExtension && resourcesReady", "wantsExtension", "resources", {}),
             ("hide-resource-refusal", "resourcesUsable ? CE_TERRAIN_DETAIL_RESOURCE_FALLBACK",
@@ -234,7 +234,7 @@ class ActualTerrain(unittest.TestCase):
         changed["DXLandscape.cpp"] = text
         cls.binaries["texture-mutant"] = cls.build("texture-mutant", changed)
         changed = dict(cls.sources["patched"])
-        text, count = re.subn(r"(?m)^(\s*)(AppendLandscapeFarCell\s*\()",
+        text, count = re.subn(r"(?m)^(\t{4})(AppendLandscapeFarCell\s*\()",
                               lambda m: m.group(1) + "if (false) " + m.group(2), changed["DXLandscape.cpp"])
         if count != 1:
             raise RuntimeError("coarse-fallback mutant could not be formed")

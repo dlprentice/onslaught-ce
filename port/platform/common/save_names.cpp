@@ -39,7 +39,7 @@ unsigned NameError(const uint16_t *name, unsigned length)
 	if (!strcmp(head, "CON") || !strcmp(head, "PRN") || !strcmp(head, "AUX") || !strcmp(head, "NUL") ||
 		!strcmp(head, "CONIN$") || !strcmp(head, "CONOUT$")) return InvalidName;
 	if (n == 4 && (!strncmp(head, "COM", 3) || !strncmp(head, "LPT", 3)) &&
-		((name[3] >= '1' && name[3] <= '9') || name[3] == 0xb9 || name[3] == 0xb2 || name[3] == 0xb3))
+		((name[3] >= '0' && name[3] <= '9') || name[3] == 0xb9 || name[3] == 0xb2 || name[3] == 0xb3))
 		return InvalidName;
 	return 0;
 }

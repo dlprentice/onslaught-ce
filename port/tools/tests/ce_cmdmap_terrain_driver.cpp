@@ -84,7 +84,7 @@ struct FakeDevice
 } gDevice;
 typedef FakeDevice IDirect3DDevice9;
 typedef FakeSurface IDirect3DTexture9;
-struct { IDirect3DDevice9 *GetDevice() { return &gDevice; } } LT;
+struct { IDirect3DDevice9 *GetDevice() { return &gDevice; } void SetModulate(int) {} } LT;
 
 struct CSPRITERENDERER
 {

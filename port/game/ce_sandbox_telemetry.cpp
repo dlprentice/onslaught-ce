@@ -212,6 +212,10 @@ extern "C" void PortCeSandboxRecordEventPoolCapacity(int capacity) {
     gActiveEventManagerCapacity = (capacity > 0) ? capacity : MAX_NUM_EVENTS;
 }
 
+extern "C" int PortCeSandboxActiveEventPoolCapacity(void) {
+    return gActiveEventManagerCapacity;
+}
+
 bool CeSandboxTelemetrySample(CeSandboxTelemetrySnapshot* out) {
     if (!out) return false;
     std::memset(out, 0, sizeof(*out));
@@ -251,7 +255,7 @@ bool CeSandboxTelemetrySample(CeSandboxTelemetrySnapshot* out) {
     uint32_t liveUnits = 0u;
     ListIterator<CUnit> units(&WORLD.GetUnitNB());
     for (CUnit* u = units.First(); u; u = units.Next()) {
-        if (!u->IsDying() && !u->IsShuttingDown() && u->GetLife() > 0.f) ++liveUnits;
+        if (!u->IsA(THING_TYPE_COMPONENT) && !u->IsDying() && !u->IsShuttingDown() && u->GetLife() > 0.f) ++liveUnits;
     }
     out->activeLiveUnits = liveUnits;
     out->commanderMaxEntities = static_cast<uint32_t>(ce_command_panel::kMaxEntities);
@@ -297,6 +301,7 @@ bool CeSandboxTelemetryMaybeLog(unsigned) { return false; }
 extern "C" bool PortCeSandboxStartupHeapsActive(void) { return false; }
 extern "C" int PortCeEventManagerPoolCapacity(void) { return kCeRetailEventPoolCapacity; }
 extern "C" void PortCeSandboxRecordEventPoolCapacity(int) {}
+extern "C" int PortCeSandboxActiveEventPoolCapacity(void) { return kCeRetailEventPoolCapacity; }
 extern "C" void PortCeSandboxSetCliOptIn(bool) {}
 
 #endif

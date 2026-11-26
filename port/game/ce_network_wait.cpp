@@ -37,6 +37,7 @@
 
 extern bool	gInFrontEnd;				// src/FrontEnd.cpp: the fonts' front-end scale
 extern "C" int PortWriteFrameTo(IDirect3DDevice9 *dev, const char *path);	// d3d9hooks.cpp
+extern "C" uint64_t PortCeD3dDeviceGeneration(void) __attribute__((weak));	// d3dapp.cpp
 extern "C" void PortCeNetRingMousePoint(float x, float y, int *menuX, int *menuY);	// window.cpp
 extern "C" int PortCeOnlineMatchActive(void) __attribute__((weak));
 extern "C" int PortCeOnlineMatchSlotCount(void) __attribute__((weak));
@@ -146,8 +147,14 @@ bool		sPressed = false;		// a left button went down on the row
 float		sDrawn = -1.f;
 IDirect3DTexture9	*sFrame = NULL;	// the lobby's kept frame
 IDirect3DDevice9	*sFrameDevice = NULL;	// owning D3D9 device for sFrame
+uint64_t			sFrameGen = 0u;			// D3D9 device generation for sFrame
 unsigned char		*sFrameRgb = NULL;	// kept RGB bytes for recreating sFrame across device change
 unsigned	sFrameW = 0, sFrameH = 0;
+
+uint64_t	CurrentFrameDeviceGen()
+{
+	return PortCeD3dDeviceGeneration ? PortCeD3dDeviceGeneration() : 0u;
+}
 
 void	ReleaseFrameTexture()
 {
@@ -157,13 +164,15 @@ void	ReleaseFrameTexture()
 		sFrame = NULL;
 	}
 	sFrameDevice = NULL;
+	sFrameGen = 0u;
 }
 
 void	EnsureFrameTexture(IDirect3DDevice9 *dev)
 {
 	if (!dev || !sFrameRgb || !sFrameW || !sFrameH)
 		return;
-	if (sFrame && sFrameDevice == dev)
+	const uint64_t gen = CurrentFrameDeviceGen();
+	if (sFrame && sFrameDevice == dev && sFrameGen == gen)
 		return;
 	ReleaseFrameTexture();
 	IDirect3DTexture9 *tex = NULL;
@@ -181,6 +190,7 @@ void	EnsureFrameTexture(IDirect3DDevice9 *dev)
 		tex->UnlockRect(0);
 		sFrame = tex;
 		sFrameDevice = dev;
+		sFrameGen = gen;
 	}
 	else if (tex)
 	{
@@ -225,7 +235,7 @@ void	DrawFrame()
 	IDirect3DDevice9 *dev = LT.GetDevice();
 	if (!dev)
 		return;
-	if (sFrame && sFrameDevice != dev)
+	if (sFrame && (sFrameDevice != dev || sFrameGen != CurrentFrameDeviceGen()))
 		ReleaseFrameTexture();
 	if (!sFrame && sFrameRgb)
 		EnsureFrameTexture(dev);
@@ -536,6 +546,11 @@ extern "C" int CE_SessionGameWaitFrame(int mode)
 		sDrawn = now;
 	}
 	return 0;
+}
+
+extern "C" void PortCeNetworkWaitDeleteDeviceObjects(void)
+{
+	ReleaseFrameTexture();
 }
 
 #else

@@ -776,13 +776,18 @@ inline CeMultiBeJetFlightCmd CeMultiBeComputeJetFlight(const CeMultiBeJetFlightI
 	cmd.nextBreakTurnDir = (in.breakTurnDir < 0) ? -1 : 1;
 
 	// Effective surface height is the HIGHEST (most negative Z) of ground under us, ground ahead, and water.
-	float surfaceZ = in.waterZ;
-	if (CeAiIsFinite(in.groundZ) && in.groundZ < surfaceZ)
+	bool hasSurface = CeAiIsFinite(in.waterZ);
+	float surfaceZ = hasSurface ? in.waterZ : 0.0f;
+	if (CeAiIsFinite(in.groundZ) && (!hasSurface || in.groundZ < surfaceZ))
+	{
 		surfaceZ = in.groundZ;
-	if (CeAiIsFinite(in.aheadGroundZ) && in.aheadGroundZ < surfaceZ)
+		hasSurface = true;
+	}
+	if (CeAiIsFinite(in.aheadGroundZ) && (!hasSurface || in.aheadGroundZ < surfaceZ))
+	{
 		surfaceZ = in.aheadGroundZ;
-	if (!CeAiIsFinite(surfaceZ))
-		surfaceZ = 0.0f;
+		hasSurface = true;
+	}
 
 	const bool landingSafe = in.wantLanding && in.groundIsDry && in.aheadGroundIsDry &&
 	                         !in.outOfBounds && !in.postTakeoffClimb;

@@ -73,7 +73,10 @@ public:
 				action==CeControlAction::TakeUnit ? "Aim at a friendly unit and press %s." : "Press %s to open or leave Commander.", key);
         WCHAR text[96]{};
         for(size_t i=0;hint[i] && i+1<sizeof(text)/sizeof(*text);++i) text[i]=(unsigned char)hint[i];
-        CMenuItem::Render(x,456.f,FALSE,0xffd7dbb0,text);
+        // On Main Menu Options -> Controller Options with experimental/cheat rows active, Back shifts down
+        // past y=437 and collides with 456.f; place the hint cleanly above the list box in that tall layout.
+        const float hintY = (y >= 385.f) ? 76.f : 456.f;
+        CMenuItem::Render(x,hintY,FALSE,0xffd7dbb0,text);
     }
     void ReceiveButtonAction(CController *from_controller,int button,float val) {
         (void)from_controller; (void)val;

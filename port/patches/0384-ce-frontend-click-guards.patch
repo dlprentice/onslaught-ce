@@ -56,19 +56,19 @@
  	FRONTEND.GetCommonPage()->RenderHelpText(5, transition);
  	FRONTEND.GetCommonPage()->RenderHelpText(1, transition);
 +#ifdef CE_VERSION
-+	if (ceMenus && ceInputOk)
++	if (ceMenus && ceInputOk &&
++	    (!mReady[0] || !mReady[1]) && FRONTEND.MouseClickedInRect(540.f, 415.f, 640.f, 480.f))
 +	{
-+		if ((!mReady[0] || !mReady[1]) && FRONTEND.MouseClickedInRect(540.f, 415.f, 640.f, 480.f))
-+		{
-+			mReady[0] = TRUE;
-+			mReady[1] = TRUE;
-+		}
-+		else if ((RECONNECT_INTERFACE[1].GetState() != CReconnectInterface::OK) &&
-+		         FRONTEND.MouseClickedInRect(0.f, 415.f, 100.f, 480.f))
-+		{
-+			FRONTEND.mReceivingButtonActionPort = mPort[0];
-+			ButtonPressed(BUTTON_FRONTEND_MENU_BACK, 1.f);
-+		}
++		mReady[0] = TRUE;
++		mReady[1] = TRUE;
++	}
++	else if (ceMenus && (transition == 1.f) &&
++	         (RECONNECT_INTERFACE[0].GetState() == CReconnectInterface::OK) &&
++	         (RECONNECT_INTERFACE[1].GetState() != CReconnectInterface::OK) &&
++	         FRONTEND.MouseClickedInRect(0.f, 415.f, 100.f, 480.f))
++	{
++		FRONTEND.mReceivingButtonActionPort = mPort[0];
++		ButtonPressed(BUTTON_FRONTEND_MENU_BACK, 1.f);
 +	}
 +#endif
  }

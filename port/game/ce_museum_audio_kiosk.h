@@ -151,6 +151,10 @@ inline bool Operate(State *s, int kiosk, const Backend &be, double now, bool cin
         s->trackIndex[kiosk] = (s->trackIndex[kiosk] + 1) % kTracksPerKiosk;
         return true;
     }
+    if (s->phase == kPhaseUnavailable && s->activeKiosk == kiosk) {
+        const int nextTrack = (s->trackIndex[kiosk] + 1) % kTracksPerKiosk;
+        s->trackIndex[kiosk] = nextTrack;
+    }
     Stop(s, be, now);
     const int idx = s->trackIndex[kiosk] % kTracksPerKiosk;
     const char *stem = kKiosks[kiosk].tracks[idx].stem;

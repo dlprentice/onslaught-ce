@@ -33,6 +33,7 @@
 #include <string.h>
 
 bool PortCeLayer();
+extern "C" int PortCeSoloControlsActive(void) __attribute__((weak));
 int PortCePadNext(void *device, bool rotate, unsigned *out);
 void PortCePadForget(void *device);
 
@@ -157,14 +158,31 @@ bool Allowed(int pad)
 	return Ordinary() && pad >= 0 && pad < LT.mJoypads && pad < MAX_JOYPADS && LT.mUnknown33474[pad];
 }
 
-// True while no configurable control reads a joystick (the joystick push types come before KEY_ONCE).
-bool NoJoystickBindings()
+// True while no configurable control reads a joystick for the relevant player/pad (joystick push types come before KEY_ONCE).
+// In true 2P split-screen, each player owns its own binding slot (mInput[0] for P1, mInput[1] for P2), so a custom joystick
+// binding on P1 must not disable CE gamepad defaults for P2 (and vice versa).
+bool NoJoystickBindings(int pad)
 {
+	const bool split2P = GAME.IsMultiplayer() && !(PortCeSoloControlsActive && PortCeSoloControlsActive());
+	const int slot = (pad == 1) ? 1 : 0;
 	for (SControlBinding *b = CONTROL_BINDINGS; b->mId != -1; b++)
 		if (b->mConfigurable)
-			for (int i = 0; i < 2; i++)
-				if (b->mInput[i].mPad != -1 && b->mInput[i].mType < KEY_ONCE)
+		{
+			if (split2P)
+			{
+				if (b->mInput[slot].mPad != -1 && b->mInput[slot].mType < KEY_ONCE)
 					return false;
+				for (int i = 0; i < 2; i++)
+					if (b->mInput[i].mPad == pad && b->mInput[i].mType < KEY_ONCE)
+						return false;
+			}
+			else
+			{
+				for (int i = 0; i < 2; i++)
+					if (b->mInput[i].mPad != -1 && b->mInput[i].mType < KEY_ONCE)
+						return false;
+			}
+		}
 	return true;
 }
 }
@@ -243,7 +261,7 @@ int PortCeGamepadInputs(int id, int pad, SControlInput *out)
 	for (const Default &d : kMenu)
 		if (d.id == id && n < 2)
 			out[n++] = SControlInput{pad, d.type, d.key, 0};
-	if (!n && NoJoystickBindings())
+	if (!n && NoJoystickBindings(pad))
 	{
 		const Default *table = IsStick(pad) ? kStick : kGame;
 		int size = IsStick(pad) ? (int)(sizeof(kStick) / sizeof(kStick[0])) : (int)(sizeof(kGame) / sizeof(kGame[0]));

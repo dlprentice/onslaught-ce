@@ -265,16 +265,31 @@ void TestClientFlow() {
           client.LastLobbyList().rooms[0].code == "ABCD12" &&
           client.LastLobbyList().next_cursor == 16, "ListLobbies parsed");
 
-    // 4. Create Lobby (plus invalid map/mode refusal).
+    // 4. Create Lobby (plus invalid map/mode/length refusal aligned with worker.mjs).
     CeOnlineCreateLobbyReq creq;
     creq.name = "Forseti Skirmish";
     creq.build_id = "0.1.14";
     creq.map = 999; // invalid
     Check(!client.BeginCreateLobby(creq, 3100), "invalid map refused locally");
+    creq.map = 100; // SP tutorial map excluded by worker.mjs
+    Check(!client.BeginCreateLobby(creq, 3100), "map 100 refused locally");
+    creq.map = 858; // duplicate map excluded by worker.mjs
+    Check(!client.BeginCreateLobby(creq, 3100), "map 858 refused locally");
     creq.map = 850;
     creq.mode = "invalid_mode";
     Check(!client.BeginCreateLobby(creq, 3100), "invalid mode refused locally");
+    creq.mode = "tutorial";
+    Check(!client.BeginCreateLobby(creq, 3100), "tutorial mode refused locally");
     creq.mode = "versus_2v2";
+    creq.name = std::string(41, 'A');
+    Check(!client.BeginCreateLobby(creq, 3100), "room name > 40 chars refused locally");
+    creq.name = "Forseti Skirmish";
+    creq.build_id = std::string(33, '1');
+    Check(!client.BeginCreateLobby(creq, 3100), "build_id > 32 chars refused locally");
+    creq.build_id = "0.1.14";
+    creq.be_cfg = std::string(33, 'S');
+    Check(!client.BeginCreateLobby(creq, 3100), "be_cfg > 32 chars refused locally");
+    creq.be_cfg = "";
     mock->steps.push_back({CeOnlineHttpMethod::Post, "/ce-lobby/v1/lobbies", true, "tok_abc123_XYZ",
                            "\"map\":850", 200, MakeRoomJson(1, "lobby", "null"), false, false});
     Check(client.BeginCreateLobby(creq, 3100), "BeginCreateLobby");
@@ -824,6 +839,9 @@ int gTlsMode = 0; // 0=accept all, 1=reject TLS1.3 with ERROR_INVALID_PARAMETER,
 std::vector<DWORD> gObservedProtocols;
 int gChecks = 0;
 int gFails = 0;
+bool gInCallback = false;
+bool gClosedParentInCallback = false;
+int gOpenHandles = 0;
 
 void Check(bool ok, const char* msg) {
     ++gChecks;
@@ -836,6 +854,7 @@ void Check(bool ok, const char* msg) {
 
 extern "C" {
 HINTERNET WINAPI WinHttpOpen(LPCWSTR, DWORD, LPCWSTR, LPCWSTR, DWORD) {
+    ++gOpenHandles;
     auto* h = new FakeHandle{1, nullptr, 0};
     return static_cast<HINTERNET>(h);
 }
@@ -843,10 +862,16 @@ HINTERNET WINAPI WinHttpOpen(LPCWSTR, DWORD, LPCWSTR, LPCWSTR, DWORD) {
 BOOL WINAPI WinHttpCloseHandle(HINTERNET hInternet) {
     if (!hInternet) return TRUE;
     auto* h = static_cast<FakeHandle*>(hInternet);
+    if ((h->kind == 1 || h->kind == 2) && gInCallback) {
+        gClosedParentInCallback = true;
+    }
     if (h->kind == 3 && h->cb) {
         HINTERNET raw = hInternet;
+        gInCallback = true;
         h->cb(hInternet, h->ctx, WINHTTP_CALLBACK_STATUS_HANDLE_CLOSING, &raw, sizeof(raw));
+        gInCallback = false;
     }
+    --gOpenHandles;
     delete h;
     return TRUE;
 }
@@ -875,10 +900,12 @@ BOOL WINAPI WinHttpSetOption(HINTERNET hInternet, DWORD dwOption, LPVOID lpBuffe
 }
 
 HINTERNET WINAPI WinHttpConnect(HINTERNET, LPCWSTR, INTERNET_PORT, DWORD) {
+    ++gOpenHandles;
     return static_cast<HINTERNET>(new FakeHandle{2, nullptr, 0});
 }
 
 HINTERNET WINAPI WinHttpOpenRequest(HINTERNET, LPCWSTR, LPCWSTR, LPCWSTR, LPCWSTR, LPCWSTR*, DWORD) {
+    ++gOpenHandles;
     return static_cast<HINTERNET>(new FakeHandle{3, nullptr, 0});
 }
 
@@ -955,6 +982,9 @@ int main() {
           gObservedProtocols.empty(),
           "loopback http skips TLS protocol option");
     loop_http->Cancel();
+
+    Check(!gClosedParentInCallback, "connection/session handles never closed inside WinHTTP callback");
+    Check(gOpenHandles == 0, "all WinHTTP handles reaped cleanly on caller thread");
 
     std::printf("WINHTTP_TLS_TESTS checks=%d failures=%d\n", gChecks, gFails);
     return gFails == 0 ? 0 : 1;

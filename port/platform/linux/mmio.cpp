@@ -7,6 +7,20 @@
 #include "../../network/compatibility.h"
 #endif
 
+#ifndef MMSYSERR_INVALHANDLE
+#define MMSYSERR_INVALHANDLE 5
+#endif
+#ifndef MMIOERR_OUTOFMEMORY
+#define MMIOERR_OUTOFMEMORY (MMIOERR_BASE + 2)
+#endif
+#ifndef MMIOERR_CANNOTSEEK
+#define MMIOERR_CANNOTSEEK (MMIOERR_BASE + 7)
+#endif
+#ifndef MMIOERR_INVALIDFILE
+#define MMIOERR_INVALIDFILE (MMIOERR_BASE + 16)
+#endif
+
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -26,15 +40,17 @@ Mmio *Get(HMMIO h) { return (Mmio *)h; }
 
 LONG ReadAt(Mmio *m, LONG pos, void *dst, LONG n)
 {
+	if (!m || !m->file || !dst || pos < 0 || n < 0)
+		return -1;
 	if (fseek(m->file, pos, SEEK_SET) != 0)
 		return -1;
-	return (LONG)fread(dst, 1, n, m->file);
+	return (LONG)fread(dst, 1, (size_t)n, m->file);
 }
 
 bool ReadDword(Mmio *m, DWORD *v)
 {
 	unsigned char b[4];
-	if (ReadAt(m, m->pos, b, 4) != 4)
+	if (m->pos < 0 || m->pos > 0x7fffffff - 4 || ReadAt(m, m->pos, b, 4) != 4)
 		return false;
 	*v = b[0] | (b[1] << 8) | (b[2] << 16) | ((DWORD)b[3] << 24);
 	m->pos += 4;
@@ -66,8 +82,23 @@ extern "C" HMMIO WINAPI mmioOpenA(LPSTR name, LPMMIOINFO info, DWORD)
 		return NULL;
 	}
 	Mmio *m = (Mmio *)calloc(1, sizeof(Mmio));
-	m->file = f;
+	if (!m)
+	{
+		fclose(f);
+		if (info)
+			info->wErrorRet = MMIOERR_OUTOFMEMORY;
+		return NULL;
+	}
 	m->buffer = (char *)malloc(kBuffer);
+	if (!m->buffer)
+	{
+		free(m);
+		fclose(f);
+		if (info)
+			info->wErrorRet = MMIOERR_OUTOFMEMORY;
+		return NULL;
+	}
+	m->file = f;
 	return (HMMIO)m;
 }
 
@@ -85,6 +116,8 @@ extern "C" MMRESULT WINAPI mmioClose(HMMIO h, UINT)
 extern "C" LONG WINAPI mmioRead(HMMIO h, HPSTR dst, LONG n)
 {
 	Mmio *m = Get(h);
+	if (!m || !dst || n < 0)
+		return -1;
 	LONG got = ReadAt(m, m->pos, dst, n);
 	if (got > 0)
 		m->pos += got;
@@ -94,15 +127,26 @@ extern "C" LONG WINAPI mmioRead(HMMIO h, HPSTR dst, LONG n)
 extern "C" LONG WINAPI mmioSeek(HMMIO h, LONG offset, int origin)
 {
 	Mmio *m = Get(h);
-	LONG base = 0;
+	if (!m)
+		return -1;
+	int64_t base = 0;
 	if (origin == SEEK_CUR)
 		base = m->pos;
 	else if (origin == SEEK_END)
 	{
-		fseek(m->file, 0, SEEK_END);
-		base = (LONG)ftell(m->file);
+		if (fseek(m->file, 0, SEEK_END) != 0)
+			return -1;
+		long end = ftell(m->file);
+		if (end < 0)
+			return -1;
+		base = end;
 	}
-	m->pos = base + offset;
+	else if (origin != SEEK_SET)
+		return -1;
+	int64_t next = base + offset;
+	if (next < 0 || next > 0x7fffffffll)
+		return -1;
+	m->pos = (LONG)next;
 	return m->pos;
 }
 
@@ -124,6 +168,8 @@ static void Fill(Mmio *m, LPMMIOINFO info, LONG pos)
 extern "C" MMRESULT WINAPI mmioGetInfo(HMMIO h, LPMMIOINFO info, UINT)
 {
 	Mmio *m = Get(h);
+	if (!m || !info)
+		return MMSYSERR_INVALHANDLE;
 	memset(info, 0, sizeof(*info));
 	Fill(m, info, m->pos);
 	return MMSYSERR_NOERROR;
@@ -132,14 +178,24 @@ extern "C" MMRESULT WINAPI mmioGetInfo(HMMIO h, LPMMIOINFO info, UINT)
 extern "C" MMRESULT WINAPI mmioAdvance(HMMIO h, LPMMIOINFO info, UINT)
 {
 	Mmio *m = Get(h);
-	Fill(m, info, info->lBufOffset + (LONG)(info->pchNext - info->pchBuffer));
+	if (!m || !info || !info->pchBuffer || !info->pchNext)
+		return MMSYSERR_INVALHANDLE;
+	int64_t next = (int64_t)info->lBufOffset + (int64_t)(info->pchNext - info->pchBuffer);
+	if (next < 0 || next > 0x7fffffffll)
+		return MMIOERR_CANNOTREAD;
+	Fill(m, info, (LONG)next);
 	return MMSYSERR_NOERROR;
 }
 
 extern "C" MMRESULT WINAPI mmioSetInfo(HMMIO h, LPCMMIOINFO info, UINT)
 {
 	Mmio *m = Get(h);
-	m->pos = info->lBufOffset + (LONG)(info->pchNext - info->pchBuffer);
+	if (!m || !info || !info->pchBuffer || !info->pchNext)
+		return MMSYSERR_INVALHANDLE;
+	int64_t next = (int64_t)info->lBufOffset + (int64_t)(info->pchNext - info->pchBuffer);
+	if (next < 0 || next > 0x7fffffffll)
+		return MMIOERR_INVALIDFILE;
+	m->pos = (LONG)next;
 	return MMSYSERR_NOERROR;
 }
 
@@ -160,13 +216,17 @@ static bool ReadHeader(Mmio *m, LPMMCKINFO ck)
 extern "C" MMRESULT WINAPI mmioDescend(HMMIO h, LPMMCKINFO ck, const MMCKINFO *parent, UINT flags)
 {
 	Mmio *m = Get(h);
-	LONG end = parent ? (LONG)(parent->dwDataOffset + parent->cksize) : 0x7fffffff;
+	if (!m || !ck)
+		return MMSYSERR_INVALHANDLE;
+	uint64_t end = parent ? (uint64_t)parent->dwDataOffset + (uint64_t)parent->cksize : 0x7fffffffull;
+	if (end > 0x7fffffffull)
+		end = 0x7fffffffull;
 	FOURCC want = ck->ckid, wantType = ck->fccType;
 	for (;;)
 	{
-		if (m->pos + 8 > end)
+		if (m->pos < 0 || (uint64_t)m->pos + 8ull > end)
 			return MMIOERR_CHUNKNOTFOUND;
-		LONG start = m->pos;
+		uint64_t start = (uint64_t)m->pos;
 		MMCKINFO found;
 		if (!ReadHeader(m, &found))
 			return MMIOERR_CHUNKNOTFOUND;
@@ -182,13 +242,23 @@ extern "C" MMRESULT WINAPI mmioDescend(HMMIO h, LPMMCKINFO ck, const MMCKINFO *p
 			*ck = found;
 			return MMSYSERR_NOERROR;
 		}
-		m->pos = start + 8 + (LONG)((found.cksize + 1) & ~1u);
+		uint64_t padded = ((uint64_t)found.cksize + 1ull) & ~1ull;
+		uint64_t next = start + 8ull + padded;
+		if (next <= start || next > end)
+			return MMIOERR_CHUNKNOTFOUND;
+		m->pos = (LONG)next;
 	}
 }
 
 extern "C" MMRESULT WINAPI mmioAscend(HMMIO h, LPMMCKINFO ck, UINT)
 {
 	Mmio *m = Get(h);
-	m->pos = (LONG)(ck->dwDataOffset + ((ck->cksize + 1) & ~1u));
+	if (!m || !ck)
+		return MMSYSERR_INVALHANDLE;
+	uint64_t padded = ((uint64_t)ck->cksize + 1ull) & ~1ull;
+	uint64_t next = (uint64_t)ck->dwDataOffset + padded;
+	if (next > 0x7fffffffull)
+		return MMIOERR_CANNOTSEEK;
+	m->pos = (LONG)next;
 	return MMSYSERR_NOERROR;
 }

@@ -1,0 +1,134 @@
+--- a/DXWater.cpp
++++ b/DXWater.cpp
+@@ -527,8 +527,14 @@
+ 	FVector campos = ENGINE.GetCamera()->GetPos();
+ 	float cx = campos.X, cy = campos.Y;
+ 
++#ifdef CE_VERSION
++	extern bool PortCeLayer();
++	const bool ceF1Kill = !PortCeLayer() && PLATFORM.KeyOn(DIK_F1);
++#else
++	const bool ceF1Kill = PLATFORM.KeyOn(DIK_F1);
++#endif
+ 	WATER_USE_SHADER = !GAME.IsMultiplayer() && sPixelShader && sShader && ENGINE.GetLandscape() &&
+-		ENGINE.GetLandscape()->mMirrorTexture && !gMirrorPass && !PLATFORM.KeyOn(DIK_F1);
++		ENGINE.GetLandscape()->mMirrorTexture && !gMirrorPass && !ceF1Kill;
+ 
+ 	if (WATER_METHOD.Try(2))
+ 	{
+--- a/DXParticleTexture.cpp
++++ b/DXParticleTexture.cpp
+@@ -219,7 +219,13 @@
+ 	LT.SRS(D3DRS_ALPHABLENDENABLE, TRUE);
+ 	sShaderActive = false;
+ 
+-	if (!GAME.IsMultiplayer() && !PLATFORM.KeyOn(DIK_F1) && EXTRA_GEFORCE_FX_FEATURES.mValue && ENGINE.GetLandscape() &&
++#ifdef CE_VERSION
++	extern bool PortCeLayer();
++	const bool ceF1Kill = !PortCeLayer() && PLATFORM.KeyOn(DIK_F1);
++#else
++	const bool ceF1Kill = PLATFORM.KeyOn(DIK_F1);
++#endif
++	if (!GAME.IsMultiplayer() && !ceF1Kill && EXTRA_GEFORCE_FX_FEATURES.mValue && ENGINE.GetLandscape() &&
+ 		ENGINE.GetLandscape()->mUnknown08 && sPixelShader && sVertexShader)
+ 	{
+ 		if (SUCCEEDED(LT.GetDevice()->SetPixelShader(sPixelShader)))
+--- a/PDSimpleSprite.cpp
++++ b/PDSimpleSprite.cpp
+@@ -1341,7 +1341,13 @@
+ 				float	range = d.Magnitude();
+ 				if (0) ToWCHAR((char *)&dist), ToWCHAR((char *)&range);
+ 				size = radius * radius / dist * TRAIL_DETAIL * 102400.f;
+-				rippled = (!PLATFORM.KeyOn(DIK_F1)) && (EXTRA_GEFORCE_FX_FEATURES.mValue) && (!GAME.IsMultiplayer()) &&
++#ifdef CE_VERSION
++				extern bool PortCeLayer();
++				const bool ceF1Kill = !PortCeLayer() && PLATFORM.KeyOn(DIK_F1);
++#else
++				const bool ceF1Kill = PLATFORM.KeyOn(DIK_F1);
++#endif
++				rippled = (!ceF1Kill) && (EXTRA_GEFORCE_FX_FEATURES.mValue) && (!GAME.IsMultiplayer()) &&
+ 					IsBlastInitials(this) &&
+ 					((!strcmp(mName, "Mech Pulse Bolt Blast Aug")) || (!strcmp(mName, "Mech Pulse Bolt Blast Large")));
+ 			}
+@@ -1440,7 +1446,12 @@
+ 					// 2026-10-10). The scheduler places both stores as before
+ 					vert.mV = u * tileu + scrollu;
+ 					vert.mU = v;
++#ifdef CE_VERSION
++					extern bool PortCeLayer();
++					if ((!rippled) && (PortCeLayer() || !PLATFORM.KeyOn(DIK_F1)) && (EXTRA_GEFORCE_FX_FEATURES.mValue))
++#else
+ 					if ((!rippled) && (!PLATFORM.KeyOn(DIK_F1)) && (EXTRA_GEFORCE_FX_FEATURES.mValue))
++#endif
+ 					{
+ 						// edge on to the camera fades out
+ 						normal.Normalise();
+--- a/ParticleDescriptor.cpp
++++ b/ParticleDescriptor.cpp
+@@ -825,8 +825,14 @@
+ BOOL CPDTimeline::Unknown10(CParticle *p)	// FUNCTION: 0x004c2640
+ {
+ 	bool	fx;
++#ifdef CE_VERSION
++	extern bool PortCeLayer();
++	const bool ceF1Kill = !PortCeLayer() && PLATFORM.KeyOn(DIK_F1);
++#else
++	const bool ceF1Kill = PLATFORM.KeyOn(DIK_F1);
++#endif
+ 	if ((mName[1] == 'e') && (mName[5] == 'P') && EXTRA_GEFORCE_FX_FEATURES.mValue && !GAME.IsMultiplayer() &&
+-		!PLATFORM.KeyOn(DIK_F1) && ((mName[26] == 'L') || (mName[26] == 'A')) &&
++		!ceF1Kill && ((mName[26] == 'L') || (mName[26] == 'A')) &&
+ 		(!strcmp(mName, "Mech Pulse Bolt Explosion Large") || !strcmp(mName, "Mech Pulse Bolt Explosion Aug")))
+ 		fx = true;
+ 	else
+--- a/OggFileRead.cpp
++++ b/OggFileRead.cpp
+@@ -198,7 +198,13 @@
+ 								if (mInfo.channels * bout * 2 > size)
+ 								{
+ 									if (size)
++									{
+ 										bout = (size / 2) / mInfo.channels;
++#ifdef CE_VERSION
++										if (bout == 0)
++											return total;
++#endif
++									}
+ 									else
+ 									{
+ 										mPCMBytes = 0;
+@@ -234,7 +240,11 @@
+ 								{
+ 									memcpy(dest, mPCM, size);
+ 									if (mPCMBytes - size)
++#ifdef CE_VERSION
++										memmove(mPCM, (unsigned char *)mPCM + size, mPCMBytes - size);
++#else
+ 										memmove(mPCM, &mPCM[size], mPCMBytes - size);
++#endif
+ 									mPCMBytes -= size;
+ 									return total + size;
+ 								}
+--- a/ltshell.cpp
++++ b/ltshell.cpp
+@@ -1336,6 +1336,9 @@
+ // Desc: Called when the app is exitting, or the device is being changed,
+ //       this function deletes any device dependant objects.
+ //-----------------------------------------------------------------------------
++#ifdef CE_VERSION
++extern "C" void PortCeDeleteGpuCaches(void) __attribute__((weak));
++#endif
+ HRESULT PCLTShell::DeleteDeviceObjects()	// FUNCTION: 0x00512b30
+ {	
+ 	for (int i=0;i<MAX_JOYPADS;i++)
+@@ -1363,6 +1366,10 @@
+ 	FreeDirectInput();
+ 
+ 	CPARTICLETEXTURE::FreeAllSurfaces();
++#ifdef CE_VERSION
++	if (PortCeDeleteGpuCaches)
++		PortCeDeleteGpuCaches();
++#endif
+ 
+ 	mD3DActive = FALSE;
+ 

@@ -337,23 +337,27 @@ int main() {
         self.assertEqual(len(before), 1)
         self.assertEqual(len(after), 1)
         original, current = before[0], after[0]
-        mutant = current.replace("!CeTreeModelsQualityEnabled() &&", "CeTreeModelsQualityEnabled() ||")
+        mutant = current.replace("!(!gMirrorPass && CeTreeModelsQualityEnabled()) &&", "(!gMirrorPass && CeTreeModelsQualityEnabled()) ||")
         self.assertNotEqual(mutant, current)
         for label, expression, expected in (("tree-good", current, 0), ("tree-missing-mutant", mutant, 1)):
             source = self.folder / (label + ".cpp")
             source.write_text("""
 #include <stdio.h>
 static bool full;
+static bool gMirrorPass;
 bool CeTreeModelsQualityEnabled() { return full; }
 bool old_skip(bool close, bool falling, bool FORCE_OBJECT_IMPOSTERS) { return OLD; }
 bool new_skip(bool close, bool falling, bool FORCE_OBJECT_IMPOSTERS) { return NEW; }
 int main() {
   for (int bits=0; bits<8; ++bits) {
     bool close=bits&1, falling=bits&2, force=bits&4;
+    gMirrorPass=false;
     full=false;
     if (old_skip(close,falling,force) != new_skip(close,falling,force)) return 1;
     full=true;
     if (new_skip(close,falling,force)) return 1;
+    gMirrorPass=true;
+    if (old_skip(close,falling,force) != new_skip(close,falling,force)) return 1;
   }
   puts("PASS"); return 0;
 }

@@ -148,7 +148,9 @@ def main():
          'focus-retains-draft':('CE_LockstepChatCancel(); StopText(); release_key = SDL_SCANCODE_UNKNOWN;',
                                 'StopText(); release_key = SDL_SCANCODE_UNKNOWN;'),
          'keyup-fence-removed':('return CanCompose() && (CE_LockstepChatComposing() || release_key != SDL_SCANCODE_UNKNOWN);',
-                               'return CanCompose() && CE_LockstepChatComposing();')}
+                               'return CanCompose() && CE_LockstepChatComposing();'),
+         'begin-return-inverted':('if (!window || CE_LockstepChatBegin() != CE_CHAT_OK) return 0;',
+                                  'if (!window || !CE_LockstepChatBegin()) return 0;')}
         for label,(before,after) in mutants.items():
             if original.count(before)!=1:
                 receipt['controls'].append({'label':label,'passed':False,'anchor_error':True});continue

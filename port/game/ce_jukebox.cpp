@@ -219,9 +219,14 @@ bool	DevicePlay(int row)
 	}
 	else
 	{
-		static char path[260];
+		static char path[4096];
 		const char *name = CeMusic::Track(row - 1 - retail);
-		snprintf(path, sizeof(path), "%s", name);
+		const int wrote = name ? snprintf(path, sizeof(path), "%s", name) : -1;
+		if (wrote < 0 || size_t(wrote) >= sizeof(path))
+		{
+			fprintf(stderr, PORT_LOG_PREFIX "music player: row %d path exceeds buffer (%zu bytes)\n", row, sizeof(path));
+			return false;
+		}
 		MUSIC.mCurrentSong = NULL;
 		// CMusic::Play clears protected mQueuedSong (patch 0383).
 		MUSIC.Play(path);

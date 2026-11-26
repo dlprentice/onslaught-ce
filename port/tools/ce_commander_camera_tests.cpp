@@ -498,7 +498,9 @@ int match_level_ends = 0;
 void CeCmdMatchLevelEnd() { ++match_level_ends; }
 struct Sink {} gSink;
 void RelinquishBuriedController(CCONTROLLER* controller, void* target) {
-    if (controller && controller->previous == target) controller->previous = NULL;
+    if (!controller) return;
+    if (controller->GetToControl() == target) controller->RelinquishControl();
+    else if (controller->previous == target) controller->previous = NULL;
 }
 bool gOpen = false, gOpening = false, gShift = false, gLayoutLogged = false;
 bool gEscClosed = false, gDown[256] = {};
@@ -740,6 +742,7 @@ void ClearUnitGroupSlot(int);
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wcast-function-type"
 #endif
+static int gHudFollowSquad = -1;
 #include "ce_commander_strategic_actual.inc"
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic pop

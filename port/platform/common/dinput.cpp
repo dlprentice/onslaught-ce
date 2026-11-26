@@ -907,6 +907,13 @@ struct Device : public IDirectInputDevice8A
 		}
 		if (kind == KEYBOARD)
 		{
+			SDL_Window *kbWindow = !(cooperative & DISCL_BACKGROUND) ? PortSdlWindow(window) : NULL;
+			if (kbWindow)
+			{
+				SDL_WindowFlags kbFlags = SDL_GetWindowFlags(kbWindow);
+				if (!(kbFlags & SDL_WINDOW_INPUT_FOCUS) || (kbFlags & SDL_WINDOW_MINIMIZED))
+					return DI_OK;
+			}
 			int n = 0;
 			const bool *keys = SDL_GetKeyboardState(&n);
 			unsigned char *out = (unsigned char *)data;
@@ -1318,9 +1325,11 @@ void DrainPadEvents()
 // Device instance GUIDs for controllers carry the SDL joystick id.
 // Hotplug in ordinary CE play: the game builds its pad list once, when DirectInput starts, so a slot whose controller
 // has gone re-binds to the first connected controller no other slot holds (a gamepad first, then a flight stick), at
-// most twice a second; with nothing attached at startup the game is offered one empty slot (kPlaceholder) that binds
-// the same way. A slot never changes kind of slot for the game; an unbound slot reads as an idle pad.
+// most twice a second; with fewer than two controllers attached at startup the game is offered empty placeholder slots
+// (kPlaceholder, kPlaceholder2) up to 2 total so both P1 and P2 controllers plugged in later bind via Rebind.
 const SDL_JoystickID kPlaceholder = 0xffff;
+const SDL_JoystickID kPlaceholder2 = 0xfffe;
+bool IsPlaceholderId(SDL_JoystickID id) { return id == kPlaceholder || id == kPlaceholder2; }
 
 bool Claimed(SDL_JoystickID id)
 {
@@ -1410,13 +1419,13 @@ struct Input : public IDirectInput8A
 		{
 			SDL_JoystickID id = (SDL_JoystickID)(guid.Data4[7] | (guid.Data4[6] << 8));
 			Device *d = Make<Device>(JOYSTICK, id);
-			if (id == kPlaceholder && BindableGamepadTriggers())
+			if (IsPlaceholderId(id) && BindableGamepadTriggers())
 				d->joystickId = 0;	// unbound until a controller connects (Rebind)
 			else if (SDL_IsGamepad(id))
 				d->pad = SDL_OpenGamepad(id);
 			else if (BindableGamepadTriggers())
 				d->joy = SDL_OpenJoystick(id);
-			if (!d->pad && !d->joy && !(id == kPlaceholder && BindableGamepadTriggers()))
+			if (!d->pad && !d->joy && !(IsPlaceholderId(id) && BindableGamepadTriggers()))
 			{
 				d->Release();
 				*out = NULL;
@@ -1473,18 +1482,20 @@ struct Input : public IDirectInput8A
 			offered++;
 		}
 		SDL_free(ids);
-		// Ordinary CE play with nothing attached: one empty slot, so a controller plugged in later still works.
-		if (!offered && BindableGamepadTriggers())
+		// Ordinary CE play: always offer at least two slots so both P1 and P2 controllers plugged in later still bind.
+		const SDL_JoystickID placeholders[2] = { kPlaceholder, kPlaceholder2 };
+		for (int p = 0; offered < 2 && p < 2 && !stop && BindableGamepadTriggers(); p++)
 		{
 			DIDEVICEINSTANCEA d;
 			memset(&d, 0, sizeof(d));
 			d.dwSize = sizeof(d);
-			d.guidInstance = PadGuid(kPlaceholder);
+			d.guidInstance = PadGuid(placeholders[p]);
 			d.guidProduct = d.guidInstance;
 			d.dwDevType = DI8DEVTYPE_GAMEPAD;
 			snprintf(d.tszInstanceName, sizeof(d.tszInstanceName), "Controller (connect any time)");
 			snprintf(d.tszProductName, sizeof(d.tszProductName), "Controller (connect any time)");
-			cb(&d, ctx);
+			stop = cb(&d, ctx) == DIENUM_STOP;
+			offered++;
 		}
 		return DI_OK;
 	}

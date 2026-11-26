@@ -188,6 +188,129 @@ struct SMeasure
 	}
 };
 
+// Bounded replacement for retail CDXBitmapFont::WordWrap (SWordWrapFill is WCHAR c[40][100]).
+// Retail WordWrap does not bound column index (< 99) or line index (< 40), which overflows on
+// long narrow-glyph runs (e.g. crafted backup folder names or modded goodie titles).
+int	SafeWordWrap(CDXBitmapFont *font, SWordWrapFill *fill, const WCHAR *text, float width)
+{
+	if (!font || !fill || !text || !text[0])
+		return 0;
+	int line = 0;
+	int col = 0;
+	fill->c[0][0] = 0;
+	const WCHAR *p = text;
+	while (*p && line < 40)
+	{
+		if (*p == L'\n')
+		{
+			fill->c[line][col] = 0;
+			line++;
+			col = 0;
+			if (line < 40)
+				fill->c[line][0] = 0;
+			p++;
+			continue;
+		}
+		if (*p == L' ')
+		{
+			if (col > 0 && col < 99)
+			{
+				fill->c[line][col] = L' ';
+				fill->c[line][col + 1] = 0;
+				SIZE s;
+				font->GetTextExtent(fill->c[line], &s);
+				if (float(s.cx) <= width)
+					col++;
+				else
+				{
+					fill->c[line][col] = 0;
+					line++;
+					col = 0;
+					if (line < 40)
+						fill->c[line][0] = 0;
+				}
+			}
+			p++;
+			continue;
+		}
+		// Collect one word (bounded to 99 chars so it always fits one row buffer).
+		WCHAR word[100];
+		int wlen = 0;
+		while (*p && *p != L' ' && *p != L'\n' && wlen < 99)
+			word[wlen++] = *p++;
+		word[wlen] = 0;
+		if (col > 0)
+		{
+			// Try appending to current line if it fits both buffer and pixel width.
+			if (col + wlen < 100)
+			{
+				for (int i = 0; i <= wlen; i++)
+					fill->c[line][col + i] = word[i];
+				SIZE s;
+				font->GetTextExtent(fill->c[line], &s);
+				if (float(s.cx) <= width)
+				{
+					col += wlen;
+					continue;
+				}
+			}
+			// Trim trailing space and advance to next line.
+			while (col > 0 && fill->c[line][col - 1] == L' ')
+				col--;
+			fill->c[line][col] = 0;
+			line++;
+			col = 0;
+			if (line >= 40)
+				break;
+			fill->c[line][0] = 0;
+		}
+		// Copy word onto fresh line, splitting by character if a single word exceeds pixel width.
+		for (int i = 0; i < wlen && line < 40; i++)
+		{
+			if (col < 99)
+			{
+				fill->c[line][col] = word[i];
+				fill->c[line][col + 1] = 0;
+				SIZE s;
+				font->GetTextExtent(fill->c[line], &s);
+				if (col > 0 && float(s.cx) > width)
+				{
+					fill->c[line][col] = 0;
+					line++;
+					col = 0;
+					if (line >= 40)
+						break;
+					fill->c[line][0] = word[i];
+					fill->c[line][1] = 0;
+					col = 1;
+				}
+				else
+					col++;
+			}
+			else
+			{
+				fill->c[line][col] = 0;
+				line++;
+				col = 0;
+				if (line >= 40)
+					break;
+				fill->c[line][0] = word[i];
+				fill->c[line][1] = 0;
+				col = 1;
+			}
+		}
+	}
+	if (line < 40)
+	{
+		while (col > 0 && fill->c[line][col - 1] == L' ')
+			col--;
+		fill->c[line][col] = 0;
+		if (col > 0 || line == 0)
+			line++;
+	}
+	return line;
+}
+
 // The text in lines wrapped to the space between the page's side borders, each centred, from y down; returns where the next line
 // would start. As the CE page's own hints are drawn (CCeBack, ce_frontend.cpp), except that a sentence the game's wrap would spread
 // over two lines is broken instead at the space that makes the wider line narrowest, by the face's own measure: two even lines, not a
@@ -201,13 +324,13 @@ float	Lines(const WCHAR *text, float y, DWORD colour)
 	CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);
 	wcsncpy(buffer, text, 399);
 	buffer[399] = 0;
-	int count = font->WordWrap(&fill, buffer, kLinesWidth);
+	int count = SafeWordWrap(font, &fill, buffer, kLinesWidth);
 	if (count == 2)
 	{
 		const SMeasure measure = {font};
 		float widest = 0.f;
 		const int at = CeBreakAt(buffer, measure, &widest);
-		if ((at > 0) && (widest <= kLinesWidth))
+		if ((at > 0) && (at <= 99) && (widest <= kLinesWidth))
 		{
 			wcsncpy(fill.c[0], buffer, at);
 			fill.c[0][at] = 0;
@@ -254,7 +377,7 @@ float	LinesMax(const WCHAR *text, float y, DWORD colour, int maxLines)
 	for (; text[n] && n < 399; n++)
 		buffer[n] = text[n];
 	buffer[n] = 0;
-	int count = font->WordWrap(&fill, buffer, kLinesWidth);
+	int count = SafeWordWrap(font, &fill, buffer, kLinesWidth);
 	if (count == 2 && maxLines >= 2)
 	{
 		const SMeasure measure = {font};
@@ -796,7 +919,7 @@ public:
 				int pLen = 0;
 				for (; extra[pLen] && pLen < 199; pLen++) probeBuf[pLen] = extra[pLen];
 				probeBuf[pLen] = 0;
-				extraNeed = PLATFORM.Font(FONT_SMALL)->WordWrap(&probe, probeBuf, kLinesWidth);
+				extraNeed = SafeWordWrap(PLATFORM.Font(FONT_SMALL), &probe, probeBuf, kLinesWidth);
 				if (extraNeed < 1) extraNeed = 1;
 			}
 			const int extraReserve = (help[0] && extraNeed > 1 && totalSlots <= 2) ? 1 : extraNeed;

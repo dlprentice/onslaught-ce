@@ -254,16 +254,17 @@ int main(int argc,char **argv)
         } else {
             const bool isFresh = scenario=="fresh";
             const int expectUnit = isFresh ? 1 : 0;
+            const int expectTerrain = isFresh ? 1 : 0;
             const int expectAnisoChoice = isFresh ? 3 : 1;
             const unsigned expectAnisoLevel = isFresh ? 16u : 4u;
             const int expectWaterChoice = isFresh ? 1 : 0;
             const unsigned expectWaterRes = isFresh ? 512u : 256u;
             const int expectShadowChoice = isFresh ? 1 : 0;
             const unsigned expectShadowRes = isFresh ? 128u : 64u;
-            check(item(list,0)->GetValue()==expectUnit&&item(list,1)->GetValue()==0&&item(list,2)->GetValue()==0&&
+            check(item(list,0)->GetValue()==expectUnit&&item(list,1)->GetValue()==0&&item(list,2)->GetValue()==expectTerrain&&
                   item(list,3)->GetValue()==expectAnisoChoice&&item(list,4)->GetValue()==expectWaterChoice&&
                   item(list,5)->GetValue()==expectShadowChoice,"defaults match fresh vs saved-off profile");
-            frame();live(expectUnit!=0,false,false,expectAnisoLevel,true,expectWaterRes,expectShadowRes);
+            frame();live(expectUnit!=0,false,expectTerrain!=0,expectAnisoLevel,true,expectWaterRes,expectShadowRes);
             if(scenario=="defaults" || scenario=="fresh") {
                 apply(list);check(ini()==before,"unchanged rows do not manufacture preferences");
                 if(scenario=="fresh") { struct stat state{}; check(stat(iniPath().c_str(),&state)!=0&&errno==ENOENT,"fresh default Apply creates no settings file"); }

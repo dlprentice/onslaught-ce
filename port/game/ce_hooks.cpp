@@ -366,11 +366,11 @@ static constexpr CeHookRow<CeHookLevelEndFn> kLevelEnd[] = {
 	{30, "photo_level_end", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookPhotoLevelEnd},
 	{40, "commander_level_end", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookCmdLevelEnd},
 	{50, "multibe_level_end", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookMultiBeLevelEnd},
-	{60, "entity_handles_level_end", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookEntityHandlesLevelEnd},
 	{70, "carrier_clash_level_end", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookCarrierClashLevelEnd},
 	{80, "living_sandbox_level_end", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookLivingSandboxLevelEnd},
 	{85, "flagship_duel_level_end", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookFlagshipDuelLevelEnd},
 	{90, "muspell_cockpit_level_end", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookMuspellCockpitLevelEnd},
+	{95, "entity_handles_level_end", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookEntityHandlesLevelEnd},
 	CE_HOOK_END
 };
 CE_HOOK_CHECK(kLevelEnd, CE_HOOK_SIM, CE_DISPATCH_ORDERED_BROADCAST, "level_end");
@@ -531,6 +531,35 @@ void ce_hook_unit_destroyed(CUnit *unit) { CeHookBroadcast("unit_destroyed", kUn
 void ce_hook_spawner_trigger(CeSpawnerTrigger *trigger) { CeHookFilter("spawner_trigger", kSpawnerTrigger, trigger); }
 void ce_hook_weapon_fire(CWeapon *weapon, CUnit *owner, CRound *round) { CeHookBroadcast("weapon_fire", kWeaponFire, weapon, owner, round); }
 void ce_hook_render_pass(const CeRenderPass *pass) { CeHookBroadcast("render_pass", kRenderPass, pass); }
+
+extern "C" {
+void PortCeCrispFontsDeleteDeviceObjects(void) __attribute__((weak));
+void PortCePlayUnitTexturesDeleteDeviceObjects(void) __attribute__((weak));
+void PortCeCataloguePreviewDeleteDeviceObjects(void) __attribute__((weak));
+void PortCeNetworkWaitDeleteDeviceObjects(void) __attribute__((weak));
+void PortCeMuseumHallDeleteDeviceObjects(void) __attribute__((weak));
+void PortCeMuseumArtDeleteDeviceObjects(void) __attribute__((weak));
+void PortCeMuseumDioramaDeleteDeviceObjects(void) __attribute__((weak));
+void PortCeMuseumTurntableDeleteDeviceObjects(void) __attribute__((weak));
+void PortCeArchivePedestalDeleteDeviceObjects(void) __attribute__((weak));
+void PortCeSanctuaryCitadelDeleteDeviceObjects(void) __attribute__((weak));
+void PortCeMuseumTexturesDeleteDeviceObjects(void) __attribute__((weak));
+
+void PortCeDeleteGpuCaches(void)
+{
+	if (PortCeCrispFontsDeleteDeviceObjects) PortCeCrispFontsDeleteDeviceObjects();
+	if (PortCePlayUnitTexturesDeleteDeviceObjects) PortCePlayUnitTexturesDeleteDeviceObjects();
+	if (PortCeCataloguePreviewDeleteDeviceObjects) PortCeCataloguePreviewDeleteDeviceObjects();
+	if (PortCeNetworkWaitDeleteDeviceObjects) PortCeNetworkWaitDeleteDeviceObjects();
+	if (PortCeMuseumHallDeleteDeviceObjects) PortCeMuseumHallDeleteDeviceObjects();
+	if (PortCeMuseumArtDeleteDeviceObjects) PortCeMuseumArtDeleteDeviceObjects();
+	if (PortCeMuseumDioramaDeleteDeviceObjects) PortCeMuseumDioramaDeleteDeviceObjects();
+	if (PortCeMuseumTurntableDeleteDeviceObjects) PortCeMuseumTurntableDeleteDeviceObjects();
+	if (PortCeArchivePedestalDeleteDeviceObjects) PortCeArchivePedestalDeleteDeviceObjects();
+	if (PortCeSanctuaryCitadelDeleteDeviceObjects) PortCeSanctuaryCitadelDeleteDeviceObjects();
+	if (PortCeMuseumTexturesDeleteDeviceObjects) PortCeMuseumTexturesDeleteDeviceObjects();
+}
+}
 
 #else	// no CE_VERSION: a private build has no CE layer; every point is inert
 

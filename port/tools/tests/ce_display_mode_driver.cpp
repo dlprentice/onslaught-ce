@@ -232,6 +232,7 @@ static void SyncGodItem() {}
 static const char *message;
 static void ShowMessage(const char *s, float = 240.f) { message = s; }
 #include "native_cheat_switch.inc"
+void CCeCheatSwitch::Render(float, float, BOOL) {}
 
 static bool menus = true;
 bool PortCeMenus() { return menus; }

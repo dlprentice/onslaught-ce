@@ -21,7 +21,7 @@ constexpr float kCenterX = 112.0f;
 constexpr float kCenterY = 392.0f;
 constexpr float kFloorZ  = -34.0f;
 constexpr float kDomeRadius = 56.0f;
-constexpr float kDomeSkirtDepth = 2.0f; // dome seals down to floorZ + 2.0f (-32.0f)
+constexpr float kDomeSkirtDepth = 24.5f; // dome collision skirt matches visual skirt (floorZ + 24.5f = -9.5 m)
 
 // Visual shield dome shell: clears the 4 outer retaining bastion / brass cornice corners
 // (hypot(39.7, 39.7) = 56.14 m) by ~21 cm and extends underground across all 360 deg
@@ -53,6 +53,7 @@ constexpr float kCinemaMaxX = 125.5f;
 constexpr float kCinemaMinY = 411.5f;
 constexpr float kCinemaMaxY = 427.5f;
 constexpr float kCinemaCeilingHeight = 10.0f; // Z in [floorZ - 10.0f, floorZ + 2.0f] => [-44.0f, -32.0f]
+constexpr float kCinemaFloorMargin = 2.0f;
 
 // Cinema roof slab (the coffered roof with its cornice overhang). Heights are
 // metres above the terrace floor: the soffit at 9.00, the walkable top at 10.65.
@@ -133,9 +134,10 @@ inline void ProjectDomeVisualPoint(float nx, float ny, float nz,
     if (outZ) *outZ = z;
 }
 
-// Containment predicate for the Archive Shield Dome hemisphere + 2 m terrain-sealing skirt.
+// Containment predicate for the Archive Shield Dome hemisphere + 24.5 m terrain-sealing skirt.
 // Native engine Z points DOWN: upper hemisphere arches upward to floorZ - kDomeRadius (-90 m),
-// with a short cylindrical skirt sealing floorZ .. floorZ + kDomeSkirtDepth (-34 m .. -32 m).
+// with a cylindrical skirt sealing floorZ .. floorZ + kDomeSkirtDepth (-34 m .. -9.5 m),
+// matching the visual dome skirt and covering the SE Access Ramp.
 inline bool IsInsideDome(float x, float y, float z, float floorZ = kFloorZ) {
     if (!IsFinite3(x, y, z) || !std::isfinite(floorZ)) return false;
     const float dx = x - kCenterX;
@@ -153,7 +155,7 @@ inline bool IsInsideCinema(float x, float y, float z, float floorZ = kFloorZ) {
     if (!IsFinite3(x, y, z) || !std::isfinite(floorZ)) return false;
     return x >= kCinemaMinX && x <= kCinemaMaxX &&
            y >= kCinemaMinY && y <= kCinemaMaxY &&
-           z >= (floorZ - kCinemaCeilingHeight) && z <= (floorZ + kDomeSkirtDepth);
+           z >= (floorZ - kCinemaCeilingHeight) && z <= (floorZ + kCinemaFloorMargin);
 }
 
 // Vertical rule for the Cinema roof. A roof is not a wall: a horizontal push-out

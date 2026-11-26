@@ -60,50 +60,55 @@ HRESULT D3DUtil_SetDeviceCursor(LPDIRECT3DDEVICE9 device, HCURSOR cursor)
 					if (!mono)
 					{
 						colourBits = new DWORD[width * rows];
-						colourDC = CreateCompatibleDC(GetDC(NULL));
+						colourDC = CreateCompatibleDC(screen);
 						if (!colourDC)
 							hr = E_FAIL;
 						else
 						{
-							SelectObject(colourDC, icon.hbmColor);
+							HGDIOBJ	oldColour = SelectObject(colourDC, icon.hbmColor);
 							GetDIBits(colourDC, icon.hbmColor, 0, rows, colourBits, &info, DIB_RGB_COLORS);
+							SelectObject(colourDC, oldColour);
 						}
 					}
 
 					if (SUCCEEDED(hr))
 					{
 						// The bitmaps' rows run bottom up; the surface's top down.
-						D3DLOCKED_RECT	locked;
-						image->LockRect(&locked, NULL, 0);
-						DWORD	*out = (DWORD *)locked.pBits;
-						for (UINT y = 0; y < rows; y++)
+						D3DLOCKED_RECT	locked = {};
+						if (FAILED(image->LockRect(&locked, NULL, 0)) || !locked.pBits)
+							hr = E_FAIL;
+						else
 						{
-							const DWORD	*colourRow = mono ? maskBits + width * (rows - 1 - y) : colourBits + width * (rows - 1 - y);
-							const DWORD	*maskRow = maskBits + width * ((mono ? maskRows : rows) - 1 - y);
-							for (UINT x = 0; x < width; x++)
-								out[width * y + x] = maskRow[x] == 0 ? 0xff000000 | colourRow[x] : 0x00000000;
-						}
-						image->UnlockRect();
+							for (UINT y = 0; y < rows; y++)
+							{
+								DWORD		*outRow = (DWORD *)((BYTE *)locked.pBits + y * locked.Pitch);
+								const DWORD	*colourRow = mono ? maskBits + width * (rows - 1 - y) : colourBits + width * (rows - 1 - y);
+								const DWORD	*maskRow = maskBits + width * ((mono ? maskRows : rows) - 1 - y);
+								for (UINT x = 0; x < width; x++)
+									outRow[x] = maskRow[x] == 0 ? 0xff000000 | colourRow[x] : 0x00000000;
+							}
+							image->UnlockRect();
 
-						hr = device->SetCursorProperties(icon.xHotspot, icon.yHotspot, image);
-						if (SUCCEEDED(hr))
-							hr = S_OK;
+							hr = device->SetCursorProperties(icon.xHotspot, icon.yHotspot, image);
+							if (SUCCEEDED(hr))
+								hr = S_OK;
+						}
 					}
 				}
 			}
 		}
 	}
 
-	if (icon.hbmMask)
-		DeleteObject(icon.hbmMask);
-	if (icon.hbmColor)
-		DeleteObject(icon.hbmColor);
-	if (screen)
-		ReleaseDC(NULL, screen);
 	if (colourDC)
 		DeleteDC(colourDC);
 	if (maskDC)
 		DeleteDC(maskDC);
+	if (screen)
+		ReleaseDC(NULL, screen);
+	if (icon.hbmMask)
+		DeleteObject(icon.hbmMask);
+	if (icon.hbmColor)
+		DeleteObject(icon.hbmColor);
 	SAFE_DELETE_ARRAY(colourBits);
 	SAFE_DELETE_ARRAY(maskBits);
 	SAFE_RELEASE(image);

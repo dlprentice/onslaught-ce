@@ -1166,6 +1166,106 @@ int main(int argc, char **argv) {
         PortCeOnlineMatchClear();
     }
 
+    // -----------------------------------------------------------------------
+    // 12. L3-P1-9 (FinishMatch(-1) skips loss stat), L3-P1-6 (Host 15s STUN->TURN fallback),
+    //     L3-P2-2 (ParseIceUrl allowlist/port validation + 401 re-auth on FetchTurn/SendSignal)
+    // -----------------------------------------------------------------------
+    {
+        // 12a. FinishMatch(-1) sends /finish to lobby worker WITHOUT incrementing matches_played/recording a loss!
+        CeOnlineProfile before_abort;
+        std::string perr;
+        Check(before_abort.LoadOrCreate(gUserDir.c_str(), &perr), "12a load profile before abort");
+        const uint32_t played_before = before_abort.MatchesPlayed();
+        const uint32_t won_before = before_abort.MatchesWon();
+
+        CE_OnlineMatchTicket ab_tk = MakeMatchTicket(2, 2, 0, true);
+        Check(PortCeOnlineMatchSetTicket(&ab_tk) == 1, "12a set ticket");
+        bool abort_finish_sent = false;
+        gHttp.should_hold = nullptr;
+        gHttp.responder = [&](const RecordedReq &req) -> QueuedReply {
+            if (req.path == "/ce-lobby/v1/rooms/rm_0123456789abcdef/finish") {
+                abort_finish_sent = true;
+                return {"", 200, RoomJson("rm_0123456789abcdef", 15, "lobby", before_abort.PlayerId(), 2), false, false};
+            }
+            return {"", 200, "{}", false, false};
+        };
+        Check(PortCeOnlineServiceAttachMatchBridge(compat) == 1, "12a attach bridge");
+        PortCeOnlineServiceFinishMatch(-1);
+        PortCeOnlineServiceDetachMatchBridge();
+        PortCeOnlineMatchClear();
+
+        CeOnlineProfile after_abort;
+        Check(abort_finish_sent &&
+              after_abort.LoadOrCreate(gUserDir.c_str(), &perr) &&
+              after_abort.MatchesPlayed() == played_before &&
+              after_abort.MatchesWon() == won_before,
+              "12a FinishMatch(-1) notifies /finish without recording a phantom loss");
+
+        // 12b. Host STUN pre-auth timeout (15s) triggers automatic TURN fallback + fresh offer_gen=2,
+        //      ParseIceUrl rejects malicious/garbage TURN URLs, and 401 on FetchTurn triggers profile re-auth!
+        CE_OnlineMatchTicket fb_tk = MakeMatchTicket(2, 2, 0, false);
+        std::snprintf(fb_tk.slots[0].player_id, sizeof(fb_tk.slots[0].player_id), "%s", before_abort.PlayerId().c_str());
+        Check(PortCeOnlineMatchSetTicket(&fb_tk) == 1, "12b set STUN-first host ticket");
+        unsigned turn_req_count = 0;
+        unsigned signal_401_reauth_count = 0;
+        unsigned bad_url_rejected_attempts = 0;
+        gHttp.responder = [&](const RecordedReq &req) -> QueuedReply {
+            if (req.path == "/ce-lobby/v1/auth/challenge") {
+                ++signal_401_reauth_count;
+                return {"", 200, "{\"nonce\":\"11112222333344445555666677778888\",\"issued_at\":1763900000,\"expires_at\":1763900120,\"server_time_ms\":1763900000000}", false, false};
+            }
+            if (req.path == "/ce-lobby/v1/auth/session") {
+                return {"", 200, "{\"session_token\":\"CES1.sigreauth.tok\",\"player_id\":\"" + before_abort.PlayerId() +
+                                 "\",\"tag\":\"" + before_abort.Tag() + "\",\"callsign\":\"" + before_abort.Callsign() +
+                                 "\",\"expires_at\":1763914400,\"server_time_ms\":1763900000000}", false, false};
+            }
+            if (req.path == "/ce-lobby/v1/rooms/rm_0123456789abcdef/turn") {
+                ++turn_req_count;
+                if (turn_req_count == 1u) {
+                    return {"", 401, "{\"error\":\"session_expired\",\"message\":\"Expired\"}", false, false};
+                }
+                if (turn_req_count == 2u) {
+                    // Malicious/garbage TURN URLs MUST all be rejected by ParseIceUrl (returns built=false -> retry)!
+                    ++bad_url_rejected_attempts;
+                    return {"", 200,
+                            "{\"iceServers\":[{\"urls\":["
+                            "\"turn:evil.invalid:3478?transport=udp\","
+                            "\"turn:169.254.169.254:3478?transport=udp\","
+                            "\"turn:turn.cloudflare.com:3478abc?transport=udp\","
+                            "\"turn:turn.cloudflare.com:3478?transport=tcp\""
+                            "],\"username\":\"u\",\"credential\":\"c\"}],\"ttl\":900}", false, false};
+                }
+                return {"", 200, "{\"iceServers\":[{\"urls\":[\"turn:turn.cloudflare.com:3478?transport=udp\"],\"username\":\"u\",\"credential\":\"c\"}],\"ttl\":900}", false, false};
+            }
+            if (req.path == "/ce-lobby/v1/rooms/rm_0123456789abcdef/signal" && req.method == CeOnlineHttpMethod::Post) {
+                return {"", 200, "{\"ok\":true,\"seq\":1,\"server_time_ms\":1}", false, false};
+            }
+            if (req.path.find("/signal?") != std::string::npos) {
+                return {"", 200, "{\"seq\":1,\"messages\":[]}", false, false};
+            }
+            return {"", 200, "{}", false, false};
+        };
+        Check(PortCeOnlineServiceAttachMatchBridge(compat) == 1, "12b attach STUN-first host bridge");
+        Check(PortCeOnlineMatchBeginSession(851u, 2u, 20u) == 1, "12b begin host session");
+        // Pump initial STUN offer at t=100..500ms, then jump past 15s STUN pre-auth timeout!
+        for (int i = 1; i <= 5; ++i) {
+            PortCeOnlineMatchPoll(static_cast<uint64_t>(i * 100));
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        Check(turn_req_count == 0u, "12b no TURN fetched before 15s STUN pre-auth timeout");
+        uint64_t ft = 16000;
+        for (int i = 0; i < 16 && turn_req_count < 3u; ++i) {
+            ft += 1200;
+            PortCeOnlineMatchPoll(ft);
+        }
+        Check(signal_401_reauth_count == 1u, "12b 401 on FetchTurn triggered profile Ed25519 re-auth");
+        Check(bad_url_rejected_attempts == 1u && turn_req_count == 3u,
+              "12b Host switched STUN->TURN after 15s timeout, rejected bad TURN URLs in ParseIceUrl, and retried cleanly");
+        PortCeOnlineMatchStop(0);
+        PortCeOnlineServiceDetachMatchBridge();
+        PortCeOnlineMatchClear();
+    }
+
     std::printf("CE_ONLINE_SERVICE_TESTS checks=%d failures=%d\n", gChecks, gFails);
     return gFails == 0 ? 0 : 1;
 }

@@ -176,7 +176,9 @@ static int upd_version_cmp(const char *a, const char *b)
 {
 	for (int i = 0; i < 4; ++i)
 	{
-		unsigned long x = strtoul(a, (char **)&a, 10), y = strtoul(b, (char **)&b, 10);
+		unsigned long x = 0, y = 0;
+		while (*a >= '0' && *a <= '9') { x = x * 10u + (unsigned long)(*a - '0'); ++a; }
+		while (*b >= '0' && *b <= '9') { y = y * 10u + (unsigned long)(*b - '0'); ++b; }
 		if (x != y) return x < y ? -1 : 1;
 		if (*a == '.') ++a;
 		if (*b == '.') ++b;
@@ -618,6 +620,12 @@ static int upd_tree_win(const char *path, int depth, int scan)
 	if (depth > 24) { sUpdRefusal = "it is nested too deeply"; return 0; }
 	if (!(attr & FILE_ATTRIBUTE_DIRECTORY))
 	{
+		int kind = upd_kind(path, NULL);
+		if (kind != UPD_FILE)
+		{
+			sUpdRefusal = kind == UPD_OTHER ? "it holds a hard-linked file" : "an item could not be inspected";
+			return 0;
+		}
 		if (scan || upd_unlink_file(path)) return 1;
 		sUpdRefusal = "a file could not be removed";
 		return 0;
@@ -636,6 +644,11 @@ static int upd_tree_win(const char *path, int depth, int scan)
 		else if (!upd_join(child, sizeof child, path, fd.cFileName)) ok = 0;
 		else ok = upd_tree_win(child, depth + 1, scan);
 	} while (ok && FindNextFileA(h, &fd));
+	if (ok && GetLastError() != ERROR_NO_MORE_FILES)
+	{
+		sUpdRefusal = "a folder could not be read";
+		ok = 0;
+	}
 	FindClose(h);
 	if (!ok) return 0;
 	if (scan || upd_rmdir(path)) return 1;
@@ -648,12 +661,15 @@ static int upd_tree_win(const char *path, int depth, int scan)
  * shared flock on the entry folder, inherited by the game. Windows: a handle on the folder that denies deletion. */
 #ifdef _WIN32
 static HANDLE sUpdHold = INVALID_HANDLE_VALUE;
+static char sUpdHoldEntry[PATHN];
 #else
 static int sUpdHold = -1;
 #endif
 static void upd_hold_entry(const char *entry)
 {
 #ifdef _WIN32
+	if (sUpdHold != INVALID_HANDLE_VALUE) { CloseHandle(sUpdHold); sUpdHold = INVALID_HANDLE_VALUE; }
+	snprintf(sUpdHoldEntry, sizeof sUpdHoldEntry, "%s", entry ? entry : "");
 	sUpdHold = CreateFileA(entry, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING,
 		FILE_FLAG_BACKUP_SEMANTICS, NULL);
 #else
@@ -845,6 +861,14 @@ static int upd_fetch(const char *url, const char *to, uint64_t max, int seconds,
 		dup2(p[1], 1);
 		if (null >= 0) { dup2(null, 0); dup2(null, 2); }
 		close(p[0]); close(p[1]);
+		{
+			const char *orig_ld = getenv("BEA_ORIG_LD_LIBRARY_PATH");
+			if (orig_ld)
+			{
+				if (*orig_ld) setenv("LD_LIBRARY_PATH", orig_ld, 1);
+				else unsetenv("LD_LIBRARY_PATH");
+			}
+		}
 		execvp("curl", argv);
 		_exit(127);
 	}
@@ -1383,9 +1407,15 @@ static int upd_state_store(const char *vdir, UpdLock *lk, UpdJournal *jr, UpdSta
 			if (!syscall(SYS_renameat2, AT_FDCWD, tmp, AT_FDCWD, path, 2 /* RENAME_EXCHANGE */))
 			{
 				/* tmp now names what was the state file: it must be the one this run read. */
-				if (upd_kind(tmp, &now) == UPD_FILE && upd_same(&now, &s->file)) ok = 1;
-				else syscall(SYS_renameat2, AT_FDCWD, tmp, AT_FDCWD, path, 2);
-				upd_unlink_file(tmp);
+				if (upd_kind(tmp, &now) == UPD_FILE && upd_same(&now, &s->file))
+				{
+					ok = 1;
+					upd_unlink_file(tmp);
+				}
+				else if (!syscall(SYS_renameat2, AT_FDCWD, tmp, AT_FDCWD, path, 2))
+				{
+					upd_unlink_file(tmp);
+				}
 			}
 			else if (errno == EINVAL || errno == ENOSYS)
 			{
@@ -1399,7 +1429,7 @@ static int upd_state_store(const char *vdir, UpdLock *lk, UpdJournal *jr, UpdSta
 		else
 		{
 			if (!syscall(SYS_renameat2, AT_FDCWD, tmp, AT_FDCWD, path, 1 /* RENAME_NOREPLACE */)) ok = 1;
-			else if ((errno == EINVAL || errno == ENOSYS) && !link(tmp, path)) { ok = 1; upd_unlink_file(tmp); }
+			else if ((errno == EINVAL || errno == ENOSYS) && !link(tmp, path)) ok = upd_unlink_file(tmp);
 			else upd_unlink_file(tmp);
 		}
 #endif
@@ -1598,6 +1628,13 @@ static int upd_run_program(const char *exe, int argc, char **argv, int *status)
 			}
 		}
 	}
+	int had_hold = 0;
+	if (sUpdHold != INVALID_HANDLE_VALUE)
+	{
+		CloseHandle(sUpdHold);
+		sUpdHold = INVALID_HANDLE_VALUE;
+		had_hold = 1;
+	}
 	PROCESS_INFORMATION pi;
 	BOOL started = CreateProcessA(exe, cmd, NULL, NULL, pass, create_flags, NULL, NULL, &si.StartupInfo, &pi);
 	if (!started && (create_flags & EXTENDED_STARTUPINFO_PRESENT))
@@ -1613,7 +1650,11 @@ static int upd_run_program(const char *exe, int argc, char **argv, int *status)
 	if (have_orig_in) SetHandleInformation(in, HANDLE_FLAG_INHERIT, orig_in & HANDLE_FLAG_INHERIT);
 	if (have_orig_out) SetHandleInformation(out, HANDLE_FLAG_INHERIT, orig_out & HANDLE_FLAG_INHERIT);
 	if (have_orig_err) SetHandleInformation(err, HANDLE_FLAG_INHERIT, orig_err & HANDLE_FLAG_INHERIT);
-	if (!started) return 0;
+	if (!started)
+	{
+		if (had_hold && sUpdHoldEntry[0]) upd_hold_entry(sUpdHoldEntry);
+		return 0;
+	}
 	WaitForSingleObject(pi.hProcess, INFINITE);
 	DWORD rc = 1;
 	GetExitCodeProcess(pi.hProcess, &rc);

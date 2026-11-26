@@ -155,6 +155,22 @@ def audit_grand_hall_alignment():
     need("CeMuseumTextures::GetPortalSignAtlas()" in hall and "CeMuseumTextures::GetDirectoryAtlas()" in hall,
          "Hall binds baked Portal Signage Atlas and Atrium Directory Floor-Plan/Buttons Atlas")
 
+    # 8. Verified Z-fighting, signboard standoff, diorama shadow dedup, and cinema glow dimming fixes
+    need("AddPortalSignboard( 40.0f + w + 0.28f, 14.5f, 5.42f" in hall
+         and "AddPortalSignboard(  0.0f, 20.0f - w, 8.25f" in hall,
+         "Portal 6 east signboard clears west acoustic lining and Portal 0a bezel centers at z = 8.25 m")
+    need("0.56f, 14.76f, ny[i] + 1.21f, 0.62f" in hangar_sec
+         and "0.48f, 5.44f, 76.74f, 0.52f" in hangar_sec
+         and "LocalFloorGrid(-0.14f, 65.14f, 0.14f, 68.0f" in hangar_sec
+         and "LocalFloorGrid(-0.28f, 36.28f, 0.28f, 41.76f" in atrium_sec,
+         "Naval Bay & Scale Alcove brass collars sit below pier/dais tops and compass crosses split without overlap")
+    need("AddContactShadow(dx, dy, 1.65f, 0.35f, 0.72f, floorZ, 0.048f, 0.46f);" in atrium_sec
+         and "tiered ? 0.048f : 0.036f" in hall
+         and "CeMuseumDiorama::kDioramaCount" not in atrium_sec,
+         "Directory/Hero Dais shadows sit above inlays at 0.048 m and duplicate Atrium diorama shadow loop is removed")
+    need("kMatCinemaSconce" in hall and "const float glowDim = 0.15f + 0.85f * house;" in draw_sec,
+         "Screening Room glow strips and wall sconces dim cleanly with house lights during playback")
+
     if not failures:
         print("ok   all Grand Museum architectural alignment, Atrium cohesion, Hangar symmetry, and horizon audits passed")
     return 1 if failures else 0

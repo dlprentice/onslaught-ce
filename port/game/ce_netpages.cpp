@@ -63,6 +63,8 @@ void PortCeOnlineUiButton(int button, float val) __attribute__((weak));
 void PortCeOnlineUiClose(void) __attribute__((weak));
 int  PortCeOnlineUiTakePendingEntry(void) __attribute__((weak));
 const char *PortCeOnlineUiTitleUtf8(void) __attribute__((weak));
+void PortCeOnlineUiSetOutcomeNotice(const char *text, int good) __attribute__((weak));
+int  CE_LobbyOutcomeOnline(void) __attribute__((weak));
 }
 #endif
 
@@ -2542,6 +2544,17 @@ void	PortCeNetOpen()
 			PortCeOnlineUiOpen();
 			return;
 		}
+	}
+	if (CE_LobbyOutcomePending() && CE_LobbyOutcomeOnline && CE_LobbyOutcomeOnline() &&
+		PortCeOnlineUiOpen && PortCeOnlineUiOffered && PortCeOnlineUiOffered())
+	{
+		char text[256];
+		int good = 1;
+		const bool outcome = CE_LobbyTakeOutcome(text, sizeof text, &good) != 0;
+		PortCeOnlineUiOpen();
+		if (outcome && PortCeOnlineUiSetOutcomeNotice)
+			PortCeOnlineUiSetOutcomeNotice(text, good);
+		return;
 	}
 #endif
 	if (!sMenu)

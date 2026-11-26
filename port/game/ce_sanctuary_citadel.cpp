@@ -36,8 +36,34 @@ const char *PortGameDir();
 bool PortCeCmdMapOpen() __attribute__((weak));
 extern "C" int PortCePlayUnitIsDriven(const void *unit) __attribute__((weak));
 extern "C" uint64_t PortCeD3dDeviceGeneration(void) __attribute__((weak));
+extern "C" unsigned PortPresentCount(void) __attribute__((weak));
 
 namespace CeSanctuaryCitadel {
+
+// Standard C++ explicit-instantiation accessor for private CBattleEngine::mSlowMovement
+// so swallowed Fire input / Cinema disarm clears slow-movement without touching BattleEngine.h.
+template <typename Tag>
+struct CePrivateSlot {
+    static typename Tag::MemberPtr ptr;
+};
+template <typename Tag>
+typename Tag::MemberPtr CePrivateSlot<Tag>::ptr = NULL;
+
+template <typename Tag, typename Tag::MemberPtr P>
+struct CePrivateBind {
+    struct Init {
+        Init() { CePrivateSlot<Tag>::ptr = P; }
+    };
+    static Init sInit;
+};
+template <typename Tag, typename Tag::MemberPtr P>
+typename CePrivateBind<Tag, P>::Init CePrivateBind<Tag, P>::sInit;
+
+struct BeSlowMovementTag {
+    typedef BOOL CBattleEngine::*MemberPtr;
+};
+template struct CePrivateBind<BeSlowMovementTag, &CBattleEngine::mSlowMovement>;
+
 namespace {
 
 static inline uint64_t CurrentCitadelDeviceGen() {
@@ -198,6 +224,8 @@ struct CitadelState {
     bool texturesLoaded;
     bool insideCinema;        // the camera is inside the sealed Cinema (drives the outdoor-draw skip)
     bool playerInsideCinema;  // the player's machine is inside it (the camera may still trail outside)
+    bool cameraOccupancyValid;
+    unsigned cameraOccupancyFrame;
     bool overflow;
     float floorZ;
     float animTime;
@@ -1015,13 +1043,13 @@ static void BuildCitadelArchitecture() {
         // Cobalt mid shaft
         EmitBox(mx - 0.52f, my - 0.52f, 8.47f, mx + 0.52f, my + 0.52f, 16.00f, kMatForsetiTrim, 0xfff2f8ff);
         // Long signal yard reaching north-west over the terrace, two hanging lamps
-        EmitBox(mx - 4.10f, my - 0.14f, 15.20f, mx + 0.52f, my + 0.14f, 15.48f, kMatBrass, kBrassCol);
+        EmitBox(mx - 4.10f, my - 0.14f, 15.20f, mx + 0.50f, my + 0.14f, 15.48f, kMatBrass, kBrassCol);
         EmitBox(mx - 3.86f, my - 0.20f, 14.52f, mx - 3.46f, my + 0.20f, 15.19f, kMatForsetiGlow, 0xff80ecff);
         EmitBox(mx - 2.36f, my - 0.20f, 14.72f, mx - 1.96f, my + 0.20f, 15.19f, kMatForsetiGlow, 0xff80ecff);
         EmitBox(mx - 0.62f, my - 0.62f, 16.00f, mx + 0.62f, my + 0.62f, 16.20f, kMatBrass, kBrassCol);
         // Forged-iron upper shaft and a short counter-yard on the valley side
         EmitBox(mx - 0.30f, my - 0.30f, 16.21f, mx + 0.30f, my + 0.30f, 22.00f, kMatForgedIron, kIronCol);
-        EmitBox(mx - 0.12f, my - 1.90f, 19.00f, mx + 0.12f, my + 0.30f, 19.22f, kMatBrass, kBrassCol);
+        EmitBox(mx - 0.12f, my - 1.90f, 19.00f, mx + 0.12f, my + 0.28f, 19.22f, kMatBrass, kBrassCol);
         EmitBox(mx - 0.18f, my - 1.86f, 18.52f, mx + 0.18f, my - 1.50f, 18.99f, kMatWarmGlow, kLightCol);
         // Lantern crow's nest, spire and beacon tip
         EmitBox(mx - 0.95f, my - 0.95f, 22.00f, mx + 0.95f, my + 0.95f, 22.18f, kMatBrass, kBrassCol);
@@ -1851,12 +1879,42 @@ static void EnforceInteriorUnitCollisions() {
     }
 }
 
-// Where the camera and the player's machine are, read now. The outdoor-draw skip
-// asks before the world is drawn and the weapon gate asks when the trigger is
-// pulled, so neither works from the frame before: a machine stepping through the
-// doorway never gets one frame of fire or of outdoor world into the hall.
+static void ClearBattleEngineWeaponChargeAndSlowMovement() {
+    CPlayer *pl = GAME.GetPlayer(0);
+    CBattleEngine *be = pl ? pl->GetBattleEngine() : NULL;
+    if (!be || be->IsDying() || be->IsShuttingDown()) return;
+    be->LoseWeaponCharge();
+    if (CePrivateSlot<BeSlowMovementTag>::ptr != NULL) {
+        be->*(CePrivateSlot<BeSlowMovementTag>::ptr) = FALSE;
+    }
+}
+
+// Camera-only Cinema occupancy check cached once per render frame for
+// PortCeSanctuarySkipOutdoorWorld() (called 7x/frame from DXEngine.cpp / game.cpp),
+// avoiding repeated WORLD.GetUnitNB() list walks in render passes.
+static void RefreshCinemaCameraOccupancy() {
+    if (!gCitadel || !gCitadel->active) return;
+    const unsigned frame = PortPresentCount
+        ? PortPresentCount()
+        : static_cast<unsigned>(GAME.GetRenderFrameNumber());
+    if (gCitadel->cameraOccupancyValid && gCitadel->cameraOccupancyFrame == frame)
+        return;
+    const float fz = gCitadel->floorZ;
+    if (CCamera *cam = ENGINE.GetCameraForViewpoint(0)) {
+        const FVector eye = cam->GetPos();
+        if (IsFinite3(eye.X, eye.Y, eye.Z))
+            gCitadel->insideCinema = IsInsideCinema(eye.X, eye.Y, eye.Z, fz);
+    }
+    gCitadel->cameraOccupancyValid = true;
+    gCitadel->cameraOccupancyFrame = frame;
+}
+
+// Where the camera and the player's machine are, read now. The weapon gate asks
+// when the trigger is pulled and the sim tick updates every tick so a machine
+// stepping through the doorway never gets one frame of fire into the hall.
 static void RefreshCinemaOccupancy() {
     if (!gCitadel || !gCitadel->active) return;
+    gCitadel->cameraOccupancyValid = false;
     const float fz = gCitadel->floorZ;
     if (CCamera *cam = ENGINE.GetCameraForViewpoint(0)) {
         const FVector eye = cam->GetPos();
@@ -1986,8 +2044,12 @@ void RuntimeUpdate(float dtSeconds, bool paused,
 // held at its height, and the player's Cinema occupancy is brought up to date.
 void RuntimeTickSim() {
     if (!gCitadel || !gCitadel->active) return;
+    const bool wasDisarmed = CinemaDisarmsWeapons(gCitadel->playerInsideCinema, gCitadel->insideCinema);
     EnforceInteriorUnitCollisions();
     RefreshCinemaOccupancy();
+    if (!wasDisarmed && CinemaDisarmsWeapons(gCitadel->playerInsideCinema, gCitadel->insideCinema)) {
+        ClearBattleEngineWeaponChargeAndSlowMovement();
+    }
 }
 
 bool RuntimeHandleKey(unsigned dik, bool repeat) {
@@ -2036,11 +2098,15 @@ bool RuntimeHandleKey(unsigned dik, bool repeat) {
 
 bool RuntimeHandleFire(bool release, float value) {
     if (!gCitadel || !gCitadel->active) return false;
-    if (CeArchivePedestal::RuntimeHandleFire(release, value))
+    if (CeArchivePedestal::RuntimeHandleFire(release, value)) {
+        ClearBattleEngineWeaponChargeAndSlowMovement();
         return true;
+    }
     RefreshCinemaOccupancy();
-    if (CinemaDisarmsWeapons(gCitadel->playerInsideCinema, gCitadel->insideCinema))
+    if (CinemaDisarmsWeapons(gCitadel->playerInsideCinema, gCitadel->insideCinema)) {
+        ClearBattleEngineWeaponChargeAndSlowMovement();
         return true;
+    }
     return false;
 }
 
@@ -2627,8 +2693,8 @@ extern "C" bool PortCeSanctuaryActive(void) {
 extern "C" bool PortCeSanctuarySkipOutdoorWorld(void) {
     if (!SanctuarySessionOpen())
         return false;
-    // Asked before each outdoor pass of the frame being drawn: read the camera now.
-    CeSanctuaryCitadel::RefreshCinemaOccupancy();
+    // Asked 7x per render frame before outdoor passes: read camera once per frame (no WORLD walk).
+    CeSanctuaryCitadel::RefreshCinemaCameraOccupancy();
     if (!CeSanctuaryCitadel::gCitadel->insideCinema)
         return false;
     if (PortCePhotoOn())
@@ -2710,6 +2776,12 @@ extern "C" void PortCeSanctuaryRenderCinemaPlayer(int viewpoint) {
     ENGINE.SetModulate2X(true);
 }
 
+extern "C" {
+void PortCeSanctuaryCitadelDeleteDeviceObjects(void) {
+    CeSanctuaryCitadel::ReleaseGpuBuffers();
+    CeSanctuaryCitadel::ReleaseFactionEmblemTextures();
+}
+}
 #else
 #include "ce_sanctuary_citadel.h"
 namespace CeSanctuaryCitadel {
@@ -2733,5 +2805,6 @@ bool PortCeSanctuaryClampBeam(float, float, float, float *, float *, float *) { 
 void PortCeSanctuaryDrawWorld(void) {}
 bool PortCeSanctuaryFire(bool, float) { return false; }
 void PortCeSanctuaryRenderCinemaPlayer(int) {}
+void PortCeSanctuaryCitadelDeleteDeviceObjects(void) {}
 }
 #endif

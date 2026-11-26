@@ -356,6 +356,43 @@ bool ContinueCampaignNonce(uint8_t nonce[16]) {
     return true;
 }
 
+bool gOnlineLaunched = false;
+bool gOutcomeOnline = false;
+
+void WriteOnlineReturnMarker(bool online) {
+    char path[4096] = {};
+    if (!HandoffPath(path, sizeof(path), "ce-online-return.flag")) return;
+    if (!online) {
+        remove(path);
+        return;
+    }
+#if !defined(_WIN32) && defined(O_NOFOLLOW)
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd >= 0) {
+        const char one = '1';
+        (void)write(fd, &one, 1);
+        close(fd);
+    }
+#else
+    FILE *f = fopen(path, "wb");
+    if (f) {
+        fputc('1', f);
+        fclose(f);
+    }
+#endif
+}
+
+bool TakeOnlineReturnMarker() {
+    char path[4096] = {};
+    if (!HandoffPath(path, sizeof(path), "ce-online-return.flag")) return false;
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    const int ch = fgetc(f);
+    fclose(f);
+    remove(path);
+    return ch == '1';
+}
+
 void AttachCampaignReturn(CE_Handoff *handoff, bool good) {
     CeCampaignReturn completed = {};
     if (!good || !ce_campaign_return_get(&completed)) return;
@@ -1309,9 +1346,15 @@ int CE_LobbyTakeOutcome(char *text, size_t size, int *good)
 	if (!gOutcomeReady)
 		return 0;
 	gOutcomeReady = false;
+	gOutcomeOnline = false;
 	snprintf(text, size, "%s", gOutcome.text);
 	*good = gOutcome.good;
 	return 1;
+}
+
+int CE_LobbyOutcomeOnline(void)
+{
+	return (gOutcomeReady && gOutcomeOnline) ? 1 : 0;
 }
 
 void CE_LobbyShellExit(int code, int native_quit)
@@ -1515,6 +1558,7 @@ void ReturnToFrontEnd(bool good, const char *text, bool rematch = false)
 
 	if (!true || !WriteOwnedHandoff("outcome", &h))
 		return;
+	WriteOnlineReturnMarker(gOnlineLaunched);
 	char args[1200];
 	Rebuild(gReturnArgs, "-skipfmv", args, sizeof args);
 	fprintf(stderr, LOBBY_LOG "returning to the front end (%s); the player is told: %s\n", good ? "the game ended" : "the game stopped", h.text);
@@ -1544,11 +1588,13 @@ struct Boot
 		CE_Handoff h;
 		if (!strcmp(which, "outcome"))
 		{
+			const bool onlineReturn = TakeOnlineReturnMarker();
 			if ((ReadOwnedHandoff("outcome", CE_HandoffNow(), &h, &why) ) &&
 				h.kind == CE_HANDOFF_OUTCOME)
 			{
 				gOutcome = h;
             ResumeCampaignFromOutcome(h);
+				gOutcomeOnline = onlineReturn;
 				gOutcomeReady = true;
 			}
 			else
@@ -1577,6 +1623,7 @@ struct Boot
 #endif
 		if (ok && h.online_version == 1)
 		{
+			gOnlineLaunched = true;
 			if (!PortCeOnlineMatchSetTicket || !PortCeOnlineMatchSetTicket(&h.online_ticket))
 			{
 				ok = false;
@@ -1757,33 +1804,41 @@ extern "C" void CE_LobbyAfterExit(void)
 	{
 		const char *boot = CE_BootError();
 		fprintf(stderr, LOBBY_LOG "the network game could not start: %s\n", boot && *boot ? boot : "the game stopped early");
-		snprintf(text, sizeof text, "%s", "The network game could not start. You can host or join again.");
+		snprintf(text, sizeof text, "%s", gOnlineLaunched
+			? "The online match could not start."
+			: "The network game could not start. You can host or join again.");
 	}
 	else if (error && *error)
 	{
 		fprintf(stderr, LOBBY_LOG "the network game stopped: %s\n", error);
 #if defined(CE_NETWORK_ICE)
 			const int lossRole = PortCeMissionRelayLossRole ? PortCeMissionRelayLossRole() : 0;
-			if (lossRole == CE_NET_HOST || lossRole == CE_NET_GUEST)
+			if (!gOnlineLaunched && (lossRole == CE_NET_HOST || lossRole == CE_NET_GUEST))
 				snprintf(text, sizeof(text), "%s", lossRole == CE_NET_HOST
 					? "Connection lost. Host a new game to play again."
 					: "Connection lost. Ask the host to start a new game.");
 			else
 #endif
-		snprintf(text, sizeof text, "%s", strstr(error, "the other player left") ? "Your friend left the game." :
-				 strstr(error, "out of step") ? "The two games went out of step, so the game stopped. You can host or join again." :
-				 "The network game stopped. You can host or join again.");
+		snprintf(text, sizeof text, "%s", strstr(error, "the other player left")
+			? (gOnlineLaunched ? "A player left the online match." : "Your friend left the game.") :
+			strstr(error, "out of step")
+			? (gOnlineLaunched ? "The online match went out of step, so the match stopped."
+			                   : "The two games went out of step, so the game stopped. You can host or join again.") :
+			(gOnlineLaunched ? "The online match stopped."
+			                 : "The network game stopped. You can host or join again."));
 	}
 	else if (PortCeNetRingLeft && PortCeNetRingLeft())
 	{
 		fprintf(stderr, LOBBY_LOG "the player left the network game\n");
 		good = true;
-		snprintf(text, sizeof text, "%s", "You left the game.");
+		snprintf(text, sizeof text, "%s", gOnlineLaunched ? "You left the online match." : "You left the game.");
 	}
 	else
 	{
 		good = gShellCode == 0;
-		snprintf(text, sizeof text, good ? "The network game has ended." : "The network game ended with an error.");
+		snprintf(text, sizeof text, "%s", gOnlineLaunched
+			? (good ? "The online match has ended." : "The online match ended with an error.")
+			: (good ? "The network game has ended." : "The network game ended with an error."));
 	}
 #ifdef _WIN32
 	SDL_Quit();

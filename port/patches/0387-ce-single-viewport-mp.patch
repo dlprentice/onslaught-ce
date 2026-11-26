@@ -1,11 +1,14 @@
 --- a/Camera.cpp
 +++ b/Camera.cpp
-@@ -879,7 +879,7 @@
+@@ -879,7 +879,10 @@
  #ifndef CE_NETWORK_OFF
  	if (CE_WorldActive()) return CE_WorldViewAspect(0.75f);
  #endif
 -	if (GAME.IsMultiplayer())
-+	if (PortCeCameraSplitAspect())
++	int ceSplitAspect = PortCeCameraSplitAspect();
++	if (ceSplitAspect == 2)
++		return 1.5f;
++	else if (ceSplitAspect)
  		return 0.5f;
  	else
  		return 0.75f;

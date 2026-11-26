@@ -16,6 +16,7 @@
 #include "ce_catalogue_sounds.h"
 #include "../platform/common/portlog.h"
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 namespace CeMuseumAudioKiosk {
@@ -69,38 +70,33 @@ bool TryOpenOgg(COggFileRead *reader, const char *lang, const char *stem) {
 bool BackendStart(void *, const char *stem) {
     ReleaseSample();
     if (!SOUND.IsInitialised() || !SafeStem(stem)) return false;
-    COggFileRead *reader = new COggFileRead;
-    if (!reader) return false;
+    COggFileRead reader;
     const char *lang = TEXT.mLoaded ? TEXT.GetLanguageName() : "english";
-    bool opened = TryOpenOgg(reader, lang, stem);
+    bool opened = TryOpenOgg(&reader, lang, stem);
     if (!opened && stricmp(lang, "english") != 0)
-        opened = TryOpenOgg(reader, "english", stem);
+        opened = TryOpenOgg(&reader, "english", stem);
     if (!opened) {
-        delete reader;
         PortSessionLog(PORT_SESSION_GAME, false, "museum kiosk: speech clip %s unavailable", stem);
         return false;
     }
-    if (reader->GetChannels() != 1 || reader->GetSampleRate() != 44100) {
-        reader->Close();
-        delete reader;
+    if (reader.GetChannels() != 1 || reader.GetSampleRate() != 44100) {
+        reader.Close();
         return false;
     }
-    BYTE *pcm = new BYTE[kMaxDecodeBytes];
+    BYTE *pcm = static_cast<BYTE *>(std::malloc(kMaxDecodeBytes));
     if (!pcm) {
-        reader->Close();
-        delete reader;
+        reader.Close();
         return false;
     }
     UINT size = 0;
-    const HRESULT hr = reader->Read(kMaxDecodeBytes, pcm, &size);
-    reader->Close();
-    delete reader;
+    const HRESULT hr = reader.Read(kMaxDecodeBytes, pcm, &size);
+    reader.Close();
     if (FAILED(hr) || size < 2u) {
-        delete[] pcm;
+        std::free(pcm);
         return false;
     }
     CSample *sample = SOUND.CreateSampleFromData(pcm, static_cast<int>(size & ~1u), FALSE, NULL);
-    delete[] pcm;
+    std::free(pcm);
     if (!sample || !static_cast<CPCSample *>(sample)->mDSBuffer) {
         delete sample;
         return false;
@@ -141,6 +137,7 @@ void RuntimeInit() {
 
 void RuntimeShutdown() {
     ReleaseSample();
+    gOwner.Shutdown();
     Reset(&gState);
     gInitialized = false;
 }

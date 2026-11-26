@@ -152,24 +152,30 @@ void CinemaShell(bool planned, float floor, float height) {
         const float wall = CeMuseumExhibition::kWallHalf;
         g.current = kMatCinemaWall;
         // Inner dark acoustic theater lining (East, South, and West returns framing Portal 6 inside x > kLeft + wall)
-        box(kRight - 0.16f, (kFront + kBack) * 0.5f, 0.16f, (kBack - kFront) * 0.5f - 0.16f, 0, roof, kWall, kWallCap);
-        box((kLeft + kRight) * 0.5f, kFront + 0.16f, (kRight - kLeft) * 0.5f - 0.16f, 0.16f, 0, roof, kWall, kWallCap);
+        // Trimmed cleanly to avoid overlapping the South lining, North proscenium wall, and Portal 6 jamb columns/architrave.
+        box(kRight - 0.16f, (kFront + kBack) * 0.5f, 0.16f, (kBack - kFront) * 0.5f - 0.32f, 0, roof, kWall, kWallCap);
+        box(0.5f * (kLeft + wall + kRight), kFront + 0.16f, 0.5f * (kRight - (kLeft + wall)), 0.16f, 0, roof, kWall, kWallCap);
         {
             const float westX = kLeft + wall + 0.14f;
             const float doorLo = kDoorY - kDoorHalf;
             const float doorHi = kDoorY + kDoorHalf;
-            const float doorClear = 4.6f;
-            if (doorLo > kFront + 0.32f)
-                box(westX, (kFront + 0.16f + doorLo) * 0.5f, 0.14f, (doorLo - (kFront + 0.16f)) * 0.5f, 0, roof, kWall, kWallCap);
-            if (kBack - 0.16f > doorHi)
-                box(westX, (doorHi + kBack - 0.16f) * 0.5f, 0.14f, ((kBack - 0.16f) - doorHi) * 0.5f, 0, roof, kWall, kWallCap);
-            if (roof > doorClear)
-                box(westX, kDoorY, 0.14f, kDoorHalf + 0.02f, doorClear, roof - doorClear, kWall, kWallCap);
+            const float jambLo = doorLo - 1.02f;
+            const float jambHi = doorHi + 1.02f;
+            const float headerLo = 5.06f; // top of Portal 6 architrave (4.60 + 0.46)
+            const float capLo = roof - 0.62f;
+            if (jambLo > kFront + 0.32f)
+                box(westX, (kFront + 0.32f + jambLo) * 0.5f, 0.14f, (jambLo - (kFront + 0.32f)) * 0.5f, 0, roof, kWall, kWallCap);
+            if (kBack - 0.32f > jambHi)
+                box(westX, (jambHi + kBack - 0.32f) * 0.5f, 0.14f, ((kBack - 0.32f) - jambHi) * 0.5f, 0, roof, kWall, kWallCap);
+            if (capLo > headerLo)
+                box(westX, kDoorY, 0.14f, kDoorHalf - 0.03f, headerLo, capLo - headerLo, kWall, kWallCap);
+            if (roof > capLo)
+                box(westX, kDoorY, 0.14f, kDoorHalf - 0.18f, capLo, roof - capLo, kWall, kWallCap);
         }
-        // Outer coastal limestone facade cladding on the exposed South (y = 7.0) and East (x = 56.0) faces
+        // Outer coastal limestone facade cladding on the exposed South (y = 7.0) and East (x = 56.0) faces (mitered SE corner)
         g.current = kMatWall;
-        box((kLeft + kRight) * 0.5f, kFront - 0.18f, (kRight - kLeft) * 0.5f + 0.32f, 0.18f, 0, roof, 0xfff5f1e8, 0xfff8f4eb);
-        box(kRight + 0.18f, (kFront + kBack) * 0.5f, 0.18f, (kBack - kFront) * 0.5f + 0.32f, 0, roof, 0xfff5f1e8, 0xfff8f4eb);
+        box(0.5f * ((kLeft - wall) + (kRight + 0.36f)), kFront - 0.18f, 0.5f * ((kRight + 0.36f) - (kLeft - wall)), 0.18f, 0, roof, 0xfff5f1e8, 0xfff8f4eb);
+        box(kRight + 0.18f, 0.5f * (kFront + kBack + 0.32f), 0.18f, 0.5f * ((kBack + 0.32f) - kFront), 0, roof, 0xfff5f1e8, 0xfff8f4eb);
         // Matching classical exterior cornice & brushed-brass frieze on the South facade facing the sea
         g.current = kMatPierCap;
         box((kLeft + kRight) * 0.5f, kFront - 0.25f, (kRight - kLeft) * 0.5f + 0.45f, 0.32f, roof - 0.58f, 0.68f, 0xfff8f4eb, 0xfff8f4eb);
@@ -179,7 +185,7 @@ void CinemaShell(bool planned, float floor, float height) {
         g.current = kMatCinemaGlow;
         const DWORD kWarmStrip = 0xff181004;
         box(kRight - 0.36f, (kFront + kBack) * 0.5f, 0.08f, (kBack - kFront) * 0.42f, roof - 0.38f, 0.16f, kWarmStrip, kWarmStrip);
-        box(kLeft + wall + 0.34f, (kFront + kBack) * 0.5f, 0.08f, (kBack - kFront) * 0.42f, roof - 0.38f, 0.16f, kWarmStrip, kWarmStrip);
+        box(kLeft + wall + 0.38f, (kFront + kBack) * 0.5f, 0.08f, (kBack - kFront) * 0.42f, roof - 0.38f, 0.16f, kWarmStrip, kWarmStrip);
         // Three wall sconces on the east lining: a small amber lamp on a brass backplate (where a tall white slab
         // used to glare), each over a soft wash on the acoustic wall. The wash is four wall panels meeting at the
         // lamp, so the baked sconce light (BakeGrandVertexColour) falls off smoothly from their shared centre.
@@ -192,7 +198,7 @@ void CinemaShell(bool planned, float floor, float height) {
                         kSconceHeight - kSconceWashHalf + float(qz) * kSconceWashHalf, kSconceWashHalf, kWall, kWallCap);
             g.current = kMatTrim;
             box(kRight - 0.37f, sy, 0.03f, 0.17f, kSconceHeight - 0.34f, 0.68f, kBrass, kBrass);
-            g.current = kMatMuspellGlow;   // deeper amber diffuse + emissive stays true warm amber (not clipped yellow)
+            g.current = kMatCinemaSconce;  // deeper amber diffuse + emissive, dimmed with cinema house lights during playback
             box(kRight - 0.43f, sy, 0.05f, 0.10f, kSconceHeight - 0.20f, 0.40f, 0xff883808, 0xff883808);
         }
         // Warm strip lights along both edges of the centre aisle, from the rear rows to the front of the house.
@@ -231,11 +237,11 @@ void CinemaShell(bool planned, float floor, float height) {
                 const CeHallPoint a=Offset(centre,-kScreenHalfW+fold*float(i),0);
                 const CeHallPoint m=Offset(centre,-kScreenHalfW+fold*(float(i)+0.5f),0);
                 const CeHallPoint b=Offset(centre,-kScreenHalfW+fold*float(i+1),0);
-                // Each fold: shadowed in its valleys (a, b), lit along its crest (m).
-                Quad(Point(a,bottom,kCurtainValleyLow),Point(m,bottom,kCurtainCrestLow),
-                     Point(m,top,kCurtainCrestHigh),Point(a,top,kCurtainValleyHigh));
-                Quad(Point(m,bottom,kCurtainCrestLow),Point(b,bottom,kCurtainValleyLow),
-                     Point(b,top,kCurtainValleyHigh),Point(m,top,kCurtainCrestHigh));
+                // Each fold: shadowed in its valleys (a, b), lit along its crest (m), wound so FaceNormal points (0, -1, 0) into the room.
+                Quad(Point(a,bottom,kCurtainValleyLow),Point(a,top,kCurtainValleyHigh),
+                     Point(m,top,kCurtainCrestHigh),Point(m,bottom,kCurtainCrestLow));
+                Quad(Point(m,bottom,kCurtainCrestLow),Point(m,top,kCurtainCrestHigh),
+                     Point(b,top,kCurtainValleyHigh),Point(b,bottom,kCurtainValleyLow));
             }
         }
     }
@@ -253,13 +259,15 @@ void CinemaShell(bool planned, float floor, float height) {
             }
         }
     }
+    // Console pedestal centered beneath the West-facing casing (x = kConsoleX + 0.13) with cap flush at z = 1.29 m.
+    const float pedX = kConsoleX + 0.13f;
     g.current = kMatCinemaBase;
-    box(kConsoleX,kConsoleY,.45f,.35f,0,.035f,kSlate,kSlate);
-    box(kConsoleX,kConsoleY,.43f,.33f,.035f,.30f,kSlate,kSlate);
+    box(pedX,kConsoleY,.24f,.56f,0,.035f,kSlate,kSlate);
+    box(pedX,kConsoleY,.21f,.52f,.035f,.22f,kSlate,kSlate);
     g.current = kMatCinemaPost;
-    box(kConsoleX,kConsoleY,.38f,.28f,0,1.15f,kSlate,kBronze);
+    box(pedX,kConsoleY,.14f,.42f,.255f,.855f,kSlate,kBronze);
     g.current = kMatCinemaCap;
-    box(kConsoleX,kConsoleY,.47f,.34f,1.15f,.22f,kBronze,kLight);
+    box(pedX,kConsoleY,.16f,.48f,1.11f,.18f,kBronze,kLight);
     g.current = kMatAuto;
     for(unsigned i=0;i<3;++i)
         box(kWallX+5.9f,3.0f+2.2f*i,.16f,.36f,.02f,.10f,kLight,kLight);
@@ -586,8 +594,9 @@ bool CinemaCue(char *title, unsigned titleCap, char *line, unsigned lineCap) {
 void CinemaScreen(IDirect3DDevice9 *dev) {
     using namespace Cinema;using namespace CeCinemaRoom;
     if(!dev || !s.inRoom || s.phase!=Playing || !s.film)return;
-    if(s.texture && (s.textureDevice != dev || s.textureDeviceGen != CurrentMuseumDeviceGen())) {
-        s.texture->Release(); s.texture = 0; s.textureDevice = 0; s.textureDeviceGen = 0;
+    if(!s.texture || s.textureDevice != dev || s.textureDeviceGen != CurrentMuseumDeviceGen()) {
+        if(s.texture) { s.texture->Release(); s.texture = 0; }
+        s.textureDevice = 0; s.textureDeviceGen = 0;
         if(!CinemaProjectionTarget()) { CinemaClose(Idle); return; }
         s.frame = 0;
         D3DLOCKED_RECT image = {};
@@ -614,7 +623,10 @@ void CinemaScreen(IDirect3DDevice9 *dev) {
     const float aspect=float(s.bitmapW)/s.bitmapH,box=kScreenHalfW/kScreenHalfH;
     const float wh=aspect>box?kScreenHalfW:kScreenHalfH*aspect,hh=aspect>box?kScreenHalfW/aspect:kScreenHalfH;
     const float x=CeMuseumWorld::kEntranceX+CinemaOffX()+kScreenX;
-    const float y=CeMuseumWorld::kEntranceY+CinemaOffY()+kScreenY-.025f,z=kScreenZ;
+    const float y=CeMuseumWorld::kEntranceY+CinemaOffY()+kScreenY-.025f;
+    float ground = gGrandFloorZ;
+    if (gPtr && gPtr->ground) gPtr->ground(x, y, &ground);
+    const float z = ground + kScreenZ;
     struct FilmVertex {float x,y,z,u,v;};
     const FilmVertex screen[]={{x-wh,y,z-hh,0,0},{x+wh,y,z-hh,1,0},{x-wh,y,z+hh,0,1},{x+wh,y,z+hh,1,1}};
     dev->SetTexture(0,s.texture);dev->SetTextureStageState(0,D3DTSS_COLOROP,D3DTOP_SELECTARG1);

@@ -131,6 +131,10 @@ const char kErrBadGameFiles[] = "Your PC game files could not be read to build L
 const char kErrVerifyFailed[] = "The built Level 888 archive failed verification.";
 const char kErrStageFailed[] = "The Level 888 mod could not be written to your mods folder.";
 const char kErrSettingsFailed[] = "Level 888 was imported, but your settings could not be saved.";
+#ifdef _WIN32
+const char kErrLoadedInUse[] = "Turn off Flagship Duel (PS2 Level 888) and restart Onslaught CE before re-importing.";
+const char kErrTargetInUse[] = "The existing Level 888 mod folder is in use. Close other programs and try again.";
+#endif
 
 // ---- basic utilities -------------------------------------------------------------------------------------------------
 
@@ -3656,8 +3660,53 @@ bool IsCleanPriorImportDir(const std::string &dir)
 	return actualManifest == expectedManifest;
 }
 
-void StageModAtomically(const char *user_dir, const std::vector<uint8_t> &archiveBytes)
+#ifdef _WIN32
+void CheckWindowsTargetReplaceable(const char *user_dir, bool modLoaded)
 {
+	if (!user_dir || !*user_dir)
+		return;
+	std::string udir(user_dir);
+	while (udir.size() > 1 && (udir.back() == '/' || udir.back() == '\\'))
+	{
+		if (udir.size() == 3 && udir[1] == ':')
+			break;
+		udir.pop_back();
+	}
+	const std::string targetDir = udir + "\\mods\\" + kModId;
+	std::vector<wchar_t> wtarget;
+	if (!Utf8ToWide(targetDir, &wtarget))
+		return;
+	const DWORD attr = GetFileAttributesW(wtarget.data());
+	if (attr == INVALID_FILE_ATTRIBUTES)
+		return;
+	if ((attr & FILE_ATTRIBUTE_REPARSE_POINT) || !(attr & FILE_ATTRIBUTE_DIRECTORY))
+		Fail(kErrStageFailed);
+	// Probe DELETE access (required for MoveFileExW directory rename) without modifying
+	// the folder. Fails immediately with ERROR_SHARING_VIOLATION if mods.cpp's Mod::root
+	// or another process holds the directory without FILE_SHARE_DELETE.
+	HANDLE h = CreateFileW(wtarget.data(), DELETE,
+						   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+						   NULL, OPEN_EXISTING,
+						   FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+	if (h != INVALID_HANDLE_VALUE)
+	{
+		CloseHandle(h);
+		return;
+	}
+	const DWORD err = GetLastError();
+	if (err == ERROR_SHARING_VIOLATION || err == ERROR_LOCK_VIOLATION)
+		Fail(modLoaded ? kErrLoadedInUse : kErrTargetInUse);
+	if (err == ERROR_ACCESS_DENIED && modLoaded)
+		Fail(kErrLoadedInUse);
+}
+#endif
+
+void StageModAtomically(const char *user_dir, const std::vector<uint8_t> &archiveBytes,
+						const std::atomic<bool> *cancel, bool modLoaded)
+{
+#ifndef _WIN32
+	(void)modLoaded;
+#endif
 	if (!user_dir || !*user_dir)
 		Fail(kErrStageFailed);
 
@@ -3771,6 +3820,14 @@ void StageModAtomically(const char *user_dir, const std::vector<uint8_t> &archiv
 		}
 	}
 
+	// Check cancel right before the atomic swap rename so a late cancel cleans up
+	// the staging directory instead of committing an un-enabled mod on disk.
+	if (cancel && cancel->load(std::memory_order_relaxed))
+	{
+		cleanupStage();
+		Fail(kErrCancelled);
+	}
+
 	// Atomic directory swap with rollback if final rename fails.
 #ifdef _WIN32
 	std::vector<wchar_t> wstage, wbackup;
@@ -3784,7 +3841,12 @@ void StageModAtomically(const char *user_dir, const std::vector<uint8_t> &archiv
 	{
 		if (!MoveFileExW(wtarget.data(), wbackup.data(), 0))
 		{
+			const DWORD err = GetLastError();
 			cleanupStage();
+			if (err == ERROR_SHARING_VIOLATION || err == ERROR_LOCK_VIOLATION)
+				Fail(modLoaded ? kErrLoadedInUse : kErrTargetInUse);
+			if (err == ERROR_ACCESS_DENIED && modLoaded)
+				Fail(kErrLoadedInUse);
 			Fail(kErrStageFailed);
 		}
 		movedOld = true;
@@ -3923,10 +3985,13 @@ bool EnableModOnMainThread(int *enabled_out)
 
 template <typename StageFn>
 bool RunCorePipeline(const char *source_path, const char *game_dir, const char *user_dir,
-					 const std::atomic<bool> *cancel, StageFn setStage, char *error_out, size_t error_cap)
+					 const std::atomic<bool> *cancel, bool modLoaded, StageFn setStage, char *error_out, size_t error_cap)
 {
 	try
 	{
+#ifdef _WIN32
+		CheckWindowsTargetReplaceable(user_dir, modLoaded);
+#endif
 		setStage("Reading PS2 disc image...");
 		const std::vector<uint8_t> member = ReadSourceMember(source_path, game_dir, user_dir, cancel);
 
@@ -3941,7 +4006,7 @@ bool RunCorePipeline(const char *source_path, const char *game_dir, const char *
 
 		CheckCancel(cancel);
 		setStage("Writing mod to mods folder...");
-		StageModAtomically(user_dir, archive);
+		StageModAtomically(user_dir, archive, cancel, modLoaded);
 		CopyStr(error_out, error_cap, "");
 		return true;
 	}
@@ -4039,6 +4104,13 @@ struct WorkerState
 	bool				threadActive = false;
 	bool				stagedPendingEnable = false;
 	CePs2ImportStatus	status{CE_PS2_IMPORT_IDLE, 0, "", ""};
+
+	~WorkerState()
+	{
+		cancel.store(true, std::memory_order_relaxed);
+		if (thread.joinable())
+			thread.join();
+	}
 };
 
 WorkerState &Worker()
@@ -4119,8 +4191,14 @@ bool CePs2ImportRun(const char *source_path, const char *game_dir, const char *u
 {
 	if (enabled_out)
 		*enabled_out = 0;
+#ifdef _WIN32
+	const char *owner = PortModLevelOwner(kTargetLevel);
+	const bool modLoaded = (owner && strcmp(owner, kModId) == 0);
+#else
+	const bool modLoaded = false;
+#endif
 	char localErr[256] = "";
-	if (!RunCorePipeline(source_path, game_dir, user_dir, nullptr, [](const char *) {}, localErr, sizeof(localErr)))
+	if (!RunCorePipeline(source_path, game_dir, user_dir, nullptr, modLoaded, [](const char *) {}, localErr, sizeof(localErr)))
 	{
 		CopyStr(error_out, error_cap, localErr);
 		return false;
@@ -4154,6 +4232,12 @@ bool CePs2ImportStart(const char *source_path, const char *game_dir, const char 
 	const std::string src = source_path ? source_path : "";
 	const std::string gdir = game_dir ? game_dir : "";
 	const std::string udir = user_dir ? user_dir : "";
+#ifdef _WIN32
+	const char *owner = PortModLevelOwner(kTargetLevel);
+	const bool modLoaded = (owner && strcmp(owner, kModId) == 0);
+#else
+	const bool modLoaded = false;
+#endif
 
 	std::lock_guard<std::mutex> hold(w.lock);
 	if (w.threadActive)
@@ -4166,22 +4250,24 @@ bool CePs2ImportStart(const char *source_path, const char *game_dir, const char 
 
 	try
 	{
-		w.thread = std::thread([src, gdir, udir]() {
+		w.thread = std::thread([src, gdir, udir, modLoaded]() {
 			WorkerState &ws = Worker();
 			auto updateStage = [&ws](const char *stageText) {
 				std::lock_guard<std::mutex> guard(ws.lock);
 				CopyStr(ws.status.stage, sizeof(ws.status.stage), stageText);
 			};
 			char err[256] = "";
-			const bool ok = RunCorePipeline(src.c_str(), gdir.c_str(), udir.c_str(), &ws.cancel,
+			const bool ok = RunCorePipeline(src.c_str(), gdir.c_str(), udir.c_str(), &ws.cancel, modLoaded,
 											updateStage, err, sizeof(err));
 			const bool wasCancelled = ws.cancel.load(std::memory_order_relaxed);
 
 			std::lock_guard<std::mutex> guard(ws.lock);
 			ws.threadActive = false;
-			if (ok && !wasCancelled)
+			if (ok)
 			{
-				// EnableModOnMainThread runs on the next CePs2ImportPoll so ce.cpp's settings cache stays single-threaded.
+				// StageModAtomically checked cancel right before the atomic swap, so ok means the mod
+				// is already committed on disk. Mark stagedPendingEnable even if cancel arrived right
+				// after the swap so CePs2ImportPoll / CePs2ImportCancel always enables it in ce.ini.
 				ws.stagedPendingEnable = true;
 			}
 			else if (wasCancelled)
@@ -4275,10 +4361,21 @@ void CePs2ImportCancel()
 	}
 	if (toJoin.joinable())
 		toJoin.join();
+	bool doEnable = false;
 	{
 		std::lock_guard<std::mutex> hold(w.lock);
 		w.threadActive = false;
-		w.stagedPendingEnable = false;
+		if (w.stagedPendingEnable)
+		{
+			w.stagedPendingEnable = false;
+			doEnable = true;
+		}
 		w.status = {CE_PS2_IMPORT_IDLE, 0, "", ""};
+	}
+	if (doEnable)
+	{
+		int enabled = 0;
+		if (EnableModOnMainThread(&enabled))
+			fprintf(stderr, PORT_LOG_PREFIX "mods: imported %s (enabled=%d)\n", kModId, enabled);
 	}
 }

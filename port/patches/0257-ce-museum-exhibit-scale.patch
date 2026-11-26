@@ -109,3 +109,144 @@
  	float	lod = (dist = (float)sqrt(dist)) / radius * mThing->GetRenderImposterBias() * MESH_LOD_BIAS * zoom;
  	if (mImposter)
  	{
+--- a/gcgamut.cpp
++++ b/gcgamut.cpp
+@@ -312,26 +312,41 @@
+ static inline void RenderBigThing(CThing *thing, FVector &campos, FVector &right, D3DXMATRIX &wvp, float sx, float sy, bool imposters, bool shadows, bool blob_shadows)
+ {
+ 		FVector		pos = thing->GetRenderPos();
+ 		CBoundingBox	*box = thing->GetBoundingBox();
++#ifdef CE_VERSION
++		const float	ceScale = thing->GetRenderScale();	// Port (patch 0257): an enlarged exhibit's culling sphere and box offset scale with its draw size
++		if (box)
++			pos += thing->GetOrientation() * (box->mOrigin * ceScale);
++#else
+ 		if (box)
+ 			pos += thing->GetOrientation() * box->mOrigin;
++#endif
+ 
+ 		float		dist2 = (pos - campos).MagnitudeSq();
+ 		float		cue = thing->GetCueFactor() / (dist2 + 0.001f);
+ 
+ 		if (shadows && (thing->IsA(THING_TYPE_UNIT) || thing->IsA(THING_TYPE_BUILDING)) && (!thing->IsA(THING_TYPE_BATTLE_ENGINE)) && (!thing->GetCanBeStaticallyShadowed()))
+ 			SHADOWS.RequestShadow((CUnit *)thing, 1.0f / cue);
+ 
+ 		D3DXVECTOR4	v1, v2;
+ 		D3DXVec3Transform(&v1, (D3DXVECTOR3 *)&pos, &wvp);
++#ifdef CE_VERSION
++		float		ceRadius = thing->GetRenderRadius() * ceScale;	// Port (patch 0257)
++		D3DXVec3Transform(&v2, (D3DXVECTOR3 *)&(pos + right * ceRadius), &wvp);
++#else
+ 		D3DXVec3Transform(&v2, (D3DXVECTOR3 *)&(pos + right * thing->GetRenderRadius()), &wvp);
++#endif
+ 		v1.x = v1.x / v1.w + 1.0f;
+ 		v1.y = v1.y / v1.w + 1.0f;
+ 		v2.x = v2.x / v2.w + 1.0f;
+ 		v2.y = v2.y / v2.w + 1.0f;
+ 		float		r = v2.x - v1.x;
++#ifdef CE_VERSION
++		float		radius2 = ceRadius;	// Port (patch 0257)
++#else
+ 		float		radius2 = thing->GetRenderRadius();
++#endif
+ 		radius2 *= radius2;
+ 		if (!((v1.x > -r) && (r + sx > v1.x) && (v1.y > -r) && (r + sy > v1.y)))
+ 		{
+ 			if ((!(dist2 < radius2)) && (!thing->IsA(THING_TYPE_CUTSCENE)))
+@@ -351,25 +366,40 @@
+ static inline void RenderSectorThing(CThing *thing, FVector &campos, FVector &right, D3DXMATRIX &wvp, float sx, float sy, BOOL partial, bool imposters, bool shadows, bool blob_shadows)
+ {
+ 		FVector		pos = thing->GetRenderPos();
+ 		CBoundingBox	*box = thing->GetBoundingBox();
++#ifdef CE_VERSION
++		const float	ceScale = thing->GetRenderScale();	// Port (patch 0257): an enlarged exhibit's culling sphere and box offset scale with its draw size
++		if (box)
++			pos += thing->GetOrientation() * (box->mOrigin * ceScale);
++#else
+ 		if (box)
+ 			pos += thing->GetOrientation() * box->mOrigin;
++#endif
+ 
+ 		float		dist2 = (pos - campos).MagnitudeSq();
+ 		float		cue = thing->GetCueFactor() / (dist2 + 0.001f);
+ 
+ 		if (partial)
+ 		{
+ 			D3DXVECTOR4	v1, v2;
+ 			D3DXVec3Transform(&v1, (D3DXVECTOR3 *)&pos, &wvp);
++#ifdef CE_VERSION
++			float		ceRadius = thing->GetRenderRadius() * ceScale;	// Port (patch 0257)
++			D3DXVec3Transform(&v2, (D3DXVECTOR3 *)&(pos + right * ceRadius), &wvp);
++#else
+ 			D3DXVec3Transform(&v2, (D3DXVECTOR3 *)&(pos + right * thing->GetRenderRadius()), &wvp);
++#endif
+ 			v1.x = v1.x / v1.w + 1.0f;
+ 			v1.y = v1.y / v1.w + 1.0f;
+ 			v2.x = v2.x / v2.w + 1.0f;
+ 			v2.y = v2.y / v2.w + 1.0f;
+ 			float		r = v2.x - v1.x;
++#ifdef CE_VERSION
++			float		radius2 = ceRadius;	// Port (patch 0257)
++#else
+ 			float		radius2 = thing->GetRenderRadius();
++#endif
+ 			radius2 *= radius2;
+ 			if (!((v1.x > -r) && (r + sx > v1.x) && (v1.y > -r) && (r + sy > v1.y)))
+ 			{
+ 				if ((!(dist2 < radius2)) && (!thing->IsA(THING_TYPE_CUTSCENE)))
+--- a/VertexShader.cpp
++++ b/VertexShader.cpp
+@@ -707,6 +707,22 @@
+ 
+ extern float	TREE_MESH_DISTANCE;			// 006321a0: nearer than this a tree is its mesh
+ 
++#ifdef CE_VERSION
++// Port (patch 0257): uniform world scale S shrinks inv1-transformed direction vectors (w == 0) by 1/S;
++// renormalize scaled directions to unit length while leaving unscaled vectors untouched.
++static inline void ce_normalize_dir3(D3DXVECTOR4 &v)
++{
++	const float lenSq = v.x * v.x + v.y * v.y + v.z * v.z;
++	if ((lenSq > 1e-12f) && ((lenSq < 0.9999f) || (lenSq > 1.0001f)))
++	{
++		const float invLen = 1.0f / sqrtf(lenSq);
++		v.x *= invLen;
++		v.y *= invLen;
++		v.z *= invLen;
++	}
++}
++#endif
++
+ //******************************************************************************************
+ // A declaration shader's constants: each fragment in its declaration loads the constants it reads, the lights in
+ // turn from RENDERINFO's enabled ones. The token accessor keeps the light constructor's last FVector::Set out
+@@ -851,6 +867,9 @@
+ 			D3DXVECTOR4	up(-wind.X, -wind.Y, -wind.Z, 0);
+ 			D3DXVECTOR4	oup;
+ 			D3DXVec4Transform(&oup, &up, &inv1);
++#ifdef CE_VERSION
++			ce_normalize_dir3(oup);	// Port (patch 0257)
++#endif
+ 			c.x = oup.x;
+ 			c.y = oup.y;
+ 			c.z = oup.z;
+@@ -905,6 +924,10 @@
+ 				v.w = 0;
+ 			}
+ 			D3DXVec4Transform(&ov, &v, &inv1);
++#ifdef CE_VERSION
++			if ((l.mType == LIGHT_DIRECTIONAL) || (l.mType == 2))
++				ce_normalize_dir3(ov);	// Port (patch 0257)
++#endif
+ 			c.x = ov.x;
+ 			c.y = ov.y;
+ 			c.z = ov.z;
+@@ -923,6 +946,9 @@
+ 				v.z = l.mUnknown4c.Z;
+ 				v.w = 0;
+ 				D3DXVec4Transform(&ov, &v, &inv1);
++#ifdef CE_VERSION
++				ce_normalize_dir3(ov);	// Port (patch 0257)
++#endif
+ 				c.x = ov.x;
+ 				c.y = ov.y;
+ 				c.z = ov.z;

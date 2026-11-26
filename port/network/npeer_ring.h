@@ -495,7 +495,9 @@ public:
 		if ((mCurrentTick % mHashEvery) == 0u)
 		{
 			HashFrame &hf = mHashSlots[(mCurrentTick / mHashEvery) & kRingMask];
-			if (!hf.valid || hf.tick != mCurrentTick)
+			const bool sameTick = hf.valid && hf.tick == mCurrentTick;
+			const uint8_t hashReqMask = (uint8_t)(reqMask & (mActiveMask | (sameTick ? hf.presentMask : 0u)));
+			if (!sameTick)
 			{
 				if (!hf.valid || (uint32_t)(mCurrentTick - hf.tick) < 0x80000000u)
 				{
@@ -503,13 +505,13 @@ public:
 					hf.verified = false;
 					hf.tick = mCurrentTick;
 					hf.presentMask = 0u;
-					hf.expectedMask = reqMask;
+					hf.expectedMask = hashReqMask;
 					hf.hasExpectedMask = true;
 				}
 			}
 			else
 			{
-				hf.expectedMask = reqMask;
+				hf.expectedMask = hashReqMask;
 				hf.hasExpectedMask = true;
 			}
 		}
@@ -747,14 +749,31 @@ public:
 		mDisconnectedMask |= bit;
 		mDisconnectTick[slot] = atTick;
 
-		// Scrub stale ready bits from disconnected slot for ticks >= atTick so rebind starts spotless.
+		// Scrub stale ready bits from disconnected slot for ticks >= atTick so rebind starts spotless,
+		// and release any prior unverified hash checkpoint that is still waiting on this dropped slot.
 		for (size_t r = 0; r < RING_SIZE; r++)
 		{
 			if (mInputSlots[r].valid && !mInputSlots[r].hasHostMask &&
 			    (uint32_t)(mInputSlots[r].tick - atTick) < 0x80000000u)
 				mInputSlots[r].readyMask &= (uint8_t)~bit;
-			if (mHashSlots[r].valid && (uint32_t)(mHashSlots[r].tick - atTick) < 0x80000000u)
-				mHashSlots[r].presentMask &= (uint8_t)~bit;
+			if (mHashSlots[r].valid)
+			{
+				if ((uint32_t)(mHashSlots[r].tick - atTick) < 0x80000000u)
+				{
+					mHashSlots[r].presentMask &= (uint8_t)~bit;
+					if (mHashSlots[r].hasExpectedMask)
+						mHashSlots[r].expectedMask &= (uint8_t)~bit;
+				}
+				else if (!mHashSlots[r].verified && (mHashSlots[r].presentMask & bit) == 0u)
+				{
+					if (!mHashSlots[r].hasExpectedMask)
+					{
+						mHashSlots[r].expectedMask = ActiveMaskAt(mHashSlots[r].tick);
+						mHashSlots[r].hasExpectedMask = true;
+					}
+					mHashSlots[r].expectedMask &= (uint8_t)~bit;
+				}
+			}
 		}
 		return CE_NPEER_OK;
 	}

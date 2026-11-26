@@ -167,6 +167,8 @@ public:
             e->mCurrentUnitOverCrosshair = e->CalcUnitOverCrossHair(NULL, TRUE, TRUE);
         }
         bool ground_mouse=in.mouse_ground_aim&&e->IsWalkerOnGroundOrObject();
+        if (player < 4u)
+            lock_mouse_ground_aim[player] = (ground_mouse && !GAME.IsPaused() && GAME.GetGameState() == GAME_STATE_PLAYING && !e->IsDying() && e->GetIsPoweredUp()) ? 1u : 0u;
         for(unsigned i=0;i<in.count;++i) {
             uint32_t button=in.actions[i].button;
             if(ground_mouse&&in.actions[i].source==CE_WORLD_ACTION_MOUSE_AXIS&&button>=25&&button<=28) continue;
@@ -402,6 +404,7 @@ public:
         return 1;
     }
     static void LockstepBeginTick() {
+        memset(lock_mouse_ground_aim, 0, sizeof(lock_mouse_ground_aim));
         size_t at=0;
         for(size_t i=0;i<lock_region_count;++i) { memcpy(lock_regions[i].at,lock_bytes+at,lock_regions[i].size); at+=lock_regions[i].size; }
 #ifndef CE_LOCKSTEP_FENCE_CONTROL	// build.py --lockstep-fence-control: the negative control leaves what drawing refreshed in place
@@ -433,12 +436,14 @@ public:
         }
     }
     static CE_WorldInput *lock_sample; static bool lock_mouse_axis;
+    static uint8_t lock_mouse_ground_aim[4];
 };
 CENetworkWorldAdapter::Region *CENetworkWorldAdapter::lock_regions; uint8_t *CENetworkWorldAdapter::lock_bytes;
 size_t CENetworkWorldAdapter::lock_region_count, CENetworkWorldAdapter::lock_region_cap, CENetworkWorldAdapter::lock_byte_count, CENetworkWorldAdapter::lock_byte_cap;
 bool CENetworkWorldAdapter::lock_overflow;
 CENetworkWorldAdapter::ComponentState *CENetworkWorldAdapter::lock_components; unsigned CENetworkWorldAdapter::lock_component_count, CENetworkWorldAdapter::lock_component_cap;
 CE_WorldInput *CENetworkWorldAdapter::lock_sample; bool CENetworkWorldAdapter::lock_mouse_axis;
+uint8_t CENetworkWorldAdapter::lock_mouse_ground_aim[4];
 
 extern "C" {
 // Clock, input, pacing and data owners' answers checked by admitted lockstep co-op starts (ce_network_lockstep.cpp).
@@ -533,6 +538,10 @@ int CE_WorldLocalWon(int game_state) {
 float CE_WorldViewAspect(float original) { return CE_WorldActive() ? .75f : original; }
 int CE_WorldInvertPitch(uint32_t player,int grounded,int original) { return CE_LockstepTicking() ? CE_LockstepInvertPitch(player,grounded,original) : original; }
 int CE_WorldWalkerBindingType(uint32_t player,int original) { return CE_LockstepTicking() ? (CE_LockstepWalkerAny(player,original) ? MOUSE_AXIS_PLUS_ANY : MOUSE_AXIS_PLUS) : original; }
+int CE_WorldMouseGroundAim(uint32_t player,int original) {
+    if (!CE_LockstepTicking()) return original;
+    return (player < 4u && CENetworkWorldAdapter::lock_mouse_ground_aim[player]) ? 1 : 0;
+}
 void CE_WorldMouseAxis(int on) { if(CENetworkWorldAdapter::lock_sample) CENetworkWorldAdapter::lock_mouse_axis=on!=0; }
 }
 CCamera *CE_WorldViewCamera(int original) {

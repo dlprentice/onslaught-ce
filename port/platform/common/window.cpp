@@ -33,6 +33,9 @@ extern "C" int PortCeNetRingEvent(const union SDL_Event *event) __attribute__((w
 #include "input_activity.h"
 #endif
 extern "C" unsigned PortPresentCount(void);	// d3d9hooks.cpp
+#if !defined(_WIN32)
+extern "C" void PortAudioSetFocused(int focused) __attribute__((weak));	// dsound.cpp
+#endif
 #if defined(CE_VERSION) && defined(BEA_PUBLIC_GRAPHICS_HOST)
 extern "C" void PortCeRetryDisplayInput();	// repair a refused menu capture release on the normal input pump
 #endif
@@ -1105,7 +1108,10 @@ void Pump()
 	while (Free() > 16)
 	{
 		if (haveDeferred)
+		{
 			e = deferred;
+			haveDeferred = false;
+		}
 		else if (!SDL_PollEvent(&e))
 			break;
 #ifndef CE_NETWORK_OFF
@@ -1127,7 +1133,6 @@ void Pump()
 			haveDeferred = true;
 			break;
 		}
-		haveDeferred = false;
 		if (PORT_FEEL_ON() && (e.type == SDL_EVENT_MOUSE_MOTION || e.type == SDL_EVENT_KEY_DOWN || e.type == SDL_EVENT_KEY_UP ||
 							 e.type == SDL_EVENT_MOUSE_BUTTON_DOWN || e.type == SDL_EVENT_MOUSE_BUTTON_UP))
 		{
@@ -1145,6 +1150,9 @@ void Pump()
 		case SDL_EVENT_WINDOW_FOCUS_GAINED:
 			PortSessionLog(PORT_SESSION_WINDOW, false, "focus gained");
 			if (InputLog()) fprintf(stderr, PORT_LOG_PREFIX "input: focus gained\n");
+#if !defined(_WIN32)
+			if (PortAudioSetFocused) PortAudioSetFocused(1);
+#endif
 			Post(h, WM_ACTIVATEAPP, TRUE, 0);
 			Post(h, WM_ACTIVATE, 1, 0);
 			break;
@@ -1154,6 +1162,9 @@ void Pump()
 			ReleaseAll("focus lost");
 			if (PortRecording())
 				break;	// a tape has no focus changes
+#if !defined(_WIN32)
+			if (PortAudioSetFocused) PortAudioSetFocused(0);
+#endif
 			Post(h, WM_ACTIVATEAPP, FALSE, 0);
 			Post(h, WM_ACTIVATE, 0, 0);
 			break;

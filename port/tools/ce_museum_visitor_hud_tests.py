@@ -185,6 +185,68 @@ int main() {
         }
     }
 
+    // 6. Capped per-cell software mipmap downsampling produces zero cross-strip or cross-button bleed.
+    {
+        std::vector<unsigned int> pBase(CeMuseumTextures::kPortalAtlasWidth * CeMuseumTextures::kPortalAtlasHeight, 0u);
+        for (unsigned s = 0u; s < static_cast<unsigned>(CE_MUSEUM_SIGN_COUNT); ++s) {
+            const unsigned int col = 0xff000000u | (((s + 1u) * 29u) << 16) | (((s + 1u) * 19u) << 8) | ((s + 1u) * 11u);
+            const unsigned y0 = s * CeMuseumTextures::kPortalStripHeight;
+            for (unsigned y = y0; y < y0 + CeMuseumTextures::kPortalStripHeight; ++y)
+                for (unsigned x = 0u; x < CeMuseumTextures::kPortalAtlasWidth; ++x)
+                    pBase[y * CeMuseumTextures::kPortalAtlasWidth + x] = col;
+        }
+        for (unsigned lvl = 1u; lvl < CeMuseumTextures::kAtlasMipLevels; ++lvl) {
+            const unsigned dw = CeMuseumTextures::kPortalAtlasWidth >> lvl;
+            const unsigned dh = CeMuseumTextures::kPortalAtlasHeight >> lvl;
+            const unsigned dStripH = CeMuseumTextures::kPortalStripHeight >> lvl;
+            std::vector<unsigned int> mip(dw * dh, 0u);
+            CeMuseumTextures::DownsamplePortalSignAtlasLevel(pBase.data(), lvl, mip.data());
+            for (unsigned s = 0u; s < static_cast<unsigned>(CE_MUSEUM_SIGN_COUNT); ++s) {
+                const unsigned int expect = 0xff000000u | (((s + 1u) * 29u) << 16) | (((s + 1u) * 19u) << 8) | ((s + 1u) * 11u);
+                for (unsigned ly = 0u; ly < dStripH; ++ly)
+                    for (unsigned x = 0u; x < dw; ++x)
+                        Need(mip[(s * dStripH + ly) * dw + x] == expect, "portal atlas mip has zero cross-strip bleed");
+            }
+        }
+
+        std::vector<unsigned int> dBase(CeMuseumTextures::kDirectoryAtlasWidth * CeMuseumTextures::kDirectoryAtlasHeight, 0xff102030u);
+        for (unsigned y = 0u; y < CeMuseumTextures::kDirectoryMapHeight; ++y)
+            for (unsigned x = 0u; x < CeMuseumTextures::kDirectoryAtlasWidth; ++x)
+                dBase[y * CeMuseumTextures::kDirectoryAtlasWidth + x] = 0xff224466u;
+        const unsigned int btnCols[6] = {
+            0xffe01010u, 0xff10e010u, 0xff1010e0u, 0xffe0e010u, 0xff10e0e0u, 0xffe010e0u
+        };
+        for (unsigned b = 0u; b < 6u; ++b) {
+            const unsigned col = b % 3u, row = b / 3u;
+            const unsigned x0 = col * 170u, y0 = CeMuseumTextures::kDirectoryMapHeight + row * 64u;
+            for (unsigned y = y0; y < y0 + 64u; ++y)
+                for (unsigned x = x0; x < x0 + 170u; ++x)
+                    dBase[y * CeMuseumTextures::kDirectoryAtlasWidth + x] = btnCols[b];
+        }
+        for (unsigned lvl = 1u; lvl < CeMuseumTextures::kAtlasMipLevels; ++lvl) {
+            const unsigned dw = CeMuseumTextures::kDirectoryAtlasWidth >> lvl;
+            const unsigned dh = CeMuseumTextures::kDirectoryAtlasHeight >> lvl;
+            const unsigned dMapH = CeMuseumTextures::kDirectoryMapHeight >> lvl;
+            const unsigned dRowH = 64u >> lvl;
+            const unsigned scale = 1u << lvl;
+            std::vector<unsigned int> mip(dw * dh, 0u);
+            CeMuseumTextures::DownsampleDirectoryAtlasLevel(dBase.data(), lvl, mip.data());
+            for (unsigned y = 0u; y < dMapH; ++y)
+                for (unsigned x = 0u; x < dw; ++x)
+                    Need(mip[y * dw + x] == 0xff224466u, "directory map mip never bleeds from buttons");
+            for (unsigned row = 0u; row < 2u; ++row) {
+                for (unsigned ly = 0u; ly < dRowH; ++ly) {
+                    const unsigned y = dMapH + row * dRowH + ly;
+                    for (unsigned x = 0u; x < dw; ++x) {
+                        unsigned c = ((x * 2u + 1u) * scale) / 340u;
+                        if (c > 2u) c = 2u;
+                        Need(mip[y * dw + x] == btnCols[row * 3u + c], "directory button mip has zero cross-cell bleed");
+                    }
+                }
+            }
+        }
+    }
+
     std::printf("ce_museum_visitor_hud_tests: all tour, signage, and directory checks passed\n");
     return 0;
 }
@@ -247,12 +309,38 @@ def main():
     except AssertionError as err:
         check("ce_photo_tests.check_structure passes with patch 0366 applied", False, str(err))
 
-    # 4. Texture loader checks (zlib decompression, managed D3D9 texture, missing-texture fallback).
+    # 4. Texture loader checks (zlib decompression, managed D3D9 texture, missing-texture fallback, capped atlas mips).
     tex = TEX_CPP.read_text()
     check("texture loader decompresses embedded GPL textures and uploads D3DPOOL_MANAGED",
           "uncompress(" in tex and "D3DXCreateTextureFromFileInMemoryEx" in tex and "D3DPOOL_MANAGED" in tex)
+    check("texture loader uses idempotent LoadAll and capped per-cell atlas mip levels",
+          "if (gLoaded && gDevice == device && gDeviceGen == gen) return;" in tex
+          and "kAtlasMipLevels" in tex and "DownsamplePortalSignAtlasLevel(" in tex
+          and "DownsampleDirectoryAtlasLevel(" in tex)
     check("texture loader honors BEA_PORT_MUSEUM_MISSING_TEXTURE and degrades cleanly",
           "BEA_PORT_MUSEUM_MISSING_TEXTURE" in tex and "void ReleaseAll()" in tex)
+
+    # 5. Museum visit engine, archive pedestal, and 0199/0257 patch invariants.
+    visit_eng = (GAME / "ce_museum_visit_engine.cpp").read_text()
+    visit_cpp = (GAME / "ce_museum_visit.cpp").read_text()
+    pedestal_cpp = (GAME / "ce_archive_pedestal.cpp").read_text()
+    patch_199 = (ROOT / "port/patches/0199-ce-museum-visitor.patch").read_text()
+    patch_257 = (ROOT / "port/patches/0257-ce-museum-exhibit-scale.patch").read_text()
+    check("museum visit sprint uses sim time, MAP.mUnknown000 is initialized, and restart state resets cleanly",
+          "gMuseumSprintUntil" in visit_eng and "EVENT_MANAGER.GetTime()" in visit_eng
+          and "MAP.mUnknown000" in visit_eng and "gCarrierBaseWorldLevel" in visit_eng
+          and "DropExhibitDefinitions();" in visit_eng[visit_eng.index("bool CeMuseumVisit::GenerateInstalled() {"):]
+          and "gVisit.generated = false;" in visit_cpp[visit_cpp.index("if (gVisit.ended && gVisit.loaded)"):])
+    check("archive pedestal stele renders both faces and uses hyphen plaque separator",
+          "by = wy + 0.12f" in pedestal_cpp
+          and " - aim at the brass controls to browse." in pedestal_cpp)
+    check("patch 0199 clamps Row 0 cursor on transition and holds visitor visuals across exit fade",
+          "while (mCX > 0 && get_goodie_number(mCX, mCY) == -1)" in patch_199
+          and "EvaluateDest();" in patch_199
+          and "PortCeMuseumHoldExitFade(" in patch_199)
+    check("patch 0257 scales gamut culling box/radius and renormalizes scaled w==0 shader directions",
+          "box->mOrigin * ceScale" in patch_257 and "thing->GetRenderRadius() * ceScale" in patch_257
+          and "ce_normalize_dir3(" in patch_257)
     check("tour strings stay free of forbidden words",
           not re.search(r'"[^"]*(?:prototype|experimental|carrier|ce\.ini)[^"]*"', TOUR_H.read_text(), re.I))
     return 1 if failures else 0

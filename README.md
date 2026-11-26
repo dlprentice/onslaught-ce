@@ -12,9 +12,11 @@ describe the version you installed. Versions 0.1.8 and later have a signed-updat
 [0.1.12](https://github.com/dlprentice/onslaught-ce/releases/tag/v0.1.12) release notes for their 32-bit
 dependency caveat.
 
-The published release is **0.1.13**. Upcoming releases follow an incremental `0.1.14`–`0.1.19` cadence leading up to
-**0.2.0**; the newer source features described here have not yet shipped in a published package. Experimental features
-remain opt-in; a source build or an isolated test does not establish that every feature works on both platforms.
+The published preview release line is **0.1.17.x** (see
+[Releases](https://github.com/dlprentice/onslaught-ce/releases) for the latest download). Upcoming releases continue
+incrementally toward **0.2.0**; newer source work described here may not yet be in the latest download. Experimental
+features are enabled by default in current preview builds and can be toggled in **Onslaught CE → Experimental Features**
+or `ce.ini`; a source build or an isolated test does not establish that every feature works on both platforms.
 
 Onslaught CE is a native port of *Battle Engine Aquila* (Lost Toys, 2003) for Linux (i686) and Windows (i686), built
 from the game's source code. You need your own copy of the game.
@@ -651,8 +653,8 @@ Changes apply when you next start the game. Windows mods have been exercised und
   first problem, this goes on to the end of the mod), then `result: <n> passed, <m> refused`, counting mods. It changes no file, not even
   to create the user folder, contacts nothing and opens no window; it exits with status 0 when nothing was refused and 1
   otherwise. It reads the same folders the game does: set `BEA_GAME_DIR` (and `BEA_USER_DIR`, if you use one) as the
-  launcher would. Run `bea` itself rather than the launcher, which writes its log and may check for an update. The Windows
-  `bea.exe` answers that mods are off on Windows, with status 3.
+  launcher would. Run `bea` itself rather than the launcher, which writes its log and may check for an update. On
+  Windows, `bea.exe --check-mods` runs the same manifest and path checks against `%APPDATA%\Onslaught CE\mods`.
 - A mod can also supply a level's world: `data/worlds/world100.wrd` (three digits, the level number) listed like any other
   file. The game then reads that world body instead of the one inside the level's archive. A level's own world and its base
   world are separate files (`world001.wrd` is the base world of level 100), and a mod may supply either or both. Careers
@@ -844,8 +846,8 @@ its win and debrief. This covers one recorded route; it does not establish compl
 - Gamepad and flight-stick defaults cover menus, single-player levels and bonus Co-Op ([how](port/controller-input.md)); only
   virtual devices have been tested so far.
 - Widescreen play is not compared with the original (the original has no widescreen); ordinary replays and recordings use 4:3.
-- Release 0.1.13 does not offer Internet multiplayer. This source branch has opt-in 2 to 4 player network test builds;
-  that does not establish a released Internet service. Additional HUD options remain planned.
+- Default public builds do not offer Internet multiplayer; explicit opt-in network/ICE builds include experimental 2 to
+  4 player co-op and versus play. Additional HUD options remain planned.
   Mods work on Linux and Windows ([Mods (experimental)](#mods-experimental)); Windows mods have been exercised under Wine while physical Windows NTFS acceptance remains open.
 - The native prototypes remain incomplete. Commander has squad selection and orders, but the intended native-model
   RTS view, individual-unit and structure workflows are not complete. Taking a friendly unit is not a finished

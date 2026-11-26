@@ -84,11 +84,14 @@ struct Pixel { void Release() {} } pixel;
 struct CVertexShader
 {
     void *mShader;
+    int mRefCount = 1;
+    void Release() { --mRefCount; }
     static CVertexShader *Create(const char *, DWORD *, int, void *, int, int)
     {
-        static CVertexShader result;
-        result.mShader = vertexNativeSucceeds ? &result : nullptr;
-        return vertexSucceeds ? &result : nullptr;
+        if (!vertexSucceeds) return nullptr;
+        auto *result = new CVertexShader;
+        result->mShader = vertexNativeSucceeds ? result : nullptr;
+        return result;
     }
 };
 struct TestDevice

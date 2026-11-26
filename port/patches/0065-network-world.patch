@@ -10,7 +10,36 @@
  	static int	frame = 0;				// 006601f8
  	static int	last_frame = 2;		// 00622f0c
  
-@@ -3297,7 +3300,11 @@
+@@ -1232,8 +1235,18 @@
+ 		float	groundPitch=-p.Z;
+ 		
+ 		if (MouseLookActive(this))
++#ifdef CE_NETWORK_OFF
+ 			;	// PC: the mouse holds the pitch within the ground's limits itself (00407c5b..00407cc5)
+ 		else if (mCurrentOrientation.mPitch-groundPitch>0.5f)
++#else
++		{
++			if (CE_WorldMouseGroundAim(mPlayer.ToRead() ? (uint32_t)(mPlayer->GetNumber() - 1) : ~0u, 1))
++				goto ce_skip_ground_pitch;
++		}
++		else if (CE_WorldMouseGroundAim(mPlayer.ToRead() ? (uint32_t)(mPlayer->GetNumber() - 1) : ~0u, 0))
++			goto ce_skip_ground_pitch;
++		if (mCurrentOrientation.mPitch-groundPitch>0.5f)
++#endif
+ 		{
+ 			if (mCurrentOrientation.mPitch-groundPitch>0.7f)
+ 			{
+@@ -1265,6 +1278,9 @@
+ 				mPitchvel*=mult;
+ 			}
+ 		}
++#ifndef CE_NETWORK_OFF
++		ce_skip_ground_pitch:;
++#endif
+ 	}
+ 	else
+ 	{
+@@ -3297,7 +3313,11 @@
  
  	// only render battle engine when we are not in first person view
  #ifndef EDITORBUILD2

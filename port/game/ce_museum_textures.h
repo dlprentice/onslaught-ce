@@ -61,6 +61,7 @@ constexpr unsigned kPortalStripHeight    = 64u;
 constexpr unsigned kDirectoryAtlasWidth  = 512u;
 constexpr unsigned kDirectoryAtlasHeight = 512u;
 constexpr unsigned kDirectoryMapHeight   = 384u;
+constexpr unsigned kAtlasMipLevels       = 4u;
 
 // Upload all embedded architectural textures and bake signage/directory atlases into managed D3D9 textures.
 // Missing or failed uploads leave their slot null so callers keep plain-colour fallback.
@@ -77,9 +78,11 @@ CeMuseumAtlasUv PortalSignUv(CeMuseumPortalSignId id);
 CeMuseumAtlasUv DirectoryMapUv();
 CeMuseumAtlasUv DirectoryButtonUv(CeMuseumDirButtonId id);
 
-// Pure CPU rasterization (0xAARRGGBB top-down row-major) shared by runtime upload and host tests.
+// Pure CPU rasterization & per-cell mipmap downsampling (0xAARRGGBB top-down row-major) shared by runtime and host tests.
 void BakePortalSignAtlasRgba(unsigned int *outArgb);
 void BakeDirectoryAtlasRgba(unsigned int *outArgb);
+void DownsamplePortalSignAtlasLevel(const unsigned int *baseArgb, unsigned level, unsigned int *outArgb);
+void DownsampleDirectoryAtlasLevel(const unsigned int *baseArgb, unsigned level, unsigned int *outArgb);
 } // namespace CeMuseumTextures
 
 #endif

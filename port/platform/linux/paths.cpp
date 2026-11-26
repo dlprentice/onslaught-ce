@@ -341,6 +341,8 @@ static int Components(const char *game_path, char parts[][256], int max)
 				}
 				else if (count < max)
 					snprintf(parts[count++], 256, "%s", cur);
+				else
+					return -1;
 			}
 			len = 0;
 			if (*p == 0)
@@ -348,6 +350,8 @@ static int Components(const char *game_path, char parts[][256], int max)
 		}
 		else if (len < sizeof(cur) - 1)
 			cur[len++] = *p;
+		else
+			return -1;
 	}
 	return count;
 }
@@ -394,6 +398,8 @@ int PortResolvePath(const char *game_path, PortPathMode mode, char *out, size_t 
 	}
 	char parts[64][256];
 	int count = Components(game_path, parts, 64);
+	if (count < 0)
+		return -1;
 	char user[4096], game[4096];
 	int user_missing, game_missing;
 	// Only the relative career namespace needs the stricter rule; absolute POSIX reads above remain exact host paths.
@@ -429,9 +435,20 @@ int PortResolvePath(const char *game_path, PortPathMode mode, char *out, size_t 
 			snprintf(out, n, "%s", user);
 			return -1;
 		}
-		// Rebuild the user path with the game folder's spelling for the existing parents.
-		const char *rel = game + strlen(sGameDir);
-		snprintf(user, sizeof(user), "%s%s", sUserDir, rel);
+		// Preserve the matched sUserDir ancestor casing; take only the missing suffix from the game folder's spelling.
+		const int matched = count - user_missing;
+		const char *uend = user + strlen(sUserDir);
+		const char *grel = game + strlen(sGameDir);
+		for (int i = 0; i < matched; i++)
+		{
+			const char *us = *uend == '/' ? strchr(uend + 1, '/') : NULL;
+			const char *gs = *grel == '/' ? strchr(grel + 1, '/') : NULL;
+			uend = us ? us : uend + strlen(uend);
+			grel = gs ? gs : grel + strlen(grel);
+		}
+		size_t prefixLen = (size_t)(uend - user);
+		int w = snprintf(out, n, "%.*s%s", (int)prefixLen, user, grel);
+		return (w > 0 && (size_t)w < n) ? 0 : -1;
 	}
 	snprintf(out, n, "%s", user);
 	return 0;

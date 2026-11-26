@@ -52,6 +52,7 @@ PortHandle *PortCheck(HANDLE h, int kind)
     return p && p->kind == kind ? p : NULL;
 }
 void PortSetLastError(DWORD) {}
+extern "C" unsigned long long SDL_GetTicks(void) { return 0; }
 
 int main(int argc, char **argv)
 {
