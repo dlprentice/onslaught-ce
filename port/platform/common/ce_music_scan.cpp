@@ -13,6 +13,7 @@
 #include <vector>
 #ifdef _WIN32
 #include <windows.h>
+#include "ce_win_reparse.h"
 #else
 #include <dirent.h>
 #include <fcntl.h>
@@ -120,7 +121,8 @@ extern "C" int CE_MusicScan(const char *dir, int (*add)(const char *path, void *
 	do
 	{
 		if (++looked > kScanEntries) { if (truncated) *truncated = 1; break; }
-		if (find.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) continue;
+		if ((find.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ||
+			ce_win_find_is_link(find.dwFileAttributes, find.dwReserved0)) continue;
 		if (OggName(find.cFileName)) names.push_back(find.cFileName);
 	} while (FindNextFileA(h, &find));
 	FindClose(h);

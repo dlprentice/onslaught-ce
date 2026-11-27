@@ -58,11 +58,22 @@ struct CePlayerEntityObs
 	uint8_t			isBattleEngine;
 	uint8_t			isBaseBuilding;
 	uint8_t			isRepairPad;
-	uint8_t			reserved;
+	uint8_t			isNeutral;			// 1 for non-hostile neutral/independent units & independent Repair Pads
 	float			pos[3];
 	float			vel[3];
 	float			lifeRatio;
 };
+
+// Pure allegiance classification helpers (neutral units & independent Repair Pads are never hostiles).
+inline bool CePlayerObsEntityIsHostile(const CePlayerEntityObs &e)
+{
+	return !e.isFriendly && !e.isNeutral && !e.isRepairPad;
+}
+
+inline bool CePlayerObsEntityIsUsableRepairPad(const CePlayerEntityObs &e)
+{
+	return e.isRepairPad && (e.isFriendly || e.isNeutral);
+}
 
 // Pointer-free squad observation (zeroed whenever CE_TOGGLE_COMMANDER is OFF).
 struct CePlayerSquadObs
@@ -104,6 +115,8 @@ struct CePlayerObs
 	int32_t				allegiance;
 	uint32_t			activeToggles;		// CeMatchToggleMask
 	uint32_t			dryMask;			// CePlayerDryBits
+	uint8_t				teamHasHuman;		// 1 when a human-controlled slot shares this slot's allegiance
+	uint8_t				reservedObs[3];
 	float				lifeRatio;
 	float				energyRatio;
 	float				pos[3];

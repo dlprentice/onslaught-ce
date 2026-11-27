@@ -12,6 +12,7 @@
 #endif
 #include <windows.h>
 #include <aclapi.h>
+#include "../platform/common/ce_win_reparse.h"
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -94,16 +95,28 @@ inline bool HandleVolumeSupportsAcls(HANDLE handle) noexcept {
 
 inline bool IsCloudPlaceholderReparseTag(DWORD tag) noexcept {
     // Microsoft OneDrive / Cloud Filter placeholder tags (IO_REPARSE_TAG_CLOUD..CLOUD_F: 0x9000001A..0x9000F01A).
-    return (tag & 0xFFFF0FFFUL) == 0x9000001AUL;
+    return ce_win_reparse_is_cloud_only(tag) != 0;
 }
 
 inline bool IsAllowedReparseHandle(HANDLE handle, DWORD attrs) noexcept {
     if ((attrs & FILE_ATTRIBUTE_DEVICE) != 0) return false;
-    if ((attrs & FILE_ATTRIBUTE_REPARSE_POINT) == 0) return true;
-    FILE_ATTRIBUTE_TAG_INFO tagInfo{};
-    if (!GetFileInformationByHandleEx(handle, FileAttributeTagInfo, &tagInfo, sizeof(tagInfo)))
-        return false;
-    return IsCloudPlaceholderReparseTag(tagInfo.ReparseTag);
+    return !ce_win_handle_is_link(handle, attrs);
+}
+
+inline std::wstring ExtendedPath(const std::wstring& path) {
+    if (path.size() >= 4 && path[0] == L'\\' && path[1] == L'\\' &&
+        (path[2] == L'?' || path[2] == L'.') && path[3] == L'\\') {
+        return path;
+    }
+    if (path.size() >= 3 &&
+        ((path[0] >= L'A' && path[0] <= L'Z') || (path[0] >= L'a' && path[0] <= L'z')) &&
+        path[1] == L':' && path[2] == L'\\') {
+        return L"\\\\?\\" + path;
+    }
+    if (path.size() >= 4 && path[0] == L'\\' && path[1] == L'\\' && path[2] != L'\\') {
+        return L"\\\\?\\UNC\\" + path.substr(2);
+    }
+    return path;
 }
 
 inline uint64_t SidHash64(const std::vector<BYTE>& sid) noexcept {
@@ -440,8 +453,8 @@ inline bool PublishPrivateFileNoReplace(const std::wstring& dirWidePath,
     if (!ValidLeafName(tempLeaf) || !ValidLeafName(finalLeaf) || (!data && size > 0)) return false;
     OwnerOnlySecurity sec;
     if (!sec.Init(false)) return false;
-    const std::wstring tempPath = dirWidePath + L"\\" + tempLeaf;
-    const std::wstring finalPath = dirWidePath + L"\\" + finalLeaf;
+    const std::wstring tempPath = ExtendedPath(dirWidePath + L"\\" + tempLeaf);
+    const std::wstring finalPath = ExtendedPath(dirWidePath + L"\\" + finalLeaf);
     ScopedHandle file(CreateFileW(tempPath.c_str(), GENERIC_WRITE, 0, &sec.sa, CREATE_NEW,
                                   FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
     if (!file.Good()) return false;
@@ -461,7 +474,17 @@ inline bool PublishPrivateFileNoReplace(const std::wstring& dirWidePath,
     file.Reset();
     if (ok) {
         // Omit MOVEFILE_REPLACE_EXISTING to fail closed if the target already exists (matching POSIX RENAME_NOREPLACE / linkat).
-        ok = MoveFileExW(tempPath.c_str(), finalPath.c_str(), MOVEFILE_WRITE_THROUGH) != 0;
+        // Retry briefly on transient Defender/AV or OneDrive sharing locks.
+        ok = false;
+        for (int attempt = 0; attempt < 8; ++attempt) {
+            if (MoveFileExW(tempPath.c_str(), finalPath.c_str(), MOVEFILE_WRITE_THROUGH) != 0) {
+                ok = true;
+                break;
+            }
+            const DWORD err = GetLastError();
+            if (err != ERROR_ACCESS_DENIED && err != ERROR_SHARING_VIOLATION) break;
+            if (attempt + 1 < 8) Sleep(25);
+        }
     }
     if (!ok) DeleteFileW(tempPath.c_str());
     return ok;

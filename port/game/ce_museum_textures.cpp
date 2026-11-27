@@ -1173,30 +1173,28 @@ void LoadAll(IDirect3DDevice9 *device) {
 
 IDirect3DTexture9 *Get(CeMuseumTexId id) {
     const unsigned idx = static_cast<unsigned>(id);
-    if (idx >= static_cast<unsigned>(CE_MUSEUM_TEX_COUNT) || !gLoaded) return NULL;
+    if (idx >= static_cast<unsigned>(CE_MUSEUM_TEX_COUNT)) return NULL;
     IDirect3DDevice9 *cur = LT.GetDevice();
     if (!cur) return NULL;
     const uint64_t gen = CurrentDeviceGen();
-    if (gDevice != cur || gDeviceGen != gen) LoadAll(cur);
-    return (gDevice == cur && gDeviceGen == gen) ? gTextures[idx] : NULL;
+    if (!gLoaded || gDevice != cur || gDeviceGen != gen) LoadAll(cur);
+    return (gLoaded && gDevice == cur && gDeviceGen == gen) ? gTextures[idx] : NULL;
 }
 
 IDirect3DTexture9 *GetPortalSignAtlas() {
-    if (!gLoaded) return NULL;
     IDirect3DDevice9 *cur = LT.GetDevice();
     if (!cur) return NULL;
     const uint64_t gen = CurrentDeviceGen();
-    if (gDevice != cur || gDeviceGen != gen) LoadAll(cur);
-    return (gDevice == cur && gDeviceGen == gen) ? gPortalSignAtlas : NULL;
+    if (!gLoaded || gDevice != cur || gDeviceGen != gen) LoadAll(cur);
+    return (gLoaded && gDevice == cur && gDeviceGen == gen) ? gPortalSignAtlas : NULL;
 }
 
 IDirect3DTexture9 *GetDirectoryAtlas() {
-    if (!gLoaded) return NULL;
     IDirect3DDevice9 *cur = LT.GetDevice();
     if (!cur) return NULL;
     const uint64_t gen = CurrentDeviceGen();
-    if (gDevice != cur || gDeviceGen != gen) LoadAll(cur);
-    return (gDevice == cur && gDeviceGen == gen) ? gDirectoryAtlas : NULL;
+    if (!gLoaded || gDevice != cur || gDeviceGen != gen) LoadAll(cur);
+    return (gLoaded && gDevice == cur && gDeviceGen == gen) ? gDirectoryAtlas : NULL;
 }
 
 #else // CE_MUSEUM_TEXTURES_HOST_TEST

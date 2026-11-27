@@ -68,7 +68,7 @@ def graph_problems(rows, mirror):
 
 
 def generated_rule_problems(text, network, allowed_host=None, native_signaling=False):
-    edges = dict(re.findall(r"^build \S+/port/game/([^/ ]+\.cpp)\.o: (\w+) ", text, re.M))
+    edges = {Path(rel).name: rule for rel, rule in re.findall(r"^build \S+/port/game/(\S+\.cpp)\.o: (\w+) ", text, re.M)}
     problems = []
     host_set = build.HOST_BUFFER_GAME_MODULES if allowed_host is None else allowed_host
     required_host = {
@@ -135,10 +135,11 @@ class BuildGraphTests(Fixture):
         self.assertTrue(set(HOST_UNITS).issubset(build.HOST_BUFFER_GAME_MODULES))
         self.assertTrue(set(GAME_UNITS).isdisjoint(build.HOST_BUFFER_GAME_MODULES))
         for name in sorted(build.HOST_BUFFER_GAME_MODULES):
-            path = build.PORT / "game" / name
-            self.assertTrue(path.is_file(), f"HOST_BUFFER_GAME_MODULES names missing unit: {name}")
-            self.assertNotIn("MemoryManager.h", path.read_text(errors="replace"),
-                             f"host-buffer unit {name} must not include MemoryManager.h")
+            matches = list((build.PORT / "game").rglob(name))
+            self.assertEqual(len(matches), 1, f"HOST_BUFFER_GAME_MODULES names missing unit: {name}")
+            path = matches[0]
+            self.assertIsNone(re.search(r'^\s*#\s*include\s+[<"]MemoryManager\.h[>"]', path.read_text(errors="replace"), re.M),
+                              f"host-buffer unit {name} must not include MemoryManager.h")
 
     def test_helpers_are_host_modules_and_adapter_keeps_the_game_rule_in_every_flavour(self):
         for network, native_signaling in ((True, False), (True, True), (False, False)):
@@ -177,7 +178,8 @@ class BuildGraphTests(Fixture):
         self.assertEqual({"_Znwj": "bea_game_new", "_Znaj": "bea_game_new_array", "_ZdlPv": "bea_game_delete",
                           "_ZdaPv": "bea_game_delete_array"}, build.GAME_ALLOCATOR)
         defining = [p.relative_to(build.ROOT).as_posix() for p in (build.ROOT / "port").rglob("*")
-                    if p.suffix in (".c", ".cpp", ".h", ".hpp", ".inl") and "bea_game_" in p.read_text(errors="replace")
+                    if p.suffix in (".c", ".cpp", ".h", ".hpp", ".inl")
+                    and any("bea_game_" in line.split("//", 1)[0] for line in p.read_text(errors="replace").splitlines())
                     and "tools" not in p.relative_to(build.ROOT / "port").parts[:1]]
         self.assertEqual([], defining)
 

@@ -942,7 +942,8 @@ void RuntimeDraw(float floorZ, bool ownStateBlock) {
     if (!gData || !gData->state.initialized || !ActiveInWing(gData->state, gData->lastWing)) return;
     IDirect3DDevice9 *dev = LT.GetDevice();
     if (!dev) return;
-    if (gData->device && (gData->device != dev || gData->deviceGen != CurrentPedestalDeviceGen())) {
+    if (!gData->hasLoaded ||
+        (gData->device && (gData->device != dev || gData->deviceGen != CurrentPedestalDeviceGen()))) {
         ReleaseGpuTextures(gData);
         gData->hasLoaded = false;
         LoadCurrentExhibit(gData);
@@ -1012,8 +1013,10 @@ void RuntimeDraw(float floorZ, bool ownStateBlock) {
 } // namespace CeArchivePedestal
 
 extern "C" void PortCeArchivePedestalDeleteDeviceObjects(void) {
-    if (CeArchivePedestal::gData)
+    if (CeArchivePedestal::gData) {
         CeArchivePedestal::ReleaseGpuTextures(CeArchivePedestal::gData);
+        CeArchivePedestal::gData->hasLoaded = false;
+    }
 }
 #else
 #include "ce_archive_pedestal.h"

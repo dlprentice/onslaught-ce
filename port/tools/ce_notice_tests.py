@@ -33,7 +33,8 @@ ROOT = Path(__file__).resolve().parents[2]
 PATCH_NAME = "0137-ce-save-failed-notice.patch"
 # Patches whose hunks are written against this patch's (0138's PauseMenu.cpp declarations follow its own; 0201's chat overlay is drawn between photo mode's note and this notice): left out with it.
 BUILT_ON_NOTICE = ("0138-ce-pause-photo-mode.patch", "0201-network-text-chat-overlay.patch",
-                 '0207-ce-museum-visit-lifecycle.patch')
+                 '0207-ce-museum-visit-lifecycle.patch', '0381-ce-perf-surf-museum-fixes.patch',
+                 '0397-ce-audio-pause-museum-shader-fixes.patch', '0398-ce-bugclip-frontend-overlay.patch')
 NOTICE = ROOT / "port/game/ce_notice.cpp"
 OVERLAY_H = ROOT / "port/game/ce_overlay_box.h"
 NOTICE_H = ROOT / "port/game/ce_notice.h"
@@ -258,7 +259,7 @@ class NoticeTests(unittest.TestCase):
             ("failure-not-recorded", "void PortCeOptionsWriteFailed() { optionsFailed = true; }", "void PortCeOptionsWriteFailed() { }", "ordinary"),
             ("expires-early", "const unsigned long long kShownMs = 6000;", "const unsigned long long kShownMs = 5000;", "ordinary"),
             ("clock-not-reset", "\tnoteFrom = CE_ScreenshotTicks();\n\tnoteUntil = noteFrom + kShownMs;", "\tif (!noteUntil) { noteFrom = CE_ScreenshotTicks(); noteUntil = noteFrom + kShownMs; }", "ordinary"),
-            ("note-in-saved-frame", "|| PortCePhotoSavedNext()) return;", ") return;", "ordinary"),
+            ("note-in-saved-frame", "if (!note[0] || PortCePhotoSavedNext()) return;", "if (!note[0]) return;", "ordinary"),
             ("no-hyphens", "text[n++] = font->CanDisplay(*c) ? *c : L'-';", "text[n++] = *c;", "ordinary"),
             ("copy-unterminated", "\tout[i] = 0;\n\treturn true;", "\treturn true;", "ordinary"),
             ("copy-overruns", "for (; text[i] && i < n - 1; ++i)", "for (; text[i] && i < n; ++i)", "ordinary"),

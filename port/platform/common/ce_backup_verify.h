@@ -35,7 +35,7 @@ bool read(Parent parent, Suggestion suggest, Current current, CePreviewSet &out,
           std::string &error) {
   error = "No readable backup manifest in this folder.";
   File manifest;
-  if (!manifest.openRead(parent, "onslaught-backup.json", 65536))
+  if (!manifest.openRead(parent, "onslaught-backup.json", 524288))
     return false;
   error = "This backup manifest is unsupported or incomplete.";
   ce_preview::Manifest m;

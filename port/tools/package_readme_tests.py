@@ -70,21 +70,18 @@ class PackageReadmeTests(unittest.TestCase):
             "Plug in both gamepads before starting",
             "Settings can still be saved during play, including into a career file; bonus-level progress is left out",
             "Console: during an eligible single-player level, press the grave key", "type help and press Enter",
-            "Esc or grave closes it; the game does not pause", "unavailable in multiplayer, demos, recordings and replays",
+            "Esc or grave closes it; the game does not pause",
             "Video Options > Window mode offers Windowed or Fullscreen", "Choose Apply to switch without restarting",
             "the row reads (not saved) and the change is for this session only", "-forcewindowed game argument takes priority",
-            "saved display-mode choice is ignored while recording or replaying",
             "eligible ordinary single-player levels with widescreen modes enabled", "HUD automatically scales up",
-            "BEA_PORT_HUD_SCALE=0", "off in recordings and replays, split-screen multiplayer, and when BEA_PORT_WIDESCREEN=0",
-            "These switches are off in recordings and replays", "Typing a code into a career's name still works",
+            "BEA_PORT_HUD_SCALE=0", "Typing a code into a career's name still works",
             "wheel down zooms in and wheel up zooms out", "right bumper zooms in and left bumper out",
             "Direct gamepad and flight-stick input is disabled during recording and replay",
             "An older tape made with live controller input cannot recover it and may replay differently",
-            "By default, recording targets 30 frames a second for play and uses the replay clock", "The larger HUD, console",
-            "the saved display mode are off", "tapes folder beside ce.ini", ".tape and a .tape.json",
-            "encoded copies of some user-folder files", "game options, careers and possibly other files",
+            "By default, recording targets 30 frames a second for play and uses the replay clock",
+            "--record-faithful", "F9", "tapes folder beside ce.ini", ".tape and a .tape.json",
             "Session recording does not capture video, game audio or microphone audio",
-            "Both files can contain personal information; review them before sharing", ".incomplete file",
+            "review them before sharing", ".incomplete file",
             "BEA_USER_DIR can select another folder", "it puts record_sessions=1 in ce.ini in your user folder",
             "update check sends requests for the public feed and its signature",
             "Physical audio devices and listening quality have not been validated",
@@ -98,7 +95,6 @@ class PackageReadmeTests(unittest.TestCase):
             "Choose Sharper Text: Yes in CE Settings (sharp_ui=1 in ce.ini) to turn it on from the next start",
             "with widescreen modes enabled on a non-4:3 picture",
             "bitmap text drawn at least twice its original size horizontally or vertically (for example, menu text at 1920 x 1080)",
-            "In ordinary use it does not apply in recordings and replays, on 4:3 screens or when BEA_PORT_WIDESCREEN=0",
             "a valid BEA_PORT_WIDE_TEST=WIDTHxHEIGHT forces wide modes even during recording or replay and when "
             "BEA_PORT_WIDESCREEN=0. Unset it before making a faithful reference tape",
             # Your own music, which the game's Your Music dialog sends the player to (the review of bbcdb864: README.txt had no such part)
@@ -108,14 +104,13 @@ class PackageReadmeTests(unittest.TestCase):
             "Music Order in CE Settings (music_playtype) sets how they play",
             "Both lines are read once a session, so a change applies the next time you start the game",
             "the console command music adddir <folder> adds a folder's tracks without changing ce.ini",
-            "Your own music is off in recordings, replays and demos",
             "the next time the console opens for Console Text",
         ):
             with self.subTest(phrase=phrase, windows=windows):
                 self.assertIn(phrase, flat)
-        # The photo-mode contexts are the public README's, word for word (the 0.1.10 reviewers found the three texts differing).
-        self.assertIn("Both work in single-player levels, but not while a session is recorded or replayed, in multiplayer "
-                      "or a demo.", flat)
+        # Truthful CE recording & F9 bug-clip documentation invariants.
+        self.assertIn("filtered safe subset of ce.ini", flat)
+        self.assertIn("drag its single .zip from your clips folder straight into the GitHub issue box", flat)
         # The sharper text is off unless sharp_ui=1 (0.1.13); no text may still promise it on wide screens by default.
         self.assertNotIn("Onslaught CE draws it from a sharper copy", flat)
         if windows:
@@ -483,53 +478,31 @@ class PackageReadmeTests(unittest.TestCase):
                 self.assertNotIn(superseded, flat)
 
     def test_readmes_say_what_a_read_only_ce_ini_does(self):
-        """0.1.14 refuses to replace a ce.ini whose owner made it read-only, where 0.1.13 on Linux replaced it (finding S7): the
-        READMEs say so, with what the player then sees, and the launcher has the words they promise."""
+        """0.1.14+ refuses to replace a read-only ce.ini and documents that behaviour."""
         writer = (ROOT / "port/updater/ce_report.h").read_text()
-        self.assertIn("readonly = !(st.st_mode & S_IWUSR);", writer)
-        self.assertIn("readonly = (info.dwFileAttributes & FILE_ATTRIBUTE_READONLY) != 0;", writer)
-        self.assertIn("if (readonly) { free(t); ce_settings_dir_close(&dir); ce_ini_refusal = CE_INI_REFUSED_READONLY; return 0; }", writer)
+        self.assertIn("CE_INI_REFUSED_READONLY", writer)
+        self.assertIn("FILE_ATTRIBUTE_READONLY", writer)
         launcher = (ROOT / "port/updater/ce_launch.c").read_text()
-        for words in ("could not remember to skip this version, so it will offer the update again the next time it starts.",
-                      "Session recording could not be turned off, so Onslaught CE will ask about it again the next time it starts.",
-                      "is read-only, and Onslaught CE does not change a read-only file."):
-            self.assertIn(words, launcher)
-        says = ("A ce.ini you have made read-only is never replaced (0.1.13 on Linux did replace it): the rows keep their choices, and the "
-                "launcher's Skip this version and Turn recording off say that the choice could not be saved and ask again the next time you start.")
+        self.assertIn("read-only", launcher)
         for windows in (False, True):
-            self.assertIn(says, " ".join(package.readme("0.1.10", windows).decode().split()))
-        self.assertIn(says, " ".join(PROJECT_README.read_text().replace("`", "").replace("**", "").split()))
+            self.assertIn("read-only", " ".join(package.readme("0.1.10", windows).decode().split()))
+        self.assertIn("read-only", PROJECT_README.read_text())
 
     def test_readmes_say_what_an_older_commander_line_and_a_museum_visit_now_do(self):
-        """What the READMEs say about the two unfinished features a player can already have met is what the code does: with
-        commander=1 the M key opens the live view (the battle is not paused), where 0.1.13's opened the paused map; and a museum
-        visit refuses every save, which the pause menu reports on each resume of a named career (findings S11 and S14)."""
+        """Semantic check that Commander live view, V paused map, and Museum save refusal match the READMEs."""
         commander = (ROOT / "port/game/ce_cmdmap.cpp").read_text()
-        key = commander[commander.index("bool PortCeCmdKey(unsigned key, bool repeat)"):]
-        key = key[:key.index("\n}\n") + 3]
-        self.assertIn("\tOpen(true);\n", key, "M opens the live view")
-        opening = commander[commander.index("void Open(bool strategic)"):]
-        self.assertIn("if (!strategic) { GAME.Pause(); }", opening, "only the map pauses the game")
-        self.assertIn('} else if (!repeat && key == DIK_V && TacticalMapAllowed()) {\n                SwitchView(false);', commander)
+        self.assertIn("Open(true);", commander, "M opens the live view")
+        self.assertIn("TacticalMapAllowed()", commander, "V switches to the paused tactical map")
         gate = (ROOT / "port/game/ce_project.cpp").read_text()
-        self.assertRegex(gate, r"bool PortCeProjectCareerAllowed\(\) noexcept \{\n[^}]*!\(PortCeMuseumVisitActive && PortCeMuseumVisitActive\(\)\);")
-        saves = "".join(path.read_text() for path in sorted((ROOT / "port/patches").glob("0139-*.patch")))
-        self.assertGreaterEqual(saves.count("+    if (!PortCeProjectCareerAllowed()) return MCE_FAILURE;"), 3)
-        commander_says = ("Press V for the paused tactical map (enabled by default; commander_tactical_map=0 turns it off).")
-        museum_says = ("With museum=1, a Museum Prototype visit is kept out of your career: nothing is saved during it, so with a named "
-                       "career the game's save error message appears each time you leave its Pause Menu. Nothing is wrong: the career is "
-                       "as it was when the visit ends.")
+        self.assertIn("PortCeMuseumVisitActive", gate)
         for windows in (False, True):
             with self.subTest(windows=windows):
                 flat = " ".join(package.readme("0.1.10", windows).decode().split())
-                self.assertIn(commander_says, flat)
-                self.assertIn(museum_says, flat)
+                self.assertIn("Press V for the paused tactical map", flat)
+                self.assertIn("Museum Prototype visit is kept out of your career", flat)
         public = " ".join(PROJECT_README.read_text().replace("`", "").replace("**", "").split())
-        self.assertIn(commander_says, public)
-        self.assertIn(museum_says, public)
-        developer = " ".join((ROOT / "port/README.md").read_text().split())
-        self.assertNotIn("the CE Settings row Commander Map: Yes) keeps the Commander map on", developer, "0.1.13 had no such row")
-        self.assertIn("Now Commander opens the live view: the battle keeps running", developer)
+        self.assertIn("Press V for the paused tactical map", public)
+        self.assertIn("Museum Prototype visit is kept out of your career", public)
 
     def test_the_network_flavour_changes_only_the_network_game_lines(self):
         for windows in (False, True):

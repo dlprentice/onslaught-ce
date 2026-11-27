@@ -13,6 +13,7 @@
 #include "ce_debrief.h"
 
 #include <stdlib.h>
+extern "C" int PortCeRecordFeaturesAllowed(void) __attribute__((weak));
 
 #if !defined(__clang__) && !defined(__GNUC__)
 #error The CE debrief panel requires weak symbol support for the network boot boundary
@@ -38,7 +39,7 @@ bool PortCeDebriefStatsOn(bool singlePlayer)
 {
 	if (!PortCeLayer() || !singlePlayer) return false;
 	const bool proof = Present("BEA_PORT_DEBRIEF_PROOF") && Present("BEA_PORT_CE_LAYER");
-	if (!proof)
+	if (!proof && !(PortCeRecordFeaturesAllowed && PortCeRecordFeaturesAllowed()))
 	{
 		if (PortRecording()) return false;
 		for (const char *name : kFenced) if (Present(name)) return false;

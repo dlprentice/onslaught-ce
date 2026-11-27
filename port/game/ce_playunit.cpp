@@ -116,6 +116,7 @@ extern "C" bool PortCeSanctuaryFire(bool release, float value) __attribute__((we
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+extern "C" int PortCeRecordFeaturesAllowed(void) __attribute__((weak));
 
 #ifdef CE_PLAYUNIT_TEST
 // The probe is the test build's own file, written where the caller asks: the C library's fopen, not the game's (port.h sends game files' fopen through the path layer, which
@@ -235,6 +236,9 @@ int gPreviousSquadNumber = -1;
 CeEntityHandle gPreviousSquadHandle = kCeEntityHandleInvalid;
 // The sole delivered vehicle must keep its live order owner while the pilot drives.
 bool gDeliveryAssigned;
+// Eligible non-infantry units (aircraft, naval, artillery, turrets) in a CRelaxedSquad keep
+// their relaxed-squad assignment while possessed instead of being detached or ejected on Tick 1.
+bool gRelaxedAssigned;
 bool gOnFoot;
 bool gFootFirstPerson;
 const CCamera *gFootRenderedView;
@@ -498,6 +502,7 @@ void ReconcileController()
 // ---- the world ----------------------------------------------------------------------------------------------------------------------
 
 bool IsNormal(CSquad *squad) { return !strcmp(squad->_GetClassName(), "CNormalSquad"); }
+bool IsRelaxed(CSquad *squad) { return squad && !strcmp(squad->_GetClassName(), "CRelaxedSquad"); }
 
 bool IsOrdinaryFoot(CUnit *unit, CSquad *squad)
 {
@@ -505,10 +510,10 @@ bool IsOrdinaryFoot(CUnit *unit, CSquad *squad)
 	    && (!squad || (!strcmp(squad->_GetClassName(), "CRelaxedSquad") && !squad->IsShuttingDown() && !squad->IsDying()));
 }
 
-// Keep a lone soldier independent, or keep the original relaxed-squad assignment.
+// Keep a lone soldier independent, or keep the original relaxed-squad / delivery assignment.
 bool FootKeepsAssignment(CUnit *unit)
 {
-	if ((!gOnFoot && !gDeliveryAssigned) || !unit || unit->GetSquad() != gPreviousSquad || gLevel != GAME.GetCurrentLevel()) return false;
+	if ((!gOnFoot && !gDeliveryAssigned && !gRelaxedAssigned) || !unit || unit->GetSquad() != gPreviousSquad || gLevel != GAME.GetCurrentLevel()) return false;
 	if (!gPreviousSquad) return true;
 	ListIterator<CSquad> squads(&WORLD.GetSquadNB());
 	for (CSquad *s = squads.First(); s; s = squads.Next())
@@ -1346,7 +1351,7 @@ void WalkFoot(CUnit *unit)
 bool AnotherUnitOwner(CUnit *unit)
 {
 	return unit->GetAllegiance() != gPossessedAllegiance || unit->GetAIState() != AI_OFF ||
-		((gOnFoot || gDeliveryAssigned) ? !FootKeepsAssignment(unit) : unit->GetSquad() != NULL);
+		((gOnFoot || gDeliveryAssigned || gRelaxedAssigned) ? !FootKeepsAssignment(unit) : unit->GetSquad() != NULL);
 }
 
 class CeDriveGuide : public CGuide
@@ -2082,6 +2087,21 @@ void ReturnUnitControl()
 		gPreviousSquadNumber = 0;
 		return;
 	}
+	if (gRelaxedAssigned)
+	{
+		if (unit && !unit->IsDying() && unit->GetLife() > 0.f &&
+		    unit->GetAllegiance() == gPossessedAllegiance && unit->GetAIState() == AI_OFF &&
+		    (FootKeepsAssignment(unit) || !unit->GetSquad()))
+		{
+			if (gDrivenClass != CE_PLAYUNIT_CLASS_TURRET && gDrivenClass != CE_PLAYUNIT_CLASS_AIRCRAFT)
+				unit->GoToPoint(unit->GetPos(), FALSE);
+			unit->SetAIState(gPrevAI);
+		}
+		gPreviousSquad = NULL;
+		gPreviousSquadNumber = -1;
+		gRelaxedAssigned = false;
+		return;
+	}
 	CNormalSquad *squad = PreviousSquad();
 	CePlayUnitReturnFacts facts = {};
 	facts.sameLevel = sameLevel;
@@ -2168,7 +2188,7 @@ void Release(const char *why, const char *notice = NULL, const char *hint = NULL
 	Note("camera lifetime: made=%u destroyed=%u restored=%u pending=%d engine_up=%d", gCameraMade, gCameraDestroyed,
 		gCameraRestored, gCamera != NULL, engine && engine->GetIsPoweredUp());
 #endif
-	gOnFoot = false; gDeliveryAssigned = false;
+	gOnFoot = false; gDeliveryAssigned = false; gRelaxedAssigned = false;
 	gDrivenClass = -1;
 	gIsDropship = false;
 	gIsBomber = false;
@@ -2536,6 +2556,7 @@ bool Take(CPlayer *player, CBattleEngine *engine, CCONTROLLER *controller, CUnit
 	CeCmdUnitOrderRelease(u);
 	gOnFoot = kind == CE_PLAYUNIT_CLASS_INFANTRY;
 	gDeliveryAssigned = !gOnFoot && CeFactoryIsVehicle(u) && CeCmdDeliveredSquad() >= 0;
+	gRelaxedAssigned = !gOnFoot && !gDeliveryAssigned && IsRelaxed(u->GetSquad());
 	gFootFirstPerson = false;
 	gFootRenderedView = NULL;
 	gLaw = &CePlayUnitClasses()[kind].law;
@@ -2606,7 +2627,7 @@ bool Take(CPlayer *player, CBattleEngine *engine, CCONTROLLER *controller, CUnit
 #endif
 	{
 		u->SetAIState(AI_OFF);
-		if (CSquad *squad = gDeliveryAssigned ? NULL : u->GetSquad())
+		if (CSquad *squad = (gDeliveryAssigned || gRelaxedAssigned) ? NULL : u->GetSquad())
 			if (IsNormal(squad)) ((CNormalSquad *)squad)->Unknown4e6f70(u);
 		if (!gOnFoot && kind != CE_PLAYUNIT_CLASS_TURRET && kind != CE_PLAYUNIT_CLASS_AIRCRAFT) u->GoToPoint(u->GetPos(), FALSE);
 		InstallDriveGuide(u);
@@ -2727,9 +2748,10 @@ CePlayUnitGate FillGate(bool optionOn)
 	CePlayUnitGate g;
 	memset(&g, 0, sizeof(g));
 	g.optionOn = optionOn;
+	const bool ceRecord = (PortCeRecordFeaturesAllowed && PortCeRecordFeaturesAllowed());
 	g.ceLayer = PortCeLayer();
-	g.recording = PortRecording();
-	g.fencedEnv = FencedEnv();
+	g.recording = PortRecording() && !ceRecord;
+	g.fencedEnv = FencedEnv() && !ceRecord;
 	g.networkBoot = Present("BEA_NET_HOST") || Present("BEA_NET_JOIN") || (CE_BootRequested && CE_BootRequested()) || NetworkOrLockstepActive();
 	g.demo = PLAYABLE_DEMO || CLIPARAMS.mAutoConfigTest || CLIPARAMS.mRecordDemo || CLIPARAMS.mPlaybackDemo || CLIPARAMS.mStressTest || CLIPARAMS.mAttractMode;
 	g.multiplayer = GAME.IsMultiplayer() != FALSE && !PortCeOneScreenMatch();
@@ -2788,7 +2810,7 @@ void Reset()
 	gSwitchWait = 0;
 	gBackPending = false;
 	gUnit = NULL;
-	gOnFoot = false; gDeliveryAssigned = false;
+	gOnFoot = false; gDeliveryAssigned = false; gRelaxedAssigned = false;
 	gDrivenClass = -1;
 	gIsDropship = false;
 	gIsBomber = false;
@@ -3835,7 +3857,7 @@ extern "C" int PortCePlayUnitIsDriven(const void *unit)
 
 extern "C" int PortCePlayUnitInvertSides(void)
 {
-	if (!PortCeLayer() || PortRecording() || FencedEnv()) return 0;
+	if (!PortCeLayer() || (!(PortCeRecordFeaturesAllowed && PortCeRecordFeaturesAllowed()) && (PortRecording() || FencedEnv()))) return 0;
 	if (Present("BEA_NET_HOST") || Present("BEA_NET_JOIN") || NetworkOrLockstepActive()) return 0;
 	const int level = GAME.GetCurrentLevel();
 	if (!WORLD.IsMultiplayer() || WORLD.GetType() != CWorld::kVersusMultiplayer || level < 850 || level > 899 || CLIPARAMS.mLevelNo != level) return 0;

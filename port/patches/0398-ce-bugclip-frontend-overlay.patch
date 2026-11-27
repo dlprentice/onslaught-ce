@@ -1,0 +1,32 @@
+--- a/FrontEnd.cpp
++++ b/FrontEnd.cpp
+@@ -31,6 +31,7 @@
+ extern "C" bool PortCeCarrierClashTakeReturn(void);
+ extern "C" bool PortCeLivingSandboxTakeReturn(void);
+ extern "C" bool PortCeFlagshipDuelTakeReturn(void);
++void			PortCeBugClipRender();		// Port (patch 0398): port/game/ce_notice.cpp
+ #endif
+ #include	"console.h"
+ #include	"PCController.h"
+@@ -1231,6 +1232,9 @@
+ 
+ 		// Render the message box
+ 		FEMESSBOX.Render();
++#ifdef CE_VERSION
++		PortCeBugClipRender();
++#endif
+ 	}
+ 
+ 	// maybe stick some memory output here.
+--- a/DXEngine.cpp
++++ b/DXEngine.cpp
+@@ -1515,6 +1515,9 @@
+ 		PortCeCmdRender();	// the commander map, over everything else the frame drew
+ #endif
+ 	if (!gMirrorPass) ce_hook_draw_overlay();	// CE hook point (port/game/ce_hooks.h): over the CE overlays
++#ifdef CE_VERSION
++	if (!gMirrorPass) { extern void PortCeBugClipRender(); PortCeBugClipRender(); }
++#endif
+ 	PLATFORM.EndScene();
+ 
+ 	mFirstFrame=FALSE;

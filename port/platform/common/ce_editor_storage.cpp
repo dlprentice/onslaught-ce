@@ -41,12 +41,14 @@ int Compare(const void *a, const void *b) {
     return strcmp(static_cast<const CeEditorFile *>(a)->name, static_cast<const CeEditorFile *>(b)->name);
 }
 #if defined(_WIN32)
+#include "ce_win_reparse.h"
 bool Full(CeSettingsDir *dir, const char *leaf, char *out, size_t capacity) {
     return size_t(snprintf(out, capacity, "%s\\%s", dir->path, leaf)) < capacity;
 }
 bool FileInfo(HANDLE handle, BY_HANDLE_FILE_INFORMATION *info) {
     return GetFileType(handle) == FILE_TYPE_DISK && GetFileInformationByHandle(handle, info) &&
-           !(info->dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT));
+           !(info->dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
+           !ce_win_handle_is_link(handle, info->dwFileAttributes);
 }
 bool Same(const BY_HANDLE_FILE_INFORMATION &a, const BY_HANDLE_FILE_INFORMATION &b) {
     return a.dwVolumeSerialNumber == b.dwVolumeSerialNumber && a.nFileIndexHigh == b.nFileIndexHigh &&
@@ -131,7 +133,8 @@ int PortCeEditorFiles(CeEditorFile *files, int capacity, char *error, size_t err
             break;
         }
         if (!Leaf(found.cFileName) ||
-            (found.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) ||
+            (found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ||
+            ce_win_find_is_link(found.dwFileAttributes, found.dwReserved0) ||
             found.nFileSizeHigh || !found.nFileSizeLow || found.nFileSizeLow > DocumentLimit)
             continue;
         if (count == capacity) {

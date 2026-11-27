@@ -8,6 +8,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if !defined(__has_include) || __has_include("ce_record_mode.h")
+#include "ce_record_mode.h"
+#endif
+#if !defined(__has_include) || __has_include("ce_win_reparse.h")
+#include "ce_win_reparse.h"
+#endif
 #include "portlog.h"
 #ifndef CE_NETWORK_OFF
 #include "../../network/compatibility.h"
@@ -23,14 +29,51 @@ bool PortCeLayer()
 			return (on = force[0] == '1');
 		const char *names[] = {"BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_PROBES", "BEA_PORT_RECORD"};
 		on = 1;
-		for (const char *n : names)
+		for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i)
 		{
-			const char *v = getenv(n);
+			const char *v = getenv(names[i]);
 			if (v && *v)
 				on = 0;
 		}
+#ifdef PORT_CE_RECORD_MODE_H
+		if (!on && ce_record_ce_allowed())
+			on = 1;
+#elif defined(CE_VERSION)
+		const char *recCe = getenv("BEA_PORT_RECORD_CE");
+		if (!on && recCe && recCe[0] == '1' && recCe[1] == '\0')
+		{
+			bool hasTapeOrRec = false;
+			for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i)
+			{
+				const char *v = getenv(names[i]);
+				if (v && *v && strlen(names[i]) > 9 &&
+				    (strcmp(names[i] + 9, "TAPE") == 0 || strcmp(names[i] + 9, "RECORD") == 0))
+					hasTapeOrRec = true;
+			}
+			const char *hard[] = {"BEA_PORT_PILOT", "BEA_PORT_AUTOPILOT",
+								  "BEA_NET_HOST", "BEA_NET_JOIN", "BEA_LOCKSTEP_HOST", "BEA_LOCKSTEP_JOIN"};
+			bool blocked = !hasTapeOrRec;
+			for (size_t i = 0; i < sizeof(hard) / sizeof(hard[0]); ++i)
+			{
+				const char *v = getenv(hard[i]);
+				if (v && *v)
+					blocked = true;
+			}
+			if (!blocked)
+				on = 1;
+		}
+#endif
 	}
 	return on == 1;
+}
+
+extern "C" int PortCeRecordFeaturesAllowed(void)
+{
+#ifdef PORT_CE_RECORD_MODE_H
+	return ce_record_ce_allowed();
+#else
+	return 0;
+#endif
 }
 
 // Developer chatter on the console (portlog.h): private builds always; public builds only with BEA_PORT_VERBOSE=1.
@@ -102,7 +145,7 @@ extern "C" int CE_MakeModsFolder(char *dir, size_t n)
 #ifdef _WIN32
 	const int made = CreateDirectoryA(dir, NULL) || GetLastError() == ERROR_ALREADY_EXISTS;
 	const DWORD attributes = made ? GetFileAttributesA(dir) : INVALID_FILE_ATTRIBUTES;
-	return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) && !(attributes & FILE_ATTRIBUTE_REPARSE_POINT);
+	return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) && !ce_win_path_is_link_a(dir, attributes);
 #else
 	struct stat st;
 	return (mkdir(dir, 0700) == 0 || errno == EEXIST) && lstat(dir, &st) == 0 && S_ISDIR(st.st_mode);
@@ -200,7 +243,11 @@ static FILE *ce_ini_open_regular(CeSettingsDir *dir, int *missing = NULL)
 	{
 		BY_HANDLE_FILE_INFORMATION info;
 		if (GetFileType(in) == FILE_TYPE_DISK && GetFileInformationByHandle(in, &info) &&
+#ifdef CE_WIN_REPARSE_H
+			!(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && !ce_win_handle_is_link(in, info.dwFileAttributes))
+#else
 			!(info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)))
+#endif
 			input = _open_osfhandle((intptr_t)in, _O_RDONLY | _O_BINARY);
 		if (input < 0) CloseHandle(in);
 	}

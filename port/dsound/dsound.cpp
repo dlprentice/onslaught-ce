@@ -108,6 +108,10 @@ float Dot(const Vec &a, const Vec &b) { return a.x * b.x + a.y * b.y + a.z * b.z
 Vec Cross(const Vec &a, const Vec &b) { return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x}; }
 Vec ToVec(const D3DVECTOR &v) { return {v.x, v.y, v.z}; }
 
+#ifdef CE_VERSION
+extern "C" void PortCeBugClipPushAudio(const short *stereoPcm44100, int frames) __attribute__((weak));
+#endif
+
 struct Mixer
 {
 	SDL_Mutex *lock = NULL;
@@ -148,6 +152,7 @@ struct Mixer
 	SDL_AudioStream *monitor = NULL;	// BEA_AUDIO_MONITOR with the virtual clock: the mix, written only, to the device
 	bool monitorAudioInit = false;
 	bool monitorPlaying = false;
+	int ceSoftClip = 0;				// cached PortCeLayer() set on main thread in Start(), read atomically in Mix()
 
 	void Start();
 	void Monitor(const Sint16 *pcm, int frames);
@@ -1211,6 +1216,9 @@ void Mixer::Mix(Sint16 *out, int frames)
 			{
 				memset(out, 0, (size_t)frames * 4);
 				Record(out, frames);
+#ifdef CE_VERSION
+				if (PortCeBugClipPushAudio) PortCeBugClipPushAudio(out, frames);
+#endif
 				Monitor(out, frames);
 			}
 			mixed += (Uint64)frames;
@@ -1338,11 +1346,11 @@ void Mixer::Mix(Sint16 *out, int frames)
 		else
 			b->cursor = pos;
 	}
-	const bool ceSoftClip = (PortCeLayer && PortCeLayer());
+	const bool ceSoftClipOn = __atomic_load_n(&ceSoftClip, __ATOMIC_ACQUIRE) != 0;
 	for (int i = 0; i < 2 * frames; i++)
 	{
 		float s = scratch[i];
-		if (ceSoftClip)
+		if (ceSoftClipOn)
 		{
 			if (s > 0.85f)
 				s = 0.85f + 0.15f * tanhf((s - 0.85f) * (1.0f / 0.15f));
@@ -1354,6 +1362,9 @@ void Mixer::Mix(Sint16 *out, int frames)
 		out[i] = (Sint16)lrintf(s * 32767.0f);
 	}
 	Record(out, frames);
+#ifdef CE_VERSION
+	if (PortCeBugClipPushAudio) PortCeBugClipPushAudio(out, frames);
+#endif
 	Monitor(out, frames);
 	if (gSessionAudio)
 	{
@@ -1588,6 +1599,7 @@ void Mixer::Start()
 	if (users++)
 		return;
 	gSessionAudio = PortSessionEnabled();
+	__atomic_store_n(&ceSoftClip, (PortCeLayer && PortCeLayer()) ? 1 : 0, __ATOMIC_RELEASE);
 	PortAudioGuardCheck();		// a run that requires SDL's dummy driver gets it before any device can open
 	if (!lock)
 	{

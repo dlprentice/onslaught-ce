@@ -2647,8 +2647,8 @@ static void EnsureHallGpuBuffers(IDirect3DDevice9 *dev) {
     if (gHallGpu.attempted && gHallGpu.device == dev && gHallGpu.deviceGen == gen) return;
     if (gHallGpu.device && (gHallGpu.device != dev || gHallGpu.deviceGen != gen)) {
         ReleaseHallGeometryBuffers();
-        FindMaterials();
     }
+    FindMaterials();
     gHallGpu.device = dev;
     gHallGpu.deviceGen = gen;
     gHallGpu.attempted = true;

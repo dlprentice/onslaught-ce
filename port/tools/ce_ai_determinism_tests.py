@@ -142,7 +142,8 @@ static uint64_t RunRollout(uint32_t worldEpoch, int ticks, uint64_t *outMlpAndGu
             obs.entities[e].pos[1] = py + dy;
             obs.entities[e].pos[2] = -10.0f - static_cast<float>(e % 3u) * 6.0f;
             obs.entities[e].distSqQuantized = CePlayerObsQuantizeDistSq(dx * dx + dy * dy);
-            obs.entities[e].isFriendly = (e == 7u) ? 1u : 0u;
+            obs.entities[e].isFriendly = (e == 5u) ? 1u : 0u;
+            obs.entities[e].isNeutral = (e == 6u || e == 7u) ? 1u : 0u;
             obs.entities[e].isRepairPad = (e == 7u) ? 1u : 0u;
             obs.entities[e].airborne = (e % 3u == 0u) ? 1u : 0u;
             obs.entities[e].isBattleEngine = (e == 0u) ? 1u : 0u;
@@ -175,11 +176,14 @@ static uint64_t RunRollout(uint32_t worldEpoch, int ticks, uint64_t *outMlpAndGu
         const bool measure = (outP99Ns != NULL && t < 2000);
         if (measure) ts0 = std::chrono::steady_clock::now();
 
-        // 1. Layer-1 INT8 MLP forward pass
+        // 1. Layer-1 feature extraction (+ optional INT8 MLP forward pass when CE_AI_PILOT_TRAINED_WEIGHTS is set)
         int16_t feat[kCeAiMlpInDim];
         int16_t mlpOut[kCeAiMlpOutDim];
+        memset(mlpOut, 0, sizeof(mlpOut));
         CeAiPilotExtractFeaturesQ12(obs, NULL, feat);
+#ifdef CE_AI_PILOT_TRAINED_WEIGHTS
         CeAiPilotMlpInfer(feat, mlpOut);
+#endif
 
         // 2. Zero-libm guardrails & physics kinematics
         const CeAiVec3 myV = { px, py, pz };
@@ -289,6 +293,8 @@ static uint64_t RunRollout(uint32_t worldEpoch, int ticks, uint64_t *outMlpAndGu
         pz = isJet ? -26.0f : -10.0f;
 
         // Mix every decision output (strictly EXCLUDING raw worldEpoch/handle bits!) into state hash
+        for (int k = 0; k < kCeAiMlpInDim; ++k)
+            h = FnvMixU32(h, static_cast<uint32_t>(static_cast<uint16_t>(feat[k])));
         for (int k = 0; k < kCeAiMlpOutDim; ++k)
             h = FnvMixU32(h, static_cast<uint32_t>(static_cast<uint16_t>(mlpOut[k])));
         for (uint32_t e = 0u; e < obs.entityCount; ++e)
@@ -368,15 +374,24 @@ static CePlayerObs MakeObs(uint32_t tick, float life)
     obs.lifeRatio = life;
     obs.energyRatio = 0.8f;
     obs.pos[0] = 200.0f; obs.pos[1] = 210.0f; obs.pos[2] = -10.0f;
-    obs.entityCount = 2u;
+    obs.entityCount = 3u;
+    // Entity 0: real hostile airborne Battle Engine
     obs.entities[0].isFriendly = 0u;
+    obs.entities[0].isNeutral = 0u;
     obs.entities[0].isBattleEngine = 1u;
     obs.entities[0].airborne = 1u;
     obs.entities[0].pos[0] = 280.0f; obs.entities[0].pos[1] = 260.0f; obs.entities[0].pos[2] = -25.0f;
     obs.entities[0].distSqQuantized = 12000u;
-    obs.entities[1].isFriendly = 1u;
+    // Entity 1: independent Repair Pad (must be usable for repair and NEVER counted as hostile!)
+    obs.entities[1].isFriendly = 0u;
+    obs.entities[1].isNeutral = 1u;
     obs.entities[1].isRepairPad = 1u;
     obs.entities[1].pos[0] = 140.0f; obs.entities[1].pos[1] = 150.0f; obs.entities[1].pos[2] = -10.0f;
+    // Entity 2: neutral non-hostile world unit (must NEVER be counted as hostile!)
+    obs.entities[2].isFriendly = 0u;
+    obs.entities[2].isNeutral = 1u;
+    obs.entities[2].isRepairPad = 0u;
+    obs.entities[2].pos[0] = 190.0f; obs.entities[2].pos[1] = 195.0f; obs.entities[2].pos[2] = -10.0f;
     return obs;
 }
 
@@ -421,6 +436,8 @@ int main(int argc, char **argv)
     assert(prior != nullptr);
     assert(prior->posture == CE_STRAT_REPAIR);
     assert(prior->hasFocusPoint == 1u);
+    assert(prior->focusX == 140.0f && prior->focusY == 150.0f);
+    assert(std::strstr(prior->hint, "hostiles=1") != nullptr);
     const size_t hlen = std::strlen(prior->hint);
     assert(hlen > 0u && hlen <= 160u);
     for (size_t i = 0u; i < hlen; ++i)
@@ -490,35 +507,58 @@ class CeAiDeterminismTests(unittest.TestCase):
             for fn in ("sqrtf(", "fabsf(", "sinf(", "cosf(", "atan2f(", "atanf(", "powf("):
                 self.assertNotIn(fn, text, f"{rel} must not call {fn}")
 
-        # Object-level symbol check with pinned Linux i686 Clang.
+        # Object-level symbol & weight-bloat check with pinned Linux i686 Clang in BOTH modes:
+        #   1) Default production compile: zero libm AND zero 107.5 KB untrained weight table bloat.
+        #   2) -DCE_AI_PILOT_TRAINED_WEIGHTS: zero libm when the INT8 MLP inference engine is enabled.
         self.assertTrue(LINUX_CLANGXX.is_file(), f"Pinned Linux clang++ missing at {LINUX_CLANGXX}")
         with tempfile.TemporaryDirectory(prefix="ce_ai_nolibm_") as td:
             src = Path(td) / "check_nolibm.cpp"
-            obj = Path(td) / "check_nolibm.o"
             src.write_text(
                 '#include "ce_multibe_ai.h"\n'
                 '#include "ce_multibe_state.h"\n'
                 '#include "ai/ce_ai_pilot_l1.h"\n'
                 '#include "ai/ce_ai_tactical_l2.cpp"\n'
-                'float probe(float x, float y, float z) {\n'
+                'float probe(float x, float y, float z, const CePlayerObs &obs) {\n'
+                '  int16_t feat[kCeAiMlpInDim];\n'
+                '  CeAiPilotExtractFeaturesQ12(obs, nullptr, feat);\n'
+                '  int16_t out[kCeAiMlpOutDim] = {};\n'
+                '#ifdef CE_AI_PILOT_TRAINED_WEIGHTS\n'
+                '  CeAiPilotMlpInfer(feat, out);\n'
+                '#endif\n'
                 '  CeAiVec3 a = {x, y, z}, b = {x + 20.f, y - 15.f, z}, v = {2.f, 3.f, 0.f};\n'
                 '  CeAiVec3 p = CeMultiBeComputeLeadPoint(a, b, v, 80.f, 2.f);\n'
                 '  return CeAiSqrt(p.x*p.x + p.y*p.y) + CeAiSin(CeAiAzimuth(p.x, p.y)) + CeAiCos(CeAiElevation(p.x, p.y, p.z))\n'
-                '       + CeMultiBeWrapAngle(x) + CeMultiBeComputeWalkerPitchInput(y, z);\n'
+                '       + CeMultiBeWrapAngle(x) + CeMultiBeComputeWalkerPitchInput(y, z) + float(feat[0] + out[0]);\n'
                 '}\n',
                 encoding="utf-8",
             )
-            cmd = [
-                str(LINUX_CLANGXX), "--target=i686-pc-linux-gnu",
-                *deps.sysroot_flags(),
-                "-std=c++17", "-mno-sse", "-mfpmath=387", "-O2", "-fno-builtin",
-                f"-I{PORT / 'game'}", "-c", str(src), "-o", str(obj),
-            ]
-            subprocess.run(cmd, check=True)
-            nm = subprocess.run([str(LINUX_NM), "-u", str(obj)], capture_output=True, text=True, check=True)
-            undef = {line.split()[-1].lstrip("_") for line in nm.stdout.splitlines() if line.strip()}
-            bad = sorted(undef & FORBIDDEN_LIBM)
-            self.assertEqual(bad, [], f"Unexpected libm imports in AI object: {bad}")
+            default_obj = Path(td) / "check_nolibm_default.o"
+            trained_obj = Path(td) / "check_nolibm_trained.o"
+            for label, obj, extra in (
+                ("default", default_obj, []),
+                ("trained_weights", trained_obj, ["-DCE_AI_PILOT_TRAINED_WEIGHTS"]),
+            ):
+                with self.subTest(mode=label):
+                    cmd = [
+                        str(LINUX_CLANGXX), "--target=i686-pc-linux-gnu",
+                        *deps.sysroot_flags(),
+                        "-std=c++17", "-mno-sse", "-mfpmath=387", "-O2", "-fno-builtin",
+                        *extra,
+                        f"-I{PORT / 'game'}", "-c", str(src), "-o", str(obj),
+                    ]
+                    subprocess.run(cmd, check=True)
+                    nm = subprocess.run([str(LINUX_NM), "-u", str(obj)], capture_output=True, text=True, check=True)
+                    undef = {line.split()[-1].lstrip("_") for line in nm.stdout.splitlines() if line.strip()}
+                    bad = sorted(undef & FORBIDDEN_LIBM)
+                    self.assertEqual(bad, [], f"Unexpected libm imports in {label} AI object: {bad}")
+                    if label == "default":
+                        nm_def = subprocess.run([str(LINUX_NM), "--defined-only", str(obj)], capture_output=True, text=True, check=True)
+                        for wsym in ("kCeAiMlpW1", "kCeAiMlpW2", "kCeAiMlpW3", "kCeAiMlpW4"):
+                            self.assertNotIn(wsym, nm_def.stdout, f"Default build must not embed untrained {wsym}")
+                        self.assertLess(obj.stat().st_size, 32_768, f"Default AI object bloated ({obj.stat().st_size} bytes)")
+                    else:
+                        self.assertGreater(obj.stat().st_size, default_obj.stat().st_size + 100_000,
+                                           "Trained-weights object should embed the 107.5 KB INT8 weight matrix")
 
             # Also inspect the live compiled ce_ai_pilot_l1.cpp.o when a build exists!
             for built_obj in (
@@ -541,46 +581,67 @@ class CeAiDeterminismTests(unittest.TestCase):
             td_path = Path(td)
             driver = td_path / "rollout.cpp"
             driver.write_text(ROLLOUT_DRIVER, encoding="utf-8")
-            linux_bin = td_path / "rollout_linux"
-            win_bin = td_path / "rollout_win.exe"
-
-            linux_cmd = [
-                str(LINUX_CLANGXX), "--target=i686-pc-linux-gnu",
-                *deps.sysroot_flags(),
-                "-std=c++17", "-mno-sse", "-mfpmath=387", "-O2",
-                f"-I{PORT / 'game'}",
-                str(driver), str(PORT / "game/ai/ce_ai_tactical_l2.cpp"),
-                "-o", str(linux_bin),
-            ]
-            win_cmd = [
-                str(WIN_CLANGXX),
-                "-std=c++17", "-mno-sse", "-mfpmath=387", "-O2", "-static",
-                f"-I{PORT / 'game'}",
-                str(driver), str(PORT / "game/ai/ce_ai_tactical_l2.cpp"),
-                "-o", str(win_bin),
-            ]
-            subprocess.run(linux_cmd, check=True)
-            subprocess.run(win_cmd, check=True)
-
-            lin_res = subprocess.run([str(linux_bin)], capture_output=True, text=True, check=True)
             wine_env = {k: v for k, v in os.environ.items() if k not in ("DISPLAY", "WAYLAND_DISPLAY")}
             wine_env["WINEDEBUG"] = "-all"
             wine_env["WINEPREFIX"] = str(td_path / "wineprefix")
-            win_res = subprocess.run([wine, str(win_bin)], env=wine_env, capture_output=True, text=True, check=True)
 
-            lin_kv = _parse_kv(lin_res.stdout)
-            win_kv = _parse_kv(win_res.stdout)
-            self.assertEqual(lin_kv["HASH_EPOCH1"], lin_kv["HASH_EPOCH77"], "Linux epoch invariance failed")
-            self.assertEqual(win_kv["HASH_EPOCH1"], win_kv["HASH_EPOCH77"], "Windows epoch invariance failed")
-            self.assertEqual(
-                lin_kv["HASH_EPOCH1"], win_kv["HASH_EPOCH1"],
-                f"10,000-tick Linux vs Windows divergence! linux={lin_kv} win={win_kv}",
+            mode_hashes: dict[str, str] = {}
+            mode_sizes: dict[str, int] = {}
+            for label, extra in (
+                ("default", []),
+                ("trained_weights", ["-DCE_AI_PILOT_TRAINED_WEIGHTS"]),
+            ):
+                with self.subTest(mode=label):
+                    linux_bin = td_path / f"rollout_linux_{label}"
+                    win_bin = td_path / f"rollout_win_{label}.exe"
+
+                    linux_cmd = [
+                        str(LINUX_CLANGXX), "--target=i686-pc-linux-gnu",
+                        *deps.sysroot_flags(),
+                        "-std=c++17", "-mno-sse", "-mfpmath=387", "-O2",
+                        *extra,
+                        f"-I{PORT / 'game'}",
+                        str(driver), str(PORT / "game/ai/ce_ai_tactical_l2.cpp"),
+                        "-o", str(linux_bin),
+                    ]
+                    win_cmd = [
+                        str(WIN_CLANGXX),
+                        "-std=c++17", "-mno-sse", "-mfpmath=387", "-O2", "-static",
+                        *extra,
+                        f"-I{PORT / 'game'}",
+                        str(driver), str(PORT / "game/ai/ce_ai_tactical_l2.cpp"),
+                        "-o", str(win_bin),
+                    ]
+                    subprocess.run(linux_cmd, check=True)
+                    subprocess.run(win_cmd, check=True)
+                    mode_sizes[label] = linux_bin.stat().st_size
+
+                    lin_res = subprocess.run([str(linux_bin)], capture_output=True, text=True, check=True)
+                    win_res = subprocess.run([wine, str(win_bin)], env=wine_env, capture_output=True, text=True, check=True)
+
+                    lin_kv = _parse_kv(lin_res.stdout)
+                    win_kv = _parse_kv(win_res.stdout)
+                    self.assertEqual(lin_kv["HASH_EPOCH1"], lin_kv["HASH_EPOCH77"], f"{label}: Linux epoch invariance failed")
+                    self.assertEqual(win_kv["HASH_EPOCH1"], win_kv["HASH_EPOCH77"], f"{label}: Windows epoch invariance failed")
+                    self.assertEqual(
+                        lin_kv["HASH_EPOCH1"], win_kv["HASH_EPOCH1"],
+                        f"{label}: 10,000-tick Linux vs Windows divergence! linux={lin_kv} win={win_kv}",
+                    )
+                    mode_hashes[label] = lin_kv["HASH_EPOCH1"]
+
+                    p99_ns = int(lin_kv["P99_NS"])
+                    self.assertLess(
+                        p99_ns, 100_000,
+                        f"{label}: Layer-1 p99 exceeded 0.1 ms/tick budget: {p99_ns / 1000.0:.2f} us/tick",
+                    )
+
+            self.assertNotEqual(
+                mode_hashes["default"], mode_hashes["trained_weights"],
+                "Default and -DCE_AI_PILOT_TRAINED_WEIGHTS rollouts must differ (proving MLP is gated off by default)",
             )
-
-            p99_ns = int(lin_kv["P99_NS"])
-            self.assertLess(
-                p99_ns, 100_000,
-                f"Layer-1 p99 exceeded 0.1 ms/tick budget: {p99_ns / 1000.0:.2f} us/tick",
+            self.assertGreater(
+                mode_sizes["trained_weights"], mode_sizes["default"] + 100_000,
+                f"Default binary should omit 107.5 KB weights: default={mode_sizes['default']} trained={mode_sizes['trained_weights']}",
             )
 
     def test_03_l3_host_only_isolation_and_graceful_fallback(self):

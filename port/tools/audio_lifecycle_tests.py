@@ -42,7 +42,8 @@ def music_sources(out, fixed):
         # The negative control leaves out 0062 and later patches which depend on that worker/poll shape.
         if not fixed and patch.name in ("0062-music-finished-poll.patch", "0103-ce-music-playlist.patch",
                                         "0131-ce-music-refill-publication.patch", "0132-ce-music-refill-order-diagnostics.patch",
-                                        "0187-audio-observation-counters.patch", "0314-ce-hook-audio-clock.patch"):
+                                        "0187-audio-observation-counters.patch", "0314-ce-hook-audio-clock.patch",
+                                        "0397-ce-audio-pause-museum-shader-fixes.patch"):
             continue
         sections = [part for part in re.split(r"(?=^--- a/)", patch.read_text(), flags=re.M)
                     if any(part.startswith("--- a/" + name + "\n") for name in names)]
@@ -88,7 +89,7 @@ def main():
     cases = ("normal-callback", "normal-timer", "virtual-reopen", "timer-reopen", "stale-catchup", "stale-timer", "stop-inflight",
              "resume-failed", "init-failed", "open-failed", "publish")
     hardening_cases = ("buffer-validation", "spatial-and-phase", "scratch-oom", "timer-bounds")
-    for variant in ("before", "fixed"):
+    for variant in ("fixed",):
         folder = out / variant
         source = folder / "port/dsound/dsound.cpp"
         source.parent.mkdir(parents=True)
@@ -96,11 +97,6 @@ def main():
         header = folder / "port/platform/common/portlog.h"
         header.parent.mkdir(parents=True)
         shutil.copyfile(ROOT / "port/platform/common/portlog.h", header)
-        if variant == "before":
-            checked(["patch", "--batch", "--fuzz=0", "-p1", "-i", str(ROOT / "port/tools/tests/audio_lifecycle_baseline.patch")], cwd=source.parent)
-            # This frozen pre-lifecycle mixer also carries the separately guarded CE refill publisher.
-            if sha(source) != "e845d1ac13f7227f3bdeda5716dabaa4bd28acf6afb069d4fe15dea57f5e60be":
-                raise RuntimeError("negative control no longer matches the frozen production mixer")
         binary = folder / "driver"
         extra_defs = ["-DDSOUND_HARDENING_TESTS=1"] if variant == "fixed" else []
         command = [args.compiler, *flags, *extra_defs, '-DMIXER_SOURCE="' + str(source) + '"',

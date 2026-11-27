@@ -302,7 +302,10 @@ CeMultiBeTacticalScan GatherTacticalContext(CBattleEngine *self, int idx, float 
 		{
 			if (!u || u == self || u->IsDying() || !u->Active())
 				continue;
-			if (!self->IsTargetAlligence(u->GetAllegiance()))
+			const EAllegiance uSide = u->GetAllegiance();
+			// Never target neutral units or independent Repair Pads (IsTargetAlligence returns TRUE for kIndependentAllegiance).
+			if (uSide == kIndependentAllegiance || uSide == kNeutralAllegiance ||
+			    !self->IsTargetAlligence(uSide))
 				continue;
 			const FVector uPos = u->GetPos();
 			if (!CeMultiBeIsFinitePos(uPos.X, uPos.Y, uPos.Z))
@@ -1006,8 +1009,9 @@ void CeAiPilotL1TickSlot(int idx, const CePlayerObs &obs, const CeStrategicPrior
 		targetInWater = (tgtGroundZ >= waterZ - 0.1f) && (tgtPos.Z >= waterZ - 1.5f);
 	}
 
-	// Evaluate deterministic pure-integer INT8 Layer-1 pilot MLP (zero libm, < 0.1 ms/tick)
-	// to apply bounded micro-trims strictly inside ce_multibe_ai.h safety guardrails.
+	// Optional deterministic pure-integer INT8 Layer-1 pilot MLP micro-trims (compiled out by default
+	// until genuinely trained weights replace the placeholder SplitMix64 matrix in ce_ai_pilot_weights.h).
+#ifdef CE_AI_PILOT_TRAINED_WEIGHTS
 	int16_t mlpFeaturesQ12[kCeAiMlpInDim];
 	int16_t mlpOutQ12[kCeAiMlpOutDim];
 	CeAiPilotExtractFeaturesQ12(obs, prior, mlpFeaturesQ12);
@@ -1017,6 +1021,13 @@ void CeAiPilotL1TickSlot(int idx, const CePlayerObs &obs, const CeStrategicPrior
 	const float mlpJetTurnTrim   = static_cast<float>(mlpOutQ12[CE_AI_OUT_JET_TURN_TRIM]) * (0.05f / 4096.0f);
 	const float mlpJetThrustTrim = static_cast<float>(mlpOutQ12[CE_AI_OUT_JET_THRUST_TRIM]) * (0.04f / 4096.0f);
 	const float mlpCruiseBias    = static_cast<float>(mlpOutQ12[CE_AI_OUT_JET_CRUISE_BIAS]) * (2.0f / 4096.0f);
+#else
+	const float mlpStrafeTrim    = 0.0f;
+	const float mlpFwdTrim       = 0.0f;
+	const float mlpJetTurnTrim   = 0.0f;
+	const float mlpJetThrustTrim = 0.0f;
+	const float mlpCruiseBias    = 0.0f;
+#endif
 
 	const int simTicks = CeMultiBeAiHostSimTicks();
 	CeMultiBeSmartMorphInput morphIn = {};

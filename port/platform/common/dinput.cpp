@@ -1075,11 +1075,13 @@ struct Device : public IDirectInputDevice8A
 		else if (joy && size >= sizeof(DIJOYSTATE))
 		{
 			// A flight stick, laid out for the fields the game reads (PCController.cpp): the stick's X and Y as the
-			// right stick (Z and Rz: look and steer), the twist (axis 3) as the left stick's X (X: strafe), the hat as
-			// the POV. The throttle (axis 2) is not mapped: many rest at one end, which would read as a held stick.
+			// right stick (Z and Rz: look and steer), the twist (axis 2 on 4+ axis sticks, where axis 3 is the
+			// non-centering throttle slider) as the left stick's X (X: strafe), and the hat as the POV. A 3-axis
+			// stick typically reports its non-centering throttle on axis 2 with no twist, so leave X centred unless
+			// a 4th axis is present; never map the throttle slider, which rests at one end.
 			DIJOYSTATE2 *j = (DIJOYSTATE2 *)data;
 			LONG centre = rangeMin + (rangeMax - rangeMin) / 2;
-			j->lX = RawAxis(3);
+			j->lX = SDL_GetNumJoystickAxes(joy) > 3 ? RawAxis(2) : centre;
 			j->lY = centre;
 			j->lZ = RawAxis(0);
 			j->lRz = RawAxis(1);
@@ -1552,7 +1554,7 @@ extern "C" int PortCeTutorialPadInfo(void *device, CeTutorialPadInfo *info)
 	{
 		result.kind = CE_TUTORIAL_STICK;
 		int axes = SDL_GetNumJoystickAxes(d->joy);
-		if (axes > 3) result.axes |= CE_PAD_X1; // twist
+		if (axes > 3) result.axes |= CE_PAD_X1; // twist (axis 2 on 4+ axis sticks; 3-axis sticks put throttle on axis 2)
 		if (axes > 0) result.axes |= CE_PAD_X2;
 		if (axes > 1) result.axes |= CE_PAD_Y2;
 		if (SDL_GetNumJoystickHats(d->joy) > 0)

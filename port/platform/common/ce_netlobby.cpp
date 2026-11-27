@@ -40,6 +40,7 @@ extern "C" const char *CE_SessionError(void);				// port/game/ce_network_lockste
 extern "C" int PortCeNetConfirmedMatch(void) __attribute__((weak));
 extern "C" int PortCeNetRingLeft(void) __attribute__((weak));	// port/game/ce_network_ring.cpp: the player chose Leave Game
 extern "C" int PortCeOnlineMatchSetTicket(const CE_OnlineMatchTicket *ticket) __attribute__((weak));
+extern "C" void PortCeBugClipShutdown(void) __attribute__((weak));
 #if defined(CE_NETWORK_ICE)
 extern "C" int PortCeMissionRelayLossRole(void) __attribute__((weak));
 #endif
@@ -1487,14 +1488,52 @@ void ScrubEnvironment(const char *handoff)
 // code, for the same reason. Returns only on failure.
 void Exec(const char *args)
 {
+	if (PortCeBugClipShutdown) PortCeBugClipShutdown();
 	fflush(NULL);
 #ifdef _WIN32
-	WCHAR exe[MAX_PATH * 2], wargs[2048], line[4096];
-	DWORD len = GetModuleFileNameW(NULL, exe, MAX_PATH * 2);
-	if (!len || len >= MAX_PATH * 2 || !MultiByteToWideChar(CP_UTF8, 0, args, -1, wargs, 2048))
+	WCHAR exe[4096], wargs[2048], line[6144];
+	DWORD len = GetModuleFileNameW(NULL, exe, 4096);
+	if (!len || len >= 4096 || !MultiByteToWideChar(CP_UTF8, 0, args, -1, wargs, 2048))
 		return;
-	_snwprintf(line, 4096, L"\"%ls\" %ls", exe, wargs);
-	line[4095] = 0;
+	auto toShortIfLong = [](WCHAR *path, size_t cap) {
+		size_t curLen = wcslen(path);
+		if (curLen < MAX_PATH) return;
+		WCHAR ext[4112], sh[4112];
+		bool isDrive = curLen >= 3 && ((path[0] >= L'A' && path[0] <= L'Z') || (path[0] >= L'a' && path[0] <= L'z')) &&
+			path[1] == L':' && path[2] == L'\\';
+		bool isUnc = curLen >= 4 && path[0] == L'\\' && path[1] == L'\\' && path[2] != L'\\' && path[2] != L'?' && path[2] != L'.';
+		const WCHAR *query = path;
+		if (isDrive && curLen + 4 < 4112) {
+			memcpy(ext, L"\\\\?\\", 4 * sizeof(WCHAR));
+			memcpy(ext + 4, path, (curLen + 1) * sizeof(WCHAR));
+			query = ext;
+		} else if (isUnc && curLen + 6 < 4112) {
+			memcpy(ext, L"\\\\?\\UNC\\", 8 * sizeof(WCHAR));
+			memcpy(ext + 8, path + 2, (curLen - 1) * sizeof(WCHAR));
+			query = ext;
+		}
+		DWORD sn = GetShortPathNameW(query, sh, 4112);
+		if (sn > 0 && sn < 4112) {
+			const WCHAR *clean = sh;
+			WCHAR unced[4112];
+			if (!wcsncmp(sh, L"\\\\?\\UNC\\", 8) && (sn - 8 + 2) < 4112) {
+				unced[0] = L'\\'; unced[1] = L'\\';
+				memcpy(unced + 2, sh + 8, (sn - 8 + 1) * sizeof(WCHAR));
+				clean = unced;
+			} else if (!wcsncmp(sh, L"\\\\?\\", 4)) {
+				clean = sh + 4;
+			}
+			size_t clen = wcslen(clean);
+			if (clen > 0 && clen < cap)
+				memcpy(path, clean, (clen + 1) * sizeof(WCHAR));
+		}
+	};
+	WCHAR dir[4096];
+	DWORD dl = GetCurrentDirectoryW(4096, dir);
+	toShortIfLong(exe, 4096);
+	if (dl && dl < 4096) toShortIfLong(dir, 4096);
+	_snwprintf(line, 6144, L"\"%ls\" %ls", exe, wargs);
+	line[6143] = 0;
 	STARTUPINFOW si;
 	memset(&si, 0, sizeof si);
 	si.cb = sizeof si;
@@ -1503,9 +1542,7 @@ void Exec(const char *args)
 	si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
 	si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
 	PROCESS_INFORMATION pi;
-	WCHAR dir[MAX_PATH * 2];
-	DWORD dl = GetCurrentDirectoryW(MAX_PATH * 2, dir);
-	if (!CreateProcessW(exe, line, NULL, NULL, TRUE, 0, NULL, (dl && dl < MAX_PATH * 2) ? dir : NULL, &si, &pi))
+	if (!CreateProcessW(exe, line, NULL, NULL, TRUE, 0, NULL, (dl && dl < 4096) ? dir : NULL, &si, &pi))
 	{
 		fprintf(stderr, LOBBY_LOG "could not restart the game (error %lu)\n", (unsigned long)GetLastError());
 		return;
@@ -1514,6 +1551,7 @@ void Exec(const char *args)
 	WaitForSingleObject(pi.hProcess, INFINITE);
 	DWORD rc = 1;
 	GetExitCodeProcess(pi.hProcess, &rc);
+	if (PortCeBugClipShutdown) PortCeBugClipShutdown();
 	ExitProcess(rc);
 #else
 	char exe[1024];
@@ -1636,28 +1674,42 @@ struct Boot
 #ifndef CE_NETWORK_OFF
 #if defined(CE_NETWORK_ICE)
         if (!gSignalSelected) {
-			char secret[65];
-			Hex(h.secret, 32, secret);
 			SetEnv(h.role == 1 ? "BEA_NET_HOST" : "BEA_NET_JOIN", ep);
-			SetEnv("BEA_NET_SECRET", secret);
-			CE_CodeWipe(secret, sizeof secret);
+			if (!gOnlineLaunched) {
+				char secret[65];
+				Hex(h.secret, 32, secret);
+				SetEnv("BEA_NET_SECRET", secret);
+				CE_CodeWipe(secret, sizeof secret);
+			} else {
+				SetEnv("BEA_NET_SECRET", NULL);
+			}
         } else {
 			SetEnv(h.role == 1 ? "BEA_NET_HOST" : "BEA_NET_JOIN", ep);
         }
 #else
-			char secret[65];
-			Hex(h.secret, 32, secret);
 			SetEnv(h.role == 1 ? "BEA_NET_HOST" : "BEA_NET_JOIN", ep);
-			SetEnv("BEA_NET_SECRET", secret);
-			CE_CodeWipe(secret, sizeof secret);
+			if (!gOnlineLaunched) {
+				char secret[65];
+				Hex(h.secret, 32, secret);
+				SetEnv("BEA_NET_SECRET", secret);
+				CE_CodeWipe(secret, sizeof secret);
+			} else {
+				SetEnv("BEA_NET_SECRET", NULL);
+			}
 #endif
 #else
-			char secret[65];
-			Hex(h.secret, 32, secret);
 			SetEnv(h.role == 1 ? "BEA_NET_HOST" : "BEA_NET_JOIN", ep);
-			SetEnv("BEA_NET_SECRET", secret);
-			CE_CodeWipe(secret, sizeof secret);
+			if (!gOnlineLaunched) {
+				char secret[65];
+				Hex(h.secret, 32, secret);
+				SetEnv("BEA_NET_SECRET", secret);
+				CE_CodeWipe(secret, sizeof secret);
+			} else {
+				SetEnv("BEA_NET_SECRET", NULL);
+			}
 #endif
+			if (gOnlineLaunched)
+				SetEnv("BEA_NET_SECRET", NULL);
 			// Rotate the lobby invitation after each successfully agreed match. Neither the
 		// original invitation nor this key has to be shown again to the two players.
 		if (!h.campaign.version && !h.online_version && !CE_NetGameIceRequested())

@@ -1929,10 +1929,16 @@ struct OnlineChatState {
     bool muted = false;
     char draft[161] = {};
     uint32_t draft_len = 0;
-    void Reset() { composing = false; draft_len = 0; draft[0] = 0; }
+    void Reset() { composing = false; draft_len = 0; std::memset(draft, 0, sizeof(draft)); }
 } gOnlineChat;
 bool OnlineChatActive() {
     return L.online_multi && L.stage == RUNNING && PortCeOnlineMatchSendChat && PortCeOnlineMatchChatCount;
+}
+bool ChatDraftBlank(const uint8_t *text, uint32_t len) {
+    for (uint32_t i = 0; i < len; ++i) {
+        if (text[i] > 0x20u) return false;
+    }
+    return true;
 }
 }
 extern "C" int CE_LockstepChatAvailable(void) {
@@ -1981,7 +1987,11 @@ extern "C" uint32_t CE_LockstepChatBackspace(void) {
 extern "C" uint32_t CE_LockstepChatSubmit(void) {
     if (OnlineChatActive()) {
         if (!gOnlineChat.composing) return CE_CHAT_INVALID;
-        if (!gOnlineChat.draft_len || !PortCeOnlineMatchSendChat(gOnlineChat.draft))
+        if (ChatDraftBlank(reinterpret_cast<const uint8_t *>(gOnlineChat.draft), gOnlineChat.draft_len)) {
+            gOnlineChat.Reset();
+            return CE_CHAT_OK;
+        }
+        if (!PortCeOnlineMatchSendChat(gOnlineChat.draft))
             return CE_CHAT_INVALID;
         gOnlineChat.Reset();
         return CE_CHAT_OK;
@@ -1990,6 +2000,11 @@ extern "C" uint32_t CE_LockstepChatSubmit(void) {
     CeTextChat::Decoded draft{};
     const auto copied = chat.CopyDraft(draft);
     if (copied != CeTextChat::Result::Ok) return ChatResult(copied);
+    if (ChatDraftBlank(draft.utf8, draft.size)) {
+        CeTextChat::Clear(draft);
+        chat.CancelCompose();
+        return CE_CHAT_OK;
+    }
     const uint32_t maximum = CE_NetTextMaxFrame(L.net);
     const bool too_large = maximum < CeTextChat::HeaderBytes ||
                           draft.size > maximum - CeTextChat::HeaderBytes;
@@ -1998,7 +2013,7 @@ extern "C" uint32_t CE_LockstepChatSubmit(void) {
     return ChatResult(chat.SubmitDraft(CE_NetNowMs()));
 }
 extern "C" void CE_LockstepChatCancel(void) {
-    if (OnlineChatActive()) { gOnlineChat.Reset(); return; }
+    gOnlineChat.Reset();
     chat.CancelCompose();
 }
 extern "C" void CE_LockstepChatMute(int muted) {

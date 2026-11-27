@@ -25,6 +25,7 @@
 #include "../common/mods.h"
 #include "../common/platform.h"
 #include "../common/save_names.h"
+#include "../common/ce_win_reparse.h"
 #ifndef CE_NETWORK_OFF
 #include "../../game/ce_network_boot.h"
 #endif
@@ -644,7 +645,7 @@ int PortUserFileState(const char *rel)
 	snprintf(path, sizeof(path), "%s\\%s", gUserDir, native);
 	DWORD a = GetFileAttributesA(path);
 	if (a != INVALID_FILE_ATTRIBUTES)
-		return (a & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) ? -1 : 1;
+		return ((a & FILE_ATTRIBUTE_DIRECTORY) || ce_win_path_is_link_a(path, a)) ? -1 : 1;
 	DWORD error = GetLastError();
 	return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND ? 0 : -1;
 }
@@ -846,7 +847,11 @@ FILE *PortOpenLocalFile(unsigned owner, const char *name, const char *mode)
 	if (snprintf(path, sizeof path, "%s\\%s", gUserDir, name) >= (int)sizeof path) return NULL;
 	DWORD root_attributes = GetFileAttributesA(gUserDir);
 	if (root_attributes == INVALID_FILE_ATTRIBUTES || !(root_attributes & FILE_ATTRIBUTE_DIRECTORY) ||
+#ifdef CE_WIN_REPARSE_H
+		ce_win_path_is_link_a(gUserDir, root_attributes)) { errno = EACCES; return NULL; }
+#else
 		(root_attributes & FILE_ATTRIBUTE_REPARSE_POINT)) { errno = EACCES; return NULL; }
+#endif
 	HANDLE file = CreateFileA(path, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, NULL,
 		OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, NULL);
 	if (file == INVALID_HANDLE_VALUE && GetLastError() == ERROR_FILE_NOT_FOUND)
@@ -856,7 +861,11 @@ FILE *PortOpenLocalFile(unsigned owner, const char *name, const char *mode)
 	BY_HANDLE_FILE_INFORMATION basic = {};
 	FILE_ID_INFO opened = {}, named_id = {};
 	bool valid = GetFileType(file) == FILE_TYPE_DISK && GetFileInformationByHandle(file, &basic) &&
+#ifdef CE_WIN_REPARSE_H
+		!(basic.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && !ce_win_handle_is_link(file, basic.dwFileAttributes) &&
+#else
 		!(basic.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) &&
+#endif
 		basic.nNumberOfLinks == 1 && GetFileInformationByHandleEx(file, FileIdInfo, &opened, sizeof opened);
 	HANDLE named = valid ? CreateFileA(path, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
 		NULL, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, NULL) : INVALID_HANDLE_VALUE;
@@ -870,7 +879,11 @@ FILE *PortOpenLocalFile(unsigned owner, const char *name, const char *mode)
 	}
 	root_attributes = GetFileAttributesA(gUserDir);
 	valid = valid && root_attributes != INVALID_FILE_ATTRIBUTES && (root_attributes & FILE_ATTRIBUTE_DIRECTORY) &&
+#ifdef CE_WIN_REPARSE_H
+		!ce_win_path_is_link_a(gUserDir, root_attributes);
+#else
 		!(root_attributes & FILE_ATTRIBUTE_REPARSE_POINT);
+#endif
 	if (!valid) { CloseHandle(file); errno = EACCES; SetLastError(ERROR_ACCESS_DENIED); return NULL; }
 	int flags = _O_WRONLY | (strchr(mode, 'b') ? _O_BINARY : _O_TEXT) | (mode[0] == 'a' ? _O_APPEND : 0);
 	int fd = _open_osfhandle((intptr_t)file, flags);

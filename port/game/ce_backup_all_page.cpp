@@ -16,6 +16,7 @@
 #include "ce_name_text.h"
 #include "../platform/common/ce_career_backup.h"
 #include "../platform/common/ce_full_backup_ui.h"
+#include "../platform/common/ce_record_mode.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,7 +40,7 @@ CeFullBackupPhase shownPhase = CE_FULL_BACKUP_IDLE;
 bool permit() {
   const char *r = getenv("BEA_PORT_RECORD"), *t = getenv("BEA_PORT_TAPE");
   return PortCeMenus() && PortCeProjectCareerAllowed() && PortCeExtrasActive() &&
-         (!r || !*r) && (!t || !*t);
+         (ce_record_ce_allowed() || ((!r || !*r) && (!t || !*t)));
 }
 void plain(WCHAR *dst, int n, const char *s) { PortCeExtrasWiden(dst, n, s); }
 void widenUtf8(WCHAR *dst, int n, const char *s) { CeDecodeName(dst, n, s, true); }

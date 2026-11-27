@@ -38,7 +38,7 @@ static void check(bool condition, const char *message) {
 #ifdef CE_VERSION
 // ---- the console's game actions (ce_console.h), recorded --------------------------------------------------------------
 static std::vector<std::string> lines(60);		// the retail scrollback, newest first; 0 is the line being written
-static char rawRow[0x80];						// an injected row with no terminator, as CConsole::Print can leave one
+static char rawRow[320];						// an injected row with no terminator, as CConsole::Print can leave one
 static bool useRawRow = false;
 static bool cheats[6];
 static std::string theme;
@@ -73,7 +73,7 @@ bool ConsoleLine(int i, char *out, int n) {
     if (i < 0 || i >= 60 || n <= 0) return false;
     if (useRawRow && i == 1) {
         int k = 0;
-        for (; k < n - 1 && k < 0x80 && rawRow[k]; ++k) out[k] = rawRow[k];
+        for (; k < n - 1 && k < (int)sizeof(rawRow) && rawRow[k]; ++k) out[k] = rawRow[k];
         out[k] = 0;
         return true;
     }
@@ -82,7 +82,7 @@ bool ConsoleLine(int i, char *out, int n) {
 }
 int ConsoleLines() { return 60; }
 void Print(const char *text) {
-    check(std::strlen(text) < 100, "console lines are bounded before printing");
+    check(std::strlen(text) < 320, "console lines are bounded before printing");
     lines.insert(lines.begin() + 1, text);
     lines.resize(60);
 }
@@ -255,8 +255,8 @@ static void retailRefusals() {
 static void inputBounds() {
     openPalette();
     const int before = actions;
-    // 63 characters fit and run (an unknown command); the 64th is refused, never cut.
-    std::string line(63, 'x');
+    // 255 characters fit and run (an unknown command); the 256th is refused, never cut.
+    std::string line(255, 'x');
     command(line.c_str());
     check(newest() == "Unknown command " + line + ". Type help.", "a full-length line is kept whole");
     type((line + "y").c_str());
@@ -611,7 +611,7 @@ static void music() {
     clear(); command("music");
     check(printed("Your music: 0 tracks, playing in order.") && printed("The game's music plays."), "music alone reports the playlist");
     clear(); command("music adddir /music/My Tunes");
-    check(musicDir == "/music/My Tunes" && printed("Added 3 tracks; 1 .ogg file left out.") && printed("stereo, 44100 Hz"),
+    check(musicDir == "/music/My Tunes" && printed("Added 3 tracks, 1 .ogg file left out.") && printed("stereo, 44100 Hz"),
           "music adddir takes the rest of the line as the folder, spaces included");
     clear(); command("music adddir /music/My Tunes Are Many");
     check(musicDir == "/music/My Tunes Are Many" && printed("Cannot read the folder /music/My Tunes Are Many."),

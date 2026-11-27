@@ -422,6 +422,7 @@ void CeEditorClampView(const CeEditorBounds &b, CeEditorPoint *focus, float *dis
 #include "GameInterface.h"
 #include <stdio.h>
 #include <stdlib.h>
+extern "C" int PortCeRecordFeaturesAllowed(void) __attribute__((weak));
 
 // Open matches every placement of a project to one editor object; a project may never hold more placements than that table.
 static_assert(int(CeProjectPlacementLimit) <= int(CeEditorState::ObjectLimit), "a project's placements must fit the editor's objects");
@@ -1771,7 +1772,19 @@ bool EditorTrap(WORD key, int event) {
         EditorFit(false);
         EditorCue(CueMove);
     } else if (key == DIK_PRIOR || key == DIK_NEXT) {
-        if (gEditorState.Selected() != -1 && EditorBeginMove()) {
+        if (gEditorState.Selected() != -1 && gEditorState.Moving()) {
+            CeEditorPoint position = (gEditorState.PlayerStartSelected() ? gEditorState.PlayerStart() : gEditorState.Object(gEditorState.Selected())->position);
+            const float step = shift ? 5 : 0.5f;
+            const float dz = key == DIK_PRIOR ? -step : step;
+            position.z += dz;
+            if (gEditorState.Move(position)) {
+                gEditorPlaneZ += dz;
+                (void)ApplyOne(gEditorState.Selected());
+                EditorCue(CueMove);
+            } else {
+                EditorCue(CueBack);
+            }
+        } else if (gEditorState.Selected() != -1 && EditorBeginMove()) {
             CeEditorPoint position = (gEditorState.PlayerStartSelected() ? gEditorState.PlayerStart() : gEditorState.Object(gEditorState.Selected())->position);
             const float step = shift ? 5 : 0.5f;
             position.z += key == DIK_PRIOR ? -step : step;
@@ -2334,7 +2347,7 @@ extern "C" bool PortCeEditorBegin(int installedLevel) {
     gEditorStartRejected = false;
     gEditorChoosingPlayerStart = false;
     if (!gEditorSessionToken || gEditorRequested || !PortCeMenus() || !FRONTEND.IsRunning() ||
-        PortRecording() || !PortCeAuthoringSessionAllowed() ||
+        (PortRecording() && !(PortCeRecordFeaturesAllowed && PortCeRecordFeaturesAllowed())) || !PortCeAuthoringSessionAllowed() ||
         (PortCeMuseumVisitActive && PortCeMuseumVisitActive()) ||
         (PortCeMuseumActive && PortCeMuseumActive()) || CLIPARAMS.mRecordDemo || CLIPARAMS.mPlaybackDemo ||
         CLIPARAMS.mStressTest || CLIPARAMS.mAttractMode || installedLevel < 1 || installedLevel > 9999) {
@@ -2882,4 +2895,8 @@ float *PortCeEditorViewYaw() { return &gEditorYaw; }
 float *PortCeEditorViewPitch() { return &gEditorPitch; }
 const char *PortCeEditorNoticeShown() { return gEditorNote; }
 int PortCeEditorSelection() { return gEditorState.Selected(); }
+
+extern "C" int PortCeEditorAllowsBugClipHotkey(void) {
+    return (gEditorReady && gEditorInputOwned && LT.GetKeytrap() == (pKeyTrapper)EditorTrap) ? 1 : 0;
+}
 #endif

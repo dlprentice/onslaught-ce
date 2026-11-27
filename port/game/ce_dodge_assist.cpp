@@ -16,6 +16,7 @@
 #include "ce_dodge_assist.h"
 #include "ce_dodge_binding.h"
 #include <initializer_list>
+#include "../platform/common/ce_record_mode.h"
 #include "../platform/common/portlog.h"
 
 #include <stdio.h>
@@ -65,11 +66,30 @@ bool Present(const char *name)
 	return value && *value;
 }
 
+bool RecordCeAllowed()
+{
+#ifdef PORT_CE_RECORD_MODE_H
+	return ce_record_ce_allowed() != 0;
+#else
+	const char *ceRec = getenv("BEA_PORT_RECORD_CE");
+	if (!ceRec || ceRec[0] != '1' || ceRec[1] != '\0') return false;
+	if (!Present("BEA_PORT_RECORD") && !Present("BEA_PORT_TAPE")) return false;
+	if (Present("BEA_PORT_PILOT") || Present("BEA_PORT_AUTOPILOT") ||
+	    Present("BEA_NET_HOST") || Present("BEA_NET_JOIN") ||
+	    Present("BEA_LOCKSTEP_HOST") || Present("BEA_LOCKSTEP_JOIN")) return false;
+	return true;
+#endif
+}
+
 // The faithful and replay fences, the demos and the network: none of them may see the assist.
 bool OrdinaryPlay()
 {
-	if (!PortCeLayer() || PortRecording()) return false;
-	for (const char *name : kFenced) if (Present(name)) return false;
+	if (!RecordCeAllowed())
+	{
+		if (!PortCeLayer() || PortRecording()) return false;
+		for (const char *name : kFenced) if (Present(name)) return false;
+	}
+	else if (!PortCeLayer()) return false;
 	if (CE_BootRequested && CE_BootRequested()) return false;
 	if (CE_SessionActive && CE_SessionActive()) return false;
 	if (PLAYABLE_DEMO || CLIPARAMS.mAutoConfigTest || CLIPARAMS.mRecordDemo || CLIPARAMS.mPlaybackDemo ||

@@ -20,6 +20,7 @@ import argparse
 import gzip
 import hashlib
 import io
+import json
 import os
 import re
 import shutil
@@ -496,8 +497,9 @@ IN_THE_GAME = [
     "  Help & Info, Report a Problem and Grand Museum (each optional feature is included by default and can be toggled",
     "  in Experimental Features or ce.ini). Each row has a hint under the list. The Options page is the original's.",
     "  The game's Credits remain separate.",
-    "- Bonus Levels: Aquila Prototype, Building Defence, Carrier Clash, Living Sandbox and Race Challenge 1 to 5. None",
-    "  of them advances career progress, and each comes back to this list with its row highlighted.",
+    "- Bonus Levels: Aquila Prototype, Building Defence, Carrier Clash, Flagship Duel (1P and 2P), Living Sandbox",
+    "  (including Sanctuary Citadel) and Race Challenge 1 to 5. None of them advances career progress, and each comes",
+    "  back to this list with its row highlighted.",
     "  Aquila Prototype is the original playable-demo level (201).",
     "  Building Defence is a two-player local split-screen defence map (level 856) on this PC; the original ships it",
     "  twice, as levels 856 and 858, which are the same map, so the list has it once.",
@@ -523,8 +525,9 @@ IN_THE_GAME = [
            "developer text keeps its colour until the next start), otherwise the next time you start the game. If ce.ini "
            "cannot be written, a message says so and the row keeps its old choice. A ce.ini you have made read-only is never "
            "replaced (0.1.13 on Linux did replace it): the rows keep their choices, and the launcher's Skip this version and "
-           "Turn recording off say that the choice could not be saved and ask again the next time you start. The page is not "
-           "on the menu while a session is recorded."),
+           "Turn recording off say that the choice could not be saved and ask again the next time you start. The page stays "
+           "available in CE session recordings (--record) and is hidden in faithful recordings (--record-faithful) and "
+           "faithful replays."),
     "- Your own music: a music_dir= line in ce.ini, with the absolute path of a folder (on Linux ~/ is your home",
     "  folder), plays the folder's tracks in place of the level music; the front end and the credits keep the game's",
     "  own. A track must be Ogg Vorbis, stereo, 44100 Hz, with a full path of at most 255 bytes. Up to 256 tracks are",
@@ -532,7 +535,8 @@ IN_THE_GAME = [
     "  how they play: in order, shuffled, or one track and then quiet. Both lines are read once a session, so a change",
     "  applies the next time you start the game. Your Music in CE Settings shows the folder ce.ini sets, and the log",
     "  says how many tracks were found there. For one session, the console command music adddir <folder> adds a",
-    "  folder's tracks without changing ce.ini. Your own music is off in recordings, replays and demos.",
+    "  folder's tracks without changing ce.ini. Your own music is off in faithful recordings (--record-faithful),",
+    "  faithful replays and demos.",
     "- Help & Info: Controls & Tips (dodge, zoom, Photo Mode and screenshots, the console and the free",
     "  camera), What's Coming (planned features and their limits; it does not start those features), Updates",
     "  (how updating works and how to turn the checks off), About Onslaught CE (version, licence and links) and",
@@ -563,8 +567,8 @@ IN_THE_GAME = [
     "  The editor already supports existing-object placement, draft preview with F5 and reset with F6; a",
     "  player-start workflow and reported interaction lag remain unresolved.",
     *_item("Console: during an eligible single-player level, press the grave key (`; left of 1 on a US keyboard), type help and "
-           "press Enter. Esc or grave closes it; the game does not pause. It is unavailable in multiplayer, demos, recordings and "
-           "replays."),
+           "press Enter. Esc or grave closes it; the game does not pause. It is unavailable in multiplayer, demos, faithful "
+           "recordings (--record-faithful) and faithful replays."),
     "- Onslaught CE > Cheats: the game's own cheats as On/Off switches, kept in ce.ini so they apply to every career;",
     "  the line under the list says what the highlighted one does:",
     "  - Unlock All Levels (original code TURKEY): every level opens on the Select Level screen",
@@ -575,8 +579,8 @@ IN_THE_GAME = [
     "    and in Options (applies from the next level), for no damage and endless energy; turning the cheat off",
     "    ends god mode. God mode set this way is kept in ce.ini, not in your careers.",
     "  - Free Camera (F key, Aurore): in a level, F lets you fly the camera; F again returns it",
-    "  These switches are off in recordings and replays. Typing a code into a career's name still works as in the",
-    "  original.",
+    "  These switches are off in faithful recordings (--record-faithful) and faithful replays. Typing a code into a",
+    "  career's name still works as in the original.",
     "- Keyboard: held keys are released on focus loss, and delayed releases are repaired when possible. Typed",
     "  characters come from key presses; letter and digit keys use their physical positions across layouts.",
     *_item("Dodging in Walker mode (on the ground, not already dodging): with the default US keyboard, tap A then D "
@@ -592,17 +596,21 @@ IN_THE_GAME = [
     "  in a dodge (it lasts about three quarters of a second) is dropped, one made in its last 0.35 seconds",
     "  follows it at once. A key or button you have bound to a control of your own is not used; flight sticks",
     "  have none. It is on by default (CE Settings, Dodge Button; dodge_button=0 in ce.ini turns it off, from",
-    "  the next level) and off in recordings, replays and demos.",
+    "  the next level) and off in faithful recordings (--record-faithful), faithful replays and demos.",
     "- Zoom: with default mouse bindings, wheel down zooms in and wheel up zooms out. In eligible ordinary play,",
     "  the default gamepad's right bumper zooms in and left bumper out. Manual zoom works only with some weapons;",
     "  some zoom while charging. Check Controller Options for changed bindings.",
     *_item("Controllers: gamepad and flight-stick defaults cover menus, single-player levels, two-player split screen (one pad for each "
            "player) and bonus Co-Op when joystick controls have not been customized. Only virtual devices were tested."),
     "- Photo Mode: F11 (or the console's photo command) hides the HUD and cockpit for pictures, and F12 saves a",
-    "  screenshot. Both work in single-player levels, but not while a session is recorded or replayed, in multiplayer",
-    "  or a demo. Tested on Linux; Windows testing of it is limited (see the release notes).",
+    "  screenshot. Both work in single-player levels, but not in faithful recordings (--record-faithful), faithful",
+    "  replays, multiplayer or a demo. Tested on Linux; Windows testing of it is limited (see the release notes).",
     "  In a single-player level the Pause Menu also has a Photo Mode row, so a gamepad can reach it: it closes the",
     "  menu and turns Photo Mode on, as F11 does, and writes nothing. The row then reads End Photo Mode.",
+    *_item("Bug clips (F9): press F9 in ordinary CE play (front end, gameplay or Map Editor) to capture up to 60 seconds "
+           "(or 64 MiB) of 20 FPS video and stereo game audio plus a scrubbed diagnostic report, packaged into a single "
+           "GitHub-ready .zip in your user folder's clips folder (onslaught-ce-clip-YYYYMMDD-HHMMSS.zip). Press F9 again "
+           "to stop early. Off in faithful recordings (--record-faithful) and replays."),
     *_item("Extras: enabled by default (set extras=0 or toggle in Experimental Features to hide). Main Menu > Onslaught CE > Extras "
            "opens Service Record, Goodies Catalogue, Music Player, Lore, Back Up All Careers and Backup Preview. Reading records and "
            "previews leaves your careers unchanged."),
@@ -622,9 +630,9 @@ IN_THE_GAME = [
     "- A save that fails now says so: after the Pause Menu's Continue, the game's own save error message (\"An error",
     "  occurred during saving.\" in English, and in the language you chose) appears for a few seconds at the bottom of",
     "  the screen, and after a language change in the front end it appears in the usual message box. The career you",
-    "  had is unchanged. Recordings and replays show neither.",
+    "  had is unchanged. Faithful recordings (--record-faithful) and faithful replays show neither.",
     "- A quiet console: the developers' messages are hidden unless BEA_PORT_VERBOSE=1 is set.",
-    "- A log file for reports in your user folder, and session recording (both below).",
+    "- A log file for reports in your user folder, F9 bug clips and session recording (all below).",
     "",
     "Screen modes and widescreen",
     "Video Options > Window mode offers Windowed or Fullscreen. Choose Apply to switch without restarting.",
@@ -636,13 +644,14 @@ IN_THE_GAME = [
     "A 0.1.14 candidate switched both ways in a software-rendered Windows VM; the switch in this version",
     "has not been verified on Windows or on a physical monitor.",
     "An explicit -forcewindowed game argument takes priority.",
-    "The saved display-mode choice is ignored while recording or replaying.",
+    "The saved display-mode choice is ignored in faithful recordings (--record-faithful) and faithful replays.",
     "By default, Onslaught CE starts at your desktop's resolution; a saved or explicit screen mode can change it.",
     "Video Options lists your monitor's sizes, including widescreen ones. On a widescreen monitor the 3D view shows",
     "more to the sides (the original's vertical view is kept). Menus, loading pictures and films keep their original",
     "4:3 shape, centred with black bars. To get the original's 4:3-only list and 640 x 480 start back, set",
-    "BEA_PORT_WIDESCREEN=0. Ordinarily, replays and recordings use the original 4:3 behaviour. The original game shares",
-    "one random number source between visual effects and play, so a wider view can change the details of a fight.",
+    "BEA_PORT_WIDESCREEN=0. Faithful recordings (--record-faithful) and faithful replays use the original 4:3",
+    "behaviour. The original game shares one random number source between visual effects and play, so a wider view",
+    "can change the details of a fight.",
     "In eligible ordinary single-player levels with widescreen modes enabled, the HUD automatically scales up when",
     "both screen dimensions exceed 640 x 480, keeping the size it has at 640 x 480 relative to the screen (at 3840 x",
     "2160 it is 4.5 times as large), and so do the markers it draws on targets and objectives, each about its own",
@@ -651,8 +660,8 @@ IN_THE_GAME = [
     "restart the game after changing it); or set BEA_PORT_HUD_SCALE=0, which also keeps the corner groups below in",
     "the 4:3 columns. A BEA_PORT_HUD_SCALE that is set and not empty decides the size instead of ce.ini: a value that",
     "starts with 0 (0, 00, 05 ...) gives the original's, with the corner groups in the 4:3 columns, and any other",
-    "value the larger HUD; the HUD Size row still shows what ce.ini says. Scaling is off in recordings and replays,",
-    "split-screen multiplayer, and when BEA_PORT_WIDESCREEN=0.",
+    "value the larger HUD; the HUD Size row still shows what ce.ini says. Scaling is off in faithful recordings",
+    "(--record-faithful), faithful replays, split-screen multiplayer, and when BEA_PORT_WIDESCREEN=0.",
     "In the same play the HUD's corner groups (the target panel, objectives, radar, weapon and ammunition readouts and",
     "the radio portrait) sit in the corners of the screen, where the original's HUD sits at 4:3, while the radio",
     "messages, warnings, compass and reticle stay in the middle. On a very wide screen the corners are far apart:",
@@ -665,7 +674,8 @@ IN_THE_GAME = [
     "letters, so it can look crisp instead of soft; the letters keep their shapes, sizes and places.",
     "The text is then deliberately sharper than the original's soft pixels and looks brighter. A font's sharper copy",
     "is made the first time it is used, which can pause the game for a moment (about a tenth of a second). In ordinary",
-    "use it does not apply in recordings and replays, on 4:3 screens or when BEA_PORT_WIDESCREEN=0.",
+    "use it does not apply in faithful recordings (--record-faithful), faithful replays, on 4:3 screens or when",
+    "BEA_PORT_WIDESCREEN=0.",
     "For testing, a valid BEA_PORT_WIDE_TEST=WIDTHxHEIGHT forces wide modes even during recording or replay and when",
     "BEA_PORT_WIDESCREEN=0. Unset it before making a faithful reference tape.",
     "",
@@ -692,32 +702,37 @@ def help_lines(windows: bool) -> list:
                            "the version, your OS and GPU and the game's messages. Home paths and account-name path components are "
                            "shortened; look the file over before sharing it. You can share it directly with someone helping you.",
                            README_WIDTH, break_on_hyphens=False),
-            "If you recorded the session (below), attach its tape too.",
+            "If you captured a bug clip with F9, drag its single .zip from your clips folder straight into the GitHub",
+            "issue box (it bundles the video and scrubbed report). If you recorded a session (below), mention that the",
+            "tape exists rather than uploading raw .tape files publicly.",
             "",
             "Help make Onslaught CE more faithful",
-            "We compare recorded input with the original; recordings of real play can reveal differences our tests miss.",
-            *textwrap.wrap(f"Record one session with {launcher} --record, or every session with Onslaught CE > CE Settings > "
+            "We compare recorded input with the original and reproduce CE bugs from recorded sessions.",
+            *textwrap.wrap(f"Record one CE session with {launcher} --record, or every session with Onslaught CE > CE Settings > "
                            "Session Recording. That starts the next time you start Onslaught CE (quit the game, then start it "
-                           "again); it puts record_sessions=1 in ce.ini in your user folder.", README_WIDTH, break_on_hyphens=False),
-            f"While it is on, each start asks whether to record: Turn recording off there, or starting with",
-            f"{launcher} --no-record, turns it off again.",
+                           "again); it puts record_sessions=1 in ce.ini in your user folder. For a faithful 4:3 parity "
+                           f"recording without the CE layer, run {launcher} --record-faithful.", README_WIDTH, break_on_hyphens=False),
+            f"While record_sessions=1 is set, each start asks whether to record: Turn recording off there, or starting",
+            f"with {launcher} --no-record, turns it off again.",
             "By default, recording targets 30 frames a second for play and uses the replay clock. Its menus take",
             "the keyboard and mouse, and you can type a career's name. Direct gamepad and flight-stick input is",
             "disabled during recording and replay because the tape does not record it. An older tape made with live",
-            "controller input cannot recover it and may replay differently. The screen is normally the original 4:3.",
-            "The menus are the original's: the version text, no Onslaught CE menu and no Cheats page, and only cheats",
-            "typed into a career's name work. The larger HUD, console, CE tutorial dodge and zoom cues, and the saved display",
-            "mode are off; see Dodging in Walker mode above. By default the game tries to play sound through the audio monitor",
-            "when a device is available.",
+            "controller input cannot recover it and may replay differently. With --record (or record_sessions=1),",
+            "Onslaught CE features, widescreen, HUD scaling and the Onslaught CE menu stay on (mods remain off for",
+            "reproducibility), and session logs stay active. With --record-faithful, the screen is the original 4:3,",
+            "the menus are the original's (no Onslaught CE menu or Cheats page), and CE additions are off. By default",
+            "the game tries to play sound through the audio monitor when a device is available.",
             "Each completed session is saved in the tapes folder beside ce.ini as a .tape and a .tape.json. The tape",
             "records key presses and releases, typed text, mouse input, their frame numbers and the game's rendering",
             "size for menu mouse input. The JSON includes version/build, platform/OS, date/time, clock, frame rate,",
-            "audio-monitor setting, game arguments and encoded copies of some user-folder files at the start,",
-            "including game options, careers and possibly other files. Session recording does not capture video, game",
-            "audio or microphone audio. Both files can contain personal information; review them before sharing.",
-            "To share a completed session, zip both files and say what differed from the original and roughly when.",
-            "An interrupted or failed capture may leave an .incomplete file; it is not a completed recording. Keep it",
-            "for diagnosis rather than replaying it.",
+            "audio-monitor setting, ce_features flag, game arguments and encoded copies of retail start files",
+            "(options, registry, careers) plus, for CE recordings, a filtered safe subset of ce.ini gameplay/UI",
+            "settings (paths, endpoints and private keys are stripped). Session recording does not capture video,",
+            "game audio or microphone audio (use F9 for video+audio clips). Both files can still contain personal",
+            "information (such as typed text or career names); review them before sharing.",
+            "To share a completed session, mention it in your issue (or zip both files for a maintainer) and say what",
+            "happened and roughly when. An interrupted or failed capture may leave an .incomplete file; it is not a",
+            "completed recording. Keep it for diagnosis rather than replaying it.",
             ""]
 
 
@@ -742,8 +757,8 @@ def limitations(windows: bool) -> list:
             "  controls. Only virtual devices have been tested; physical controllers and Windows drivers remain open.",
             "- Physical audio devices and listening quality have not been validated by the recorded and virtual controls.",
         "  Audio backend initialization alone does not demonstrate audible playback.",
-            "- Widescreen play is not compared with the original (the original has no widescreen); ordinary replays and",
-            "  recordings use 4:3.",
+            "- Widescreen play is not compared with the original (the original has no widescreen); faithful recordings",
+            "  (--record-faithful) and faithful replays use 4:3.",
             ("- Planned, not in this version yet: additional HUD options and further online match polish." if NETWORK else
              "- Planned, not in this version yet: Internet multiplayer and additional HUD options."),
             ""]
@@ -768,12 +783,23 @@ NOTICE_LINES = [
 ]
 
 
-def notice(version: str, windows: bool) -> bytes:
+def notice(version: str, windows: bool, *, with_ice: bool = False, with_native_signaling: bool = False,
+           with_text_chat: bool = False) -> bytes:
     target = "windows" if windows else "linux"
+    flags = ["--public"]
+    if NETWORK:
+        flags.append("--with-network")
+    if with_ice:
+        flags.append("--with-ice")
+    if with_native_signaling:
+        flags.append("--with-native-signaling")
+    if with_text_chat:
+        flags.append("--with-text-chat")
+    build_cmd = f"python3 port/build.py {' '.join(flags)} --target {target} --ce-version {version}"
     return "\n".join([f"Onslaught CE {version}", "", *NOTICE_LINES, "",
                       "Onslaught CE is free software under the GNU General Public License version 3 only (COPYING).",
                       f"Corresponding source: {source_url(version)};",
-                      f"build with `python3 port/build.py --public --target {target} --ce-version {version}`; libvorbis_vc6",
+                      f"build with `{build_cmd}`; libvorbis_vc6",
                       "from release vorbis-vc6-1, built by port/vorbis/build.py.",
                       "", *D3DAPP, "",
                       "Third-party components and their licences: THIRD-PARTY-NOTICES.txt and licenses/.", ""]).encode()
@@ -792,7 +818,7 @@ for arg in "$@"; do
 	case "$arg" in
 		--version|--apply) preflight=0; break ;;
 		--update-only|--rollback|--report) preflight=0 ;;
-		--no-update-check|--record|--no-record) ;;
+		--no-update-check|--record|--record-faithful|--no-record) ;;
 		*) break ;;
 	esac
 done
@@ -1270,9 +1296,19 @@ def package(a):
         files[f"{top}/{launcher_name}"] = (lstripped.read_bytes(), 0o755)
         lstripped.unlink()
         files.update({f"{top}/{k}": (v, 0o644) for k, v in licences(windows).items()})
+        with_text_chat = False
+        if with_ice and ice_payload and "source/libjuice-PROVENANCE.json" in ice_payload["files"]:
+            prov = json.loads(ice_payload["files"]["source/libjuice-PROVENANCE.json"].decode("utf-8"))
+            with_text_chat = bool(prov.get("build", {}).get("with_text_chat", with_native_signaling))
+        elif with_native_signaling:
+            with_text_chat = True
         files[f"{top}/THIRD-PARTY-NOTICES.txt"] = (notices(a.version, windows), 0o644)
         files[f"{top}/README.txt"] = (readme(a.version, windows), 0o644)
-        files[f"{top}/NOTICE.txt"] = (notice(a.version, windows), 0o644)
+        files[f"{top}/NOTICE.txt"] = (
+            notice(a.version, windows, with_ice=with_ice,
+                   with_native_signaling=with_native_signaling, with_text_chat=with_text_chat),
+            0o644,
+        )
         if with_ice:
             files.update({f"{top}/{name}": (data, 0o644) for name, data in ice_payload["files"].items()})
             files[f"{top}/THIRD-PARTY-NOTICES.txt"] = (files[f"{top}/THIRD-PARTY-NOTICES.txt"][0] + b"\n" + ice_payload["notice"], 0o644)
@@ -1288,6 +1324,16 @@ def package(a):
                 key = f"{top}/{name}"
                 files[key] = (files[key][0] + native_payload["notice"], files[key][1])
             key = f"{top}/README.txt"
+            old_ice_banner = (
+                b"EXPERIMENTAL ICE-enabled package. The connection instructions below describe direct-IP mode.\n"
+                b"This build does not include a provider account, server address or TURN credentials.\n"
+            )
+            new_online_banner = (
+                b"EXPERIMENTAL Online Multiplayer & ICE-enabled package. See \"Online Multiplayer (Play Online)\" at the end of\n"
+                b"this file for lobby play, and \"Network game\" below for direct-IP mode. This build does not include a\n"
+                b"personal provider account or embedded TURN credentials; entering Play Online contacts the configured lobby server.\n"
+            )
+            readme_bytes = files[key][0].replace(old_ice_banner, new_online_banner, 1)
             online_note = (
                 b"\nOnline Multiplayer (Play Online)\n"
                 b"- Main Menu > Multiplayer > Play Online (or press O) opens the 2 to 4 player online lobby browser,\n"
@@ -1299,7 +1345,7 @@ def package(a):
                 b"- Direct LAN / IP two-player co-op remains available under Direct LAN / IP and Onslaught CE > Network Game.\n"
                 b"\nNative-signaling dependency source and license notices are included; see NATIVE-SIGNALING-SOURCE-NOTICE.txt.\n"
             )
-            files[key] = (files[key][0] + online_note, files[key][1])
+            files[key] = (readme_bytes + online_note, files[key][1])
         shipped = list(WINDOWS_DLLS) if windows else [(d / so).resolve() for d, so in LINUX_LIBS]
         bad = [f"{f.name}: {l}" for f in shipped for l in machine_paths(f)]
         if bad:

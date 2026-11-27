@@ -191,10 +191,17 @@ bool WritePrivateFileReplaceWin(const std::wstring& dir_wide, const std::string&
     if (!CeWinAcl::ValidLeafName(temp_leaf)) return false;
     CeWinAcl::OwnerOnlySecurity sec;
     if (!sec.Init(false)) return false;
-    const std::wstring temp_path = dir_wide + L"\\" + temp_leaf;
-    const std::wstring final_path = dir_wide + L"\\" + final_leaf;
-    CeWinAcl::ScopedHandle file(CreateFileW(temp_path.c_str(), GENERIC_WRITE, 0, &sec.sa, CREATE_NEW,
-                                            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+    const std::wstring temp_path = CeWinAcl::ExtendedPath(dir_wide + L"\\" + temp_leaf);
+    const std::wstring final_path = CeWinAcl::ExtendedPath(dir_wide + L"\\" + final_leaf);
+    CeWinAcl::ScopedHandle file;
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        file = CeWinAcl::ScopedHandle(CreateFileW(temp_path.c_str(), GENERIC_WRITE, 0, &sec.sa, CREATE_NEW,
+                                                  FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+        if (file.Good()) break;
+        const DWORD err = GetLastError();
+        if (err != ERROR_ACCESS_DENIED && err != ERROR_SHARING_VIOLATION) break;
+        if (attempt + 1 < 8) Sleep(25);
+    }
     if (!file.Good()) return false;
     const auto* bytes = static_cast<const uint8_t*>(data);
     size_t offset = 0;
@@ -211,8 +218,17 @@ bool WritePrivateFileReplaceWin(const std::wstring& dir_wide, const std::string&
     if (ok) ok = FlushFileBuffers(file.value) != 0;
     file.Reset();
     if (ok) {
-        ok = MoveFileExW(temp_path.c_str(), final_path.c_str(),
-                         MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+        ok = false;
+        for (int attempt = 0; attempt < 8; ++attempt) {
+            if (MoveFileExW(temp_path.c_str(), final_path.c_str(),
+                            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0) {
+                ok = true;
+                break;
+            }
+            const DWORD err = GetLastError();
+            if (err != ERROR_ACCESS_DENIED && err != ERROR_SHARING_VIOLATION) break;
+            if (attempt + 1 < 8) Sleep(25);
+        }
     }
     if (!ok) DeleteFileW(temp_path.c_str());
     return ok;

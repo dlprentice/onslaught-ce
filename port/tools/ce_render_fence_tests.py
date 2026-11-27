@@ -247,12 +247,12 @@ class RenderFenceTests(unittest.TestCase):
             return True, ran.returncode
 
     def test_patch_applies_cleanly_and_leaves_faithful_build_unchanged(self):
-        hook_sites = tuple(sorted(p.name for p in (ROOT / "port/patches").glob("03[01][0-9]-ce-hook-*.patch")))
         with tempfile.TemporaryDirectory(prefix="render-fence-patch-") as td:
             base = Path(td)
             full = patched(base / "full", ("DXEngine.cpp",))["DXEngine.cpp"]
-            with_patch = patched(base / "with", ("DXEngine.cpp",), skip=hook_sites)["DXEngine.cpp"]
-            without_patch = patched(base / "without", ("DXEngine.cpp",), skip=(PATCH.name, *hook_sites))["DXEngine.cpp"]
+            dependent = ("0381-ce-perf-surf-museum-fixes.patch", "0397-ce-audio-pause-museum-shader-fixes.patch", "0398-ce-bugclip-frontend-overlay.patch")
+            with_patch = patched(base / "with", ("DXEngine.cpp",), skip=dependent)["DXEngine.cpp"]
+            without_patch = patched(base / "without", ("DXEngine.cpp",), skip=(PATCH.name, *dependent))["DXEngine.cpp"]
         self.assertNotEqual(with_patch, without_patch)
         self.assertEqual(faithful(with_patch), faithful(without_patch))
         self.assertRegex(

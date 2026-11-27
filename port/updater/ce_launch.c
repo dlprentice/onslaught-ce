@@ -3,8 +3,8 @@
  * install and starts the game from this folder with the game folder and
  * a per-user writable folder. It never writes into the game folder.
  *
- *   onslaught-ce [--version] [--no-update-check] [--update-only] [--rollback] [--record] [--no-record] [--report]
- *                [-- GAME ARGUMENTS]
+ *   onslaught-ce [--version] [--no-update-check] [--update-only] [--rollback] [--record] [--record-faithful]
+ *                [--no-record] [--report] [-- GAME ARGUMENTS]
  *
  * The log: the game's output and the launcher's own messages go to <user folder>/onslaught-ce.log (the run before is
  * onslaught-ce.old.log; each stops at 4 MiB) and still to the terminal. Two fixed leased fallback logs admit concurrent
@@ -12,11 +12,13 @@
  * OS and the GPU (the game's "onslaught-ce: adapter" line). It never names the player's account: home is written ~ (Windows
  * %APPDATA% and the like) and the account name <user>. A continuation keeps the same log. A replay
  * (BEA_PORT_TAPE) or a harness recording (BEA_PORT_RECORD) gets no log, no update check and nothing else of the launcher's.
- * Session recording (--record, or record_sessions=1 in ce.ini): the game records its input to <user folder>/tapes/
- * YYYYMMDD-HHMMSS-PID-SERIAL.tape (port/platform/common/replay.cpp's record mode, on the shim clock at 30 Presents a
- * second) with a .json beside it naming the version, build, OS, date and game arguments; never during replay. While
- * record_sessions=1, each start asks first (Record, Not this time, Turn recording off), because a recorded session hides the
- * game's CE page where the setting was switched on; --no-record also sets record_sessions=0 and starts unrecorded.
+ * Session recording (--record, --record-faithful, or record_sessions=1 in ce.ini): the game records its input to
+ * <user folder>/tapes/YYYYMMDD-HHMMSS-PID-SERIAL.tape (port/platform/common/replay.cpp's record mode, on the shim clock
+ * at 30 Presents a second) with a .json beside it naming the version, build, OS, date and game arguments; never during
+ * replay. --record (and record_sessions=1) keeps CE features enabled (BEA_PORT_RECORD_CE=1) and exports a filtered safe
+ * subset of ce.ini; --record-faithful records in 4:3 faithful mode without the CE layer. While record_sessions=1, each
+ * start asks first (Record, Not this time, Turn recording off); --no-record also sets record_sessions=0 and starts
+ * unrecorded.
  * --report opens the pre-filled "Report a problem" page (ce_report.h) and prints the log folder.
  *
  * Updates (ce_update_v2.h, UPDATER-V2.md): a signed ce-update-v2.json feed, never the old latest.json; the player is
@@ -67,6 +69,7 @@ static const char PUBLIC_KEY_HEX[] = "b6cf39b727c92cd8a1682c31f315a5d38427dce912
 #include <direct.h>
 #include <io.h>
 #include <sys/stat.h>
+#include "../platform/common/ce_win_reparse.h"
 #define PLATFORM "windows-i686"
 #define SEP "\\"
 #define GAME_EXE "bea.exe"
@@ -513,7 +516,7 @@ static int log_acquire_lease(int slot, unsigned long *error)
 	BY_HANDLE_FILE_INFORMATION info;
 	if (!GetFileInformationByHandle(h, &info)) { *error = log_native_error(); CloseHandle(h); return -1; }
 	if (GetFileType(h) != FILE_TYPE_DISK || info.nNumberOfLinks != 1 ||
-		(info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)))
+		(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || ce_win_handle_is_link(h, info.dwFileAttributes))
 	{ *error = log_invalid_file(); CloseHandle(h); return -1; }
 	if (!SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0)) { *error = log_native_error(); CloseHandle(h); return -1; }
 	OVERLAPPED offset = {0};
@@ -556,7 +559,7 @@ static FILE *log_open_file(const char *path, enum LogOpen mode, unsigned long *e
 	BY_HANDLE_FILE_INFORMATION info;
 	if (!GetFileInformationByHandle(h, &info)) { *error = log_native_error(); CloseHandle(h); return NULL; }
 	if (GetFileType(h) != FILE_TYPE_DISK || info.nNumberOfLinks != 1 ||
-		(info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) ||
+		(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || ce_win_handle_is_link(h, info.dwFileAttributes) ||
 		info.nFileSizeHigh || info.nFileSizeLow > LOG_CAP)
 	{ *error = log_invalid_file(); CloseHandle(h); return NULL; }
 	if (!SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0)) { *error = log_native_error(); CloseHandle(h); return NULL; }
@@ -928,7 +931,7 @@ static char *read_regular_bounded(const char *p, size_t max_bytes, size_t *n)
 	if (h == INVALID_HANDLE_VALUE) return NULL;
 	BY_HANDLE_FILE_INFORMATION info;
 	if (GetFileType(h) != FILE_TYPE_DISK || !GetFileInformationByHandle(h, &info) ||
-		(info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) ||
+		(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || ce_win_handle_is_link(h, info.dwFileAttributes) ||
 		info.nFileSizeHigh || info.nFileSizeLow > max_bytes)
 	{
 		CloseHandle(h);
@@ -996,7 +999,7 @@ static char *read_ini_bounded(const char *ini_path, size_t *n)
 		{
 			BY_HANDLE_FILE_INFORMATION info;
 			if (GetFileType(in) == FILE_TYPE_DISK && GetFileInformationByHandle(in, &info) &&
-				!(info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) &&
+				!(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && !ce_win_handle_is_link(in, info.dwFileAttributes) &&
 				!info.nFileSizeHigh && info.nFileSizeLow <= CE_INI_MAX_BYTES)
 				raw = in;
 			else
@@ -1637,12 +1640,98 @@ static int ascii_iends(const char *s, const char *suffix)
 	return sl > xl && ascii_ieq(s + sl - xl, suffix);
 }
 
-/* The user folder's retail state files as the session starts (defaultoptions.bea, registry.ini, savegames/<name>.bes),
- * so a replay can start from the same state: "relative/path": base64, in the .json. Using a strict allowlist ensures
- * private credentials (online-profile.key, online-profile.ini), ce.ini, logs, mods, backups, screenshots, and links
- * can never be exported into shareable session recordings. */
+/* Strict allowlist of replay-relevant gameplay/UI/graphics/experimental ce.ini keys safe to include in shareable
+ * CE session recordings. Never admits paths (gamedir, music_dir, career_backup_folder), endpoints/network keys
+ * (lobby_url, signaling_url, turn_*, online_*, net_port), mods, launcher state, or any value with '/', '\', or '://'. */
+static int ce_ini_key_safe_for_tape(const char *key, size_t len)
+{
+	static const char *const kSafeKeys[] = {
+		"aniso", "anisotropic_filtering", "catalogue",
+		"cheat_aurore", "cheat_latete", "cheat_maladim", "cheat_malloy", "cheat_turkey", "cheat_v3r5iof", "cheats",
+		"commander", "commander_key", "commander_tactical_map", "console_theme",
+		"debrief_stats", "dev_stats", "dodge_button", "dodge_key", "dynamic_shadow_res",
+		"extra_graphics", "extras", "factory_exercise", "full_models", "full_tree_models", "full_unit_models",
+		"god_mode", "hud_anchor", "hud_scale",
+		"map_editor", "mods_menu", "msaa", "multi_be", "multi_be_cam", "multi_be_campaign", "multi_be_hud_slot",
+		"museum", "music_playtype", "muspell",
+		"network_game", "play_side", "play_unit", "rumble",
+		"sandbox_telemetry", "sharp_ui", "solo_skirmish", "take_unit_key",
+		"terrain_detail", "terrain_detail_distance", "vsync",
+		"water_reflection_res", "wide_mode_h", "wide_mode_w", "widescreen", "windowed"
+	};
+	for (size_t i = 0; i < sizeof kSafeKeys / sizeof kSafeKeys[0]; ++i)
+		if (strlen(kSafeKeys[i]) == len && !memcmp(kSafeKeys[i], key, len))
+			return 1;
+	return 0;
+}
+
+static char *filter_ce_ini_for_tape(const char *raw, size_t raw_len, size_t *out_len)
+{
+	*out_len = 0;
+	if (!raw || !raw_len || memchr(raw, 0, raw_len)) return NULL;
+	size_t start = (raw_len >= 3 && (unsigned char)raw[0] == 0xEF &&
+	                (unsigned char)raw[1] == 0xBB && (unsigned char)raw[2] == 0xBF) ? 3 : 0;
+	char *out = (char *)malloc(raw_len + 2);
+	if (!out) return NULL;
+	size_t used = 0;
+	for (size_t at = start; at < raw_len;)
+	{
+		const char *line = raw + at;
+		const char *nl = (const char *)memchr(line, '\n', raw_len - at);
+		size_t n = nl ? (size_t)(nl - line) : raw_len - at;
+		at += n + (nl ? 1 : 0);
+		size_t s = 0, e = n;
+		while (s < e && (line[s] == ' ' || line[s] == '\t')) ++s;
+		while (e > s && (line[e - 1] == '\r' || line[e - 1] == ' ' || line[e - 1] == '\t')) --e;
+		if (s == e || line[s] == ';' || line[s] == '#') continue;
+		if (e - s == sizeof(CE_INI_EXPERIMENTAL_HEADER) - 1 &&
+		    !memcmp(line + s, CE_INI_EXPERIMENTAL_HEADER, sizeof(CE_INI_EXPERIMENTAL_HEADER) - 1))
+		{
+			memcpy(out + used, CE_INI_EXPERIMENTAL_HEADER "\n", sizeof(CE_INI_EXPERIMENTAL_HEADER));
+			used += sizeof(CE_INI_EXPERIMENTAL_HEADER);
+			continue;
+		}
+		const char *eq = (const char *)memchr(line + s, '=', e - s);
+		if (!eq) continue;
+		size_t ke = (size_t)(eq - line);
+		while (ke > s && (line[ke - 1] == ' ' || line[ke - 1] == '\t')) --ke;
+		size_t klen = ke - s;
+		if (!klen || !ce_ini_key_safe_for_tape(line + s, klen)) continue;
+		size_t vs = (size_t)(eq - line) + 1;
+		while (vs < e && (line[vs] == ' ' || line[vs] == '\t')) ++vs;
+		size_t vlen = e - vs;
+		if (vlen == 0 || vlen > 64) continue;
+		int bad_val = 0;
+		for (size_t i = 0; i < vlen; ++i)
+		{
+			unsigned char c = (unsigned char)line[vs + i];
+			if (c < 0x20 || c == 0x7F || c == '/' || c == '\\') { bad_val = 1; break; }
+			if (i + 2 < vlen && line[vs + i] == ':' && line[vs + i + 1] == '/' && line[vs + i + 2] == '/')
+			{
+				bad_val = 1;
+				break;
+			}
+		}
+		if (bad_val) continue;
+		memcpy(out + used, line + s, klen);
+		used += klen;
+		out[used++] = '=';
+		memcpy(out + used, line + vs, vlen);
+		used += vlen;
+		out[used++] = '\n';
+	}
+	out[used] = 0;
+	*out_len = used;
+	return out;
+}
+
+/* The user folder's start-of-session files, base64-encoded into the .tape.json: retail state files
+ * (defaultoptions.bea, registry.ini, savegames/<name>.bes) plus, when CE recording is enabled, a filtered safe subset
+ * of ce.ini (gameplay/UI/graphics switches only — paths, server/network endpoints, and private keys are stripped).
+ * Using a strict allowlist ensures private credentials (online-profile.key, online-profile.ini), raw ce.ini paths
+ * (gamedir, music_dir, career_backup_folder), logs, mods, backups, screenshots, and links are never exported. */
 #define START_CAP (4u << 20)
-static void json_start_files(FILE *f, const char *dir, const char *rel, int *first, size_t *total)
+static void json_start_files(FILE *f, const char *dir, const char *rel, int *first, size_t *total, int include_ce_ini)
 {
 	size_t cap = 64, count = 0;
 	char (*names)[256] = (char (*)[256])malloc(cap * sizeof *names);
@@ -1697,7 +1786,7 @@ static void json_start_files(FILE *f, const char *dir, const char *rel, int *fir
 		snprintf(sub, sizeof sub, "%s%s%s", rel, *rel ? "/" : "", nm);
 #ifdef _WIN32
 		DWORD attr = GetFileAttributesA(path);
-		if (attr == INVALID_FILE_ATTRIBUTES || (attr & FILE_ATTRIBUTE_REPARSE_POINT)) continue;
+		if (attr == INVALID_FILE_ATTRIBUTES || ce_win_path_is_link_a(path, attr)) continue;
 		int isdir = (attr & FILE_ATTRIBUTE_DIRECTORY) != 0;
 #else
 		struct stat st;
@@ -1708,12 +1797,15 @@ static void json_start_files(FILE *f, const char *dir, const char *rel, int *fir
 		if (isdir)
 		{
 			if (!*rel && ascii_ieq(nm, "savegames"))
-				json_start_files(f, path, sub, first, total);
+				json_start_files(f, path, sub, first, total, include_ce_ini);
 			continue;
 		}
+		int is_ce_ini = 0;
 		if (!*rel)
 		{
-			if (!ascii_ieq(nm, "defaultoptions.bea") && !ascii_ieq(nm, "registry.ini"))
+			if (include_ce_ini && ascii_ieq(nm, "ce.ini"))
+				is_ce_ini = 1;
+			else if (!ascii_ieq(nm, "defaultoptions.bea") && !ascii_ieq(nm, "registry.ini"))
 				continue;
 		}
 		else if (ascii_ieq(rel, "savegames"))
@@ -1731,6 +1823,15 @@ static void json_start_files(FILE *f, const char *dir, const char *rel, int *fir
 		size_t n = 0;
 		char *data = read_regular_bounded(path, max_file, &n);
 		if (!data) continue;
+		if (is_ce_ini)
+		{
+			size_t fn = 0;
+			char *filtered = filter_ce_ini_for_tape(data, n, &fn);
+			free(data);
+			if (!filtered || !fn) { free(filtered); continue; }
+			data = filtered;
+			n = fn;
+		}
 		if (n <= (1u << 20) && *total + n <= START_CAP)
 		{
 			fprintf(f, "%s\n    ", *first ? "" : ",");
@@ -1795,7 +1896,7 @@ static FILE *reserve_recording(const char *dir, const char *stamp, char *path, s
 }
 
 /* Session recording: the game's record mode writes the tape (replay.cpp); the .json beside it says what made it. */
-static void start_recording(char **args, int nargs)
+static void start_recording_ex(char **args, int nargs, int ce_features)
 {
 	const char *tape = getenv("BEA_PORT_TAPE"), *rec = getenv("BEA_PORT_RECORD");
 	if ((tape && *tape) || (rec && *rec))
@@ -1803,6 +1904,8 @@ static void start_recording(char **args, int nargs)
 		say("not recording this session: %s is set", tape && *tape ? "BEA_PORT_TAPE (a replay)" : "BEA_PORT_RECORD");
 		return;
 	}
+	const char *rec_ce_env = getenv("BEA_PORT_RECORD_CE");
+	if (rec_ce_env && !strcmp(rec_ce_env, "0")) ce_features = 0;
 	sRecordingRequested = 1;
 	sRecordingPublished = sRecordingFailed = 0;
 	sRecordingPath[0] = 0;
@@ -1842,8 +1945,8 @@ static void start_recording(char **args, int nargs)
 		json_string(f, os);
 		fprintf(f, ",\n  \"date_utc\": \"%s\",\n  \"clock\": ", date);
 		json_string(f, clock);
-		fprintf(f, ",\n  \"presents_per_second\": 30,\n  \"audio_monitor\": %s,\n  \"game_args\": [",
-				monitor_on ? "true" : "false");
+		fprintf(f, ",\n  \"presents_per_second\": 30,\n  \"audio_monitor\": %s,\n  \"ce_features\": %s,\n  \"game_args\": [",
+				monitor_on ? "true" : "false", ce_features ? "true" : "false");
 		for (int i = 0; i < nargs; i++)
 		{
 			fprintf(f, i ? ", " : "");
@@ -1852,7 +1955,7 @@ static void start_recording(char **args, int nargs)
 		fprintf(f, "],\n  \"start_files\": {");
 		int first = 1;
 		size_t total = 0;
-		json_start_files(f, sUser, "", &first, &total);
+		json_start_files(f, sUser, "", &first, &total, ce_features);
 		fprintf(f, "\n  }\n}\n");
 		int ok = !ferror(f);
 		if (fflush(f)) ok = 0;
@@ -1872,12 +1975,14 @@ static void start_recording(char **args, int nargs)
 	/* No record-mode side effects until the complete metadata has been checked and closed. */
 	if (default_clock) set_env("BEA_PORT_CLOCK", "shim"); /* 1/30 s a Present, paced to real time */
 	if (default_monitor) set_env("BEA_AUDIO_MONITOR", "1");
+	if (ce_features) set_env("BEA_PORT_RECORD_CE", "1");
+	else unset_env("BEA_PORT_RECORD_CE");
 	set_env("BEA_PORT_RECORD", path);
 	snprintf(sRecordingPath, sizeof sRecordingPath, "%s", path);
 	char shortpath[PATHN];
 	ce_short_path(path, shortpath, sizeof shortpath);
-	say("recording this session to %s: while recording the game runs at 30 frames a second; its menus take the "
-		"keyboard and mouse", shortpath);
+	say("recording this session to %s%s: while recording the game runs at 30 frames a second; its menus take the "
+		"keyboard and mouse", shortpath, ce_features ? " (CE features on)" : " (faithful mode)");
 }
 
 /* A normal game exit alone does not prove a capture. The exact child's acknowledgement and a nonlink regular final
@@ -1888,7 +1993,7 @@ static int finish_recording(int game_status)
 	int regular = 0;
 #ifdef _WIN32
 	DWORD attr = GetFileAttributesA(sRecordingPath);
-	regular = attr != INVALID_FILE_ATTRIBUTES && !(attr & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT));
+	regular = attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY) && !ce_win_path_is_link_a(sRecordingPath, attr);
 #else
 	struct stat st;
 	regular = !lstat(sRecordingPath, &st) && S_ISREG(st.st_mode);
@@ -2155,7 +2260,7 @@ static int redirected_output(DWORD stream)
 
 int main(int argc, char **argv)
 {
-	int updateonly = 0, rollback = 0, nocheck = 0, record = 0, norecord = 0, report = 0, first = argc;
+	int updateonly = 0, rollback = 0, nocheck = 0, record = 0, record_faithful = 0, norecord = 0, report = 0, first = argc;
 #ifdef _WIN32
 	/* Capture redirection before attaching: attachment can supply previously absent standard handles. */
 	int out_redirected = redirected_output(STD_OUTPUT_HANDLE);
@@ -2169,7 +2274,7 @@ int main(int argc, char **argv)
 #endif
 	/* The historical in-place swap helper's entry point is refused before anything else, whatever version is active. */
 	static const char *const options[] = {"--version", "--no-update-check", "--update-only", "--rollback", "--record",
-		"--no-record", "--report"};
+		"--record-faithful", "--no-record", "--report"};
 	int pre_rollback = 0;
 	for (int i = 1; i < argc; i++)
 	{
@@ -2203,6 +2308,7 @@ int main(int argc, char **argv)
 		else if (!strcmp(argv[i], "--update-only")) updateonly = 1;   /* check and offer an update now; no game */
 		else if (!strcmp(argv[i], "--rollback")) rollback = 1;        /* the previous version becomes active; no game */
 		else if (!strcmp(argv[i], "--record")) record = 1;
+		else if (!strcmp(argv[i], "--record-faithful")) { record = 1; record_faithful = 1; }
 		else if (!strcmp(argv[i], "--no-record")) norecord = 1;   /* sets record_sessions=0 and starts unrecorded */
 		else if (!strcmp(argv[i], "--report")) report = 1;
 		else if (!strcmp(argv[i], "--")) { first = i + 1; break; }
@@ -2293,7 +2399,7 @@ int main(int argc, char **argv)
 	}
 	else if (record || (ini_record && (sReplay || ask_record())))	/* a replay: start_recording says why not */
 	{
-		start_recording(argv + first, argc - first);
+		start_recording_ex(argv + first, argc - first, !record_faithful);
 		/* The explicit CLI path may be unattended even with a display; do not add a blocking dialog there. */
 		if (*sRecordingPath)
 			say("Direct gamepad and flight-stick controls are unavailable while recording; use the keyboard and mouse.");

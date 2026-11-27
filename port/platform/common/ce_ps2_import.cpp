@@ -29,6 +29,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include "ce_win_reparse.h"
 #else
 #include <dirent.h>
 #include <errno.h>
@@ -420,7 +421,8 @@ public:
 		LARGE_INTEGER sz{};
 		if (GetFileType(h) != FILE_TYPE_DISK ||
 			!GetFileInformationByHandle(h, &info) ||
-			(info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DEVICE)) ||
+			(info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_DEVICE)) ||
+			ce_win_handle_is_link(h, info.dwFileAttributes) ||
 			!GetFileSizeEx(h, &sz) || sz.QuadPart < 0)
 		{
 			CloseHandle(h);
@@ -2350,7 +2352,7 @@ private:
 			return false;
 		const DWORD rootAttr = GetFileAttributesW(wcur.data());
 		if (rootAttr == INVALID_FILE_ATTRIBUTES || !(rootAttr & FILE_ATTRIBUTE_DIRECTORY) ||
-			(rootAttr & FILE_ATTRIBUTE_REPARSE_POINT))
+			ce_win_path_is_link_w(wcur.data(), rootAttr))
 			return false;
 
 		size_t start = 0;
@@ -2364,7 +2366,7 @@ private:
 			if (!Utf8ToWide(cur, &wcur))
 				return false;
 			const DWORD attr = GetFileAttributesW(wcur.data());
-			if (attr == INVALID_FILE_ATTRIBUTES || (attr & FILE_ATTRIBUTE_REPARSE_POINT))
+			if (attr == INVALID_FILE_ATTRIBUTES || ce_win_path_is_link_w(wcur.data(), attr))
 				return false;
 			if (slash != std::string::npos && !(attr & FILE_ATTRIBUTE_DIRECTORY))
 				return false;
@@ -3406,7 +3408,7 @@ bool EnsureRealDirWin(const std::string &path)
 	if (!CreateDirectoryW(wp.data(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS)
 		return false;
 	const DWORD attr = GetFileAttributesW(wp.data());
-	return attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY) && !(attr & FILE_ATTRIBUTE_REPARSE_POINT);
+	return attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY) && !ce_win_path_is_link_w(wp.data(), attr);
 }
 
 void RemoveTreeWin(const std::string &path)
@@ -3417,7 +3419,7 @@ void RemoveTreeWin(const std::string &path)
 	const DWORD attr = GetFileAttributesW(wp.data());
 	if (attr == INVALID_FILE_ATTRIBUTES)
 		return;
-	if ((attr & FILE_ATTRIBUTE_REPARSE_POINT) || !(attr & FILE_ATTRIBUTE_DIRECTORY))
+	if (ce_win_path_is_link_w(wp.data(), attr) || !(attr & FILE_ATTRIBUTE_DIRECTORY))
 	{
 		if (attr & FILE_ATTRIBUTE_DIRECTORY)
 			RemoveDirectoryW(wp.data());
@@ -3552,7 +3554,7 @@ bool ListExactRealEntries(const std::string &dir, const std::vector<std::pair<co
 	{
 		if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0)
 			continue;
-		if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)
+		if (ce_win_find_is_link(fd.dwFileAttributes, fd.dwReserved0))
 		{
 			ok = false;
 			break;
@@ -3679,7 +3681,7 @@ void CheckWindowsTargetReplaceable(const char *user_dir, bool modLoaded)
 	const DWORD attr = GetFileAttributesW(wtarget.data());
 	if (attr == INVALID_FILE_ATTRIBUTES)
 		return;
-	if ((attr & FILE_ATTRIBUTE_REPARSE_POINT) || !(attr & FILE_ATTRIBUTE_DIRECTORY))
+	if (ce_win_path_is_link_w(wtarget.data(), attr) || !(attr & FILE_ATTRIBUTE_DIRECTORY))
 		Fail(kErrStageFailed);
 	// Probe DELETE access (required for MoveFileExW directory rename) without modifying
 	// the folder. Fails immediately with ERROR_SHARING_VIOLATION if mods.cpp's Mod::root
@@ -3740,7 +3742,7 @@ void StageModAtomically(const char *user_dir, const std::vector<uint8_t> &archiv
 		Fail(kErrStageFailed);
 	const DWORD existingAttr = GetFileAttributesW(wtarget.data());
 	const bool targetExists = (existingAttr != INVALID_FILE_ATTRIBUTES);
-	if (targetExists && ((existingAttr & FILE_ATTRIBUTE_REPARSE_POINT) || !(existingAttr & FILE_ATTRIBUTE_DIRECTORY)))
+	if (targetExists && (ce_win_path_is_link_w(wtarget.data(), existingAttr) || !(existingAttr & FILE_ATTRIBUTE_DIRECTORY)))
 		Fail(kErrStageFailed);
 	const unsigned long pid = (unsigned long)GetCurrentProcessId();
 #else

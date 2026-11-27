@@ -192,11 +192,13 @@ class AnisoQualityTests(unittest.TestCase):
 
     def test_patch_leaves_faithful_build_unchanged(self):
         files = ("game.cpp", "DXEngine.cpp", "DXLandscape.cpp", "DXWater.cpp")
-        hook_sites = tuple(sorted(p.name for p in (ROOT / "port/patches").glob("03[01][0-9]-ce-hook-*.patch")))
+        hook_sites = tuple(sorted(p.name for p in (ROOT / "port/patches").glob("03[0-9][0-9]-ce-hook-*.patch")))
         with tempfile.TemporaryDirectory(prefix="aniso-patch-") as td:
             base = Path(td)
-            with_p = patched(base / "with", files, skip=hook_sites)
-            without_p = patched(base / "without", files, skip=("0355-ce-anisotropic-filtering.patch", *hook_sites))
+            # Isolate 0355 cleanly by stopping the queue after 0355 (later patches like 0381+ sit on top of 0355).
+            later = tuple(sorted(p.name for p in (ROOT / "port/patches").glob("*.patch") if p.name > "0355-ce-anisotropic-filtering.patch"))
+            with_p = patched(base / "with", files, skip=later)
+            without_p = patched(base / "without", files, skip=("0355-ce-anisotropic-filtering.patch", *later))
         for name in files:
             with self.subTest(file=name):
                 self.assertNotEqual(with_p[name], without_p[name])

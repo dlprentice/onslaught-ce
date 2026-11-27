@@ -600,9 +600,15 @@ extern "C" DWORD WINAPI GetCurrentProcessId(void) { return (DWORD)getpid(); }
 // PortExitHook is weak: only a test-only diagnostic build defines it (to seal its record, which no atexit handler can,
 // as the process ends with _exit); in every other build the pointer is null and nothing is called.
 extern "C" void PortExitHook(int status) __attribute__((weak));
+#ifdef CE_VERSION
+extern "C" void PortCeBugClipShutdown(void) __attribute__((weak));
+#endif
 extern "C" DECLSPEC_NORETURN void WINAPI ExitProcess(UINT code)
 {
 	if (PORT_FEEL_ON()) PortFeelFlush();		// the frame-feel log (feel.h): no atexit handler runs here either
+#ifdef CE_VERSION
+	if (PortCeBugClipShutdown) PortCeBugClipShutdown();
+#endif
 	fflush(NULL);
 	if (PortExitHook)
 		PortExitHook((int)code);

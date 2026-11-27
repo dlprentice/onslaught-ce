@@ -4,6 +4,7 @@
 #include "MenuItem.h"
 #include "ce_graphics_policy.h"
 #include "ce_notice.h"
+extern "C" int PortCeRecordFeaturesAllowed(void) __attribute__((weak));
 #include <stdlib.h>
 
 extern bool PortCeMenus();
@@ -36,11 +37,14 @@ bool PortCeQualityOptionsAvailable()
 {
 #ifdef CE_VERSION
     // Even a forced CE layer must not add controls to a faithful reference run.
-    const char *fences[] = { "BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_PROBES", "BEA_PORT_RECORD" };
-    for (unsigned i = 0; i < sizeof(fences) / sizeof(fences[0]); ++i)
+    if (!(PortCeRecordFeaturesAllowed && PortCeRecordFeaturesAllowed()))
     {
-        const char *value = getenv(fences[i]);
-        if (value && *value) return false;
+        const char *fences[] = { "BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_PROBES", "BEA_PORT_RECORD" };
+        for (unsigned i = 0; i < sizeof(fences) / sizeof(fences[0]); ++i)
+        {
+            const char *value = getenv(fences[i]);
+            if (value && *value) return false;
+        }
     }
     return PortCeMenus();
 #else

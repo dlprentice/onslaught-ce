@@ -25,7 +25,7 @@
 +			// Port (widescreen): cover the whole window with retail's transition flash rather than clipping to the 4:3 box.
 +			PortWideViewport(0);
 +			CSPRITERENDERER::DrawColouredSprite(-10.f - PortUiLeft() / PortUiScale(), -10.f - PortUiTop() / PortUiScale(), 0.001f,
-+				FED.GetTexture(FET2_WHITE), BlendAlpha2(0xffffffff, SINT((1.f - d * (1.f / 0.15f)) * 128.f)),
++				FED.GetTexture(FET2_WHITE), BlendAlpha2(0xffffffff, SINT((1.f - d * (1.f / 0.15f)) * 52.f)),
 +				((float)PLATFORM.GetWindowWidth() / PortUiScale() + 40.f) / 32.f,
 +				((float)PLATFORM.GetWindowHeight() / PortUiScale() + 40.f) / 32.f);
 +			PortWideViewport(1);
@@ -33,7 +33,7 @@
 +		else
 +		{
 +			scale = PLATFORM.GetWindowWidth() * (1.f / 32.f);
-+			CSPRITERENDERER::DrawColouredSprite(0.f, 0.f, 0.001f, FED.GetTexture(FET2_WHITE), BlendAlpha2(0xffffffff, SINT((1.f - d * (1.f / 0.15f)) * 128.f)), scale, scale);
++			CSPRITERENDERER::DrawColouredSprite(0.f, 0.f, 0.001f, FED.GetTexture(FET2_WHITE), BlendAlpha2(0xffffffff, SINT((1.f - d * (1.f / 0.15f)) * (PortCeLayer() ? 52.f : 128.f))), scale, scale);
 +		}
 +#else
  		scale = PLATFORM.GetWindowWidth() * (1.f / 32.f);

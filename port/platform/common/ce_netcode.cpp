@@ -10,6 +10,8 @@
 #include <time.h>
 #ifdef _WIN32
 #include <windows.h>
+#include "ce_win_reparse.h"
+#include "../../network/windows_private_acl.h"
 #else
 #include <errno.h>
 #include <fcntl.h>
@@ -476,18 +478,29 @@ int CE_HandoffWrite(const char *path, const CE_Handoff *h)
 	WCHAR w[1024];
 	if (Wide(path, w, 1024))
 	{
-		// The user folder (%APPDATA%) carries the account's own access control; Windows has no mode bits to set.
-		HANDLE f = CreateFileW(w, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
-		if (f != INVALID_HANDLE_VALUE)
+		CeWinAcl::OwnerOnlySecurity sec;
+		if (sec.Init(false))
 		{
-			DWORD wrote = 0;
-			ok = WriteFile(f, text, (DWORD)n, &wrote, NULL) && wrote == n;
-			if (!ok) {
-				LARGE_INTEGER zero = {};
-				if (SetFilePointerEx(f, zero, NULL, FILE_BEGIN))
-					(void)SetEndOfFile(f);
+			HANDLE f = INVALID_HANDLE_VALUE;
+			for (int attempt = 0; attempt < 8; ++attempt)
+			{
+				f = CreateFileW(w, GENERIC_WRITE, 0, &sec.sa, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+				if (f != INVALID_HANDLE_VALUE) break;
+				DWORD err = GetLastError();
+				if (err != ERROR_SHARING_VIOLATION && err != ERROR_ACCESS_DENIED) break;
+				if (attempt + 1 < 8) Sleep(25);
 			}
-			ok = CloseHandle(f) && ok;
+			if (f != INVALID_HANDLE_VALUE)
+			{
+				DWORD wrote = 0;
+				ok = WriteFile(f, text, (DWORD)n, &wrote, NULL) && wrote == n;
+				if (!ok) {
+					LARGE_INTEGER zero = {};
+					if (SetFilePointerEx(f, zero, NULL, FILE_BEGIN))
+						(void)SetEndOfFile(f);
+				}
+				ok = CloseHandle(f) && ok;
+			}
 		}
 	}
 #else
@@ -513,15 +526,27 @@ int CE_HandoffRead(const char *path, int64_t now, CE_Handoff *h, const char **er
 		memset(h, 0, sizeof *h);
 #ifdef _WIN32
 	WCHAR w[1024];
-	HANDLE f = (path && Wide(path, w, 1024)) ? CreateFileW(w, GENERIC_READ, 0, NULL, OPEN_EXISTING,
-		FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL) : INVALID_HANDLE_VALUE;
+	HANDLE f = INVALID_HANDLE_VALUE;
+	if (path && Wide(path, w, 1024))
+	{
+		for (int attempt = 0; attempt < 8; ++attempt)
+		{
+			f = CreateFileW(w, GENERIC_READ, 0, NULL, OPEN_EXISTING,
+				FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+			if (f != INVALID_HANDLE_VALUE) break;
+			DWORD err = GetLastError();
+			if (err != ERROR_SHARING_VIOLATION && err != ERROR_ACCESS_DENIED) break;
+			if (attempt + 1 < 8) Sleep(25);
+		}
+	}
 	if (f == INVALID_HANDLE_VALUE)
 		why = "the handoff file is missing";
 	else
 	{
 		BY_HANDLE_FILE_INFORMATION info;
 		FILETIME ft;
-		if (!GetFileInformationByHandle(f, &info) || (info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)))
+		if (!GetFileInformationByHandle(f, &info) || (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ||
+			ce_win_handle_is_link(f, info.dwFileAttributes))
 			why = "the handoff file is not a plain file";
 		else if (info.nFileSizeHigh || info.nFileSizeLow > CE_HANDOFF_MAX_BYTES)
 			why = "the handoff file is too large";
@@ -1147,14 +1172,28 @@ static const OwnedFile InvalidOwnedFile = INVALID_HANDLE_VALUE;
 static OwnedFile OwnerOpen(const char *path, bool create) {
     WCHAR w[1024];
     if (!path || !Wide(path, w, 1024)) return INVALID_HANDLE_VALUE;
-    return CreateFileW(w, GENERIC_READ | GENERIC_WRITE, 0, 0,
-                       create ? CREATE_NEW : OPEN_EXISTING,
-                       FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, 0);
+    CeWinAcl::OwnerOnlySecurity sec;
+    LPSECURITY_ATTRIBUTES psa = nullptr;
+    if (create) {
+        if (!sec.Init(false)) return INVALID_HANDLE_VALUE;
+        psa = &sec.sa;
+    }
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        HANDLE h = CreateFileW(w, GENERIC_READ | GENERIC_WRITE, 0, psa,
+                               create ? CREATE_NEW : OPEN_EXISTING,
+                               FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, 0);
+        if (h != INVALID_HANDLE_VALUE) return h;
+        DWORD err = GetLastError();
+        if (err != ERROR_SHARING_VIOLATION && err != ERROR_ACCESS_DENIED) break;
+        if (attempt + 1 < 8) Sleep(25);
+    }
+    return INVALID_HANDLE_VALUE;
 }
 static bool OwnerInfo(OwnedFile file, CE_HandoffOwner &owner, uint64_t &size) {
     BY_HANDLE_FILE_INFORMATION info;
     if (GetFileType(file) != FILE_TYPE_DISK || !GetFileInformationByHandle(file, &info) ||
-        (info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) ||
+        (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ||
+        ce_win_handle_is_link(file, info.dwFileAttributes) ||
         info.nNumberOfLinks != 1) return false;
     size = (uint64_t(info.nFileSizeHigh) << 32) | info.nFileSizeLow;
     if (size >= OwnedTextCapacity) return false;

@@ -80,6 +80,7 @@ namespace
 // Static BSS host storage (~34 KB total for 4 slots; never allocated on 32-bit x86 stack).
 CePlayerObs          gSlotObs[CE_PLAYER_MAX_SLOTS];
 bool                 gSlotObsValid[CE_PLAYER_MAX_SLOTS];
+int32_t              gSlotAllegiance[CE_PLAYER_MAX_SLOTS] = {-1, -1, -1, -1};
 CeAiTacticalL2State  gTacticalState[CE_PLAYER_MAX_SLOTS];
 CePlayerObsSinkFn    gObsSink = nullptr;
 uint32_t             gLastActTick = 0u;
@@ -191,13 +192,14 @@ bool DryProbe(const FVector &p, float waterZ, float margin)
 }
 
 void BuildSlotObs(uint8_t slot, CBattleEngine *be, uint32_t simTick, uint32_t matchSeed,
-                  uint32_t toggles, CePlayerObs &obs)
+                  uint32_t toggles, bool teamHasHuman, CePlayerObs &obs)
 {
 	memset(&obs, 0, sizeof(obs));
 	obs.simTick = simTick;
 	obs.matchSeed = matchSeed;
 	obs.slot = slot;
 	obs.activeToggles = toggles;
+	obs.teamHasHuman = teamHasHuman ? 1u : 0u;
 	if (!be) return;
 
 	const EBattleEngineState st = be->GetState();
@@ -295,8 +297,16 @@ void BuildSlotObs(uint8_t slot, CBattleEngine *be, uint32_t simTick, uint32_t ma
 		const float dy = uPos.Y - myPos.Y;
 		const float dz = uPos.Z - myPos.Z;
 		const float dSq = dx * dx + dy * dy + dz * dz;
-		const bool isFriendly = (u->GetAllegiance() == be->GetAllegiance());
-		if (!CePlayerObsEntityVisible(isFriendly, u->OnScanner() != FALSE, dSq))
+		const EAllegiance uAlleg = u->GetAllegiance();
+		const bool isFriendly = (uAlleg == be->GetAllegiance());
+		const bool isRepairPadName = u->GetUnitData() && u->GetUnitData()->mName &&
+			(ContainsAsciiICase(u->GetUnitData()->mName, "Repair Pad") ||
+			 ContainsAsciiICase(u->GetUnitData()->mName, "Health Pad"));
+		const bool isUsableRepairPad = isRepairPadName && (isFriendly || uAlleg == kIndependentAllegiance);
+		const bool isNeutral = !isFriendly &&
+			(isUsableRepairPad || uAlleg == kIndependentAllegiance || uAlleg == kNeutralAllegiance ||
+			 !be->IsTargetAlligence(uAlleg));
+		if (!CePlayerObsEntityVisible(isFriendly || isUsableRepairPad, u->OnScanner() != FALSE, dSq))
 			continue;
 
 		const uint32_t distQ = CePlayerObsQuantizeDistSq(dSq);
@@ -329,21 +339,15 @@ void BuildSlotObs(uint8_t slot, CBattleEngine *be, uint32_t simTick, uint32_t ma
 		e.handle = handle;
 		e.spawnSeq = spawnSeq;
 		e.distSqQuantized = distQ;
-		e.allegiance = static_cast<int32_t>(u->GetAllegiance());
+		e.allegiance = static_cast<int32_t>(uAlleg);
 		e.targetClass = ClassifyTarget(u);
 		e.isFriendly = isFriendly ? 1u : 0u;
 		e.airborne = (u->IsA(THING_TYPE_AIR_UNIT) != FALSE) ? 1u : 0u;
 		e.inWater = (u->IsInWater() != FALSE) ? 1u : 0u;
 		e.isBattleEngine = (u->IsA(THING_TYPE_BATTLE_ENGINE) != FALSE) ? 1u : 0u;
 		e.isBaseBuilding = (u->IsA(THING_TYPE_BUILDING) != FALSE) ? 1u : 0u;
-		e.isRepairPad = 0u;
-		if ((isFriendly || u->GetAllegiance() == kIndependentAllegiance) && u->GetUnitData() && u->GetUnitData()->mName)
-		{
-			const char *nm = u->GetUnitData()->mName;
-			if (ContainsAsciiICase(nm, "Repair Pad") || ContainsAsciiICase(nm, "Health Pad"))
-				e.isRepairPad = 1u;
-		}
-		e.reserved = 0u;
+		e.isRepairPad = isUsableRepairPad ? 1u : 0u;
+		e.isNeutral = isNeutral ? 1u : 0u;
 		e.pos[0] = uPos.X; e.pos[1] = uPos.Y; e.pos[2] = uPos.Z;
 		const FVector uVel = u->GetVelocity();
 		e.vel[0] = uVel.X; e.vel[1] = uVel.Y; e.vel[2] = uVel.Z;
@@ -359,7 +363,7 @@ void BuildSlotObs(uint8_t slot, CBattleEngine *be, uint32_t simTick, uint32_t ma
 		FVector rangeRef = myPos;
 		for (uint32_t i = 0u; i < obs.entityCount; ++i)
 		{
-			if (!obs.entities[i].isFriendly)
+			if (CePlayerObsEntityIsHostile(obs.entities[i]))
 			{
 				rangeRef = FVector(obs.entities[i].pos[0], obs.entities[i].pos[1], obs.entities[i].pos[2]);
 				break;
@@ -437,6 +441,7 @@ extern "C" void PortCePlayerHooksLevelReset(void)
 	for (int i = 0; i < CE_PLAYER_MAX_SLOTS; ++i)
 	{
 		gSlotObsValid[i] = false;
+		gSlotAllegiance[i] = -1;
 		CeAiTacticalL2Reset(&gTacticalState[i]);
 	}
 	CePlayUnitSlotsReset();
@@ -459,6 +464,13 @@ extern "C" void PortCePlayerHooksAct(uint32_t sim_tick)
 	if (toggles & CE_TOGGLE_PLAY_UNIT)
 		CePlayUnitSlotsTick(sim_tick);
 
+	// Record live slot allegiances up front so teammate checks stay stable across 5s human respawn windows.
+	for (int s = 0; s < slotCount && s < CE_PLAYER_MAX_SLOTS; ++s)
+	{
+		if (CBattleEngine *sBe = CeMultiBeAiHostSlotEngine(s))
+			gSlotAllegiance[s] = static_cast<int32_t>(sBe->GetAllegiance());
+	}
+
 	// Strictly ascending slot order 0..slotCount-1 for cross-peer determinism.
 	for (int slot = 0; slot < slotCount && slot < CE_PLAYER_MAX_SLOTS; ++slot)
 	{
@@ -466,13 +478,34 @@ extern "C" void PortCePlayerHooksAct(uint32_t sim_tick)
 		if (!be || be->IsDying())
 		{
 			gSlotObsValid[slot] = false;
+			if (CePlayUnitSlotUnit(static_cast<uint8_t>(slot)) != kCeEntityHandleInvalid)
+			{
+				CePlayUnitSlotRelease(static_cast<uint8_t>(slot));
+				gTacticalState[slot].possessedUnit = kCeEntityHandleInvalid;
+			}
 			continue;
 		}
 		const bool isAi = CeMultiBeAiHostSlotIsAi(slot);
 		if (!isAi && !gObsSink)
 			continue;
 
-		BuildSlotObs(static_cast<uint8_t>(slot), be, sim_tick, matchSeed, toggles, gSlotObs[slot]);
+		const int32_t myAllegiance = static_cast<int32_t>(be->GetAllegiance());
+		bool hasHumanTeammate = false;
+		if (isAi)
+		{
+			for (int other = 0; other < slotCount && other < CE_PLAYER_MAX_SLOTS; ++other)
+			{
+				if (other == slot || CeMultiBeAiHostSlotIsAi(other))
+					continue;
+				if (gSlotAllegiance[other] == myAllegiance)
+				{
+					hasHumanTeammate = true;
+					break;
+				}
+			}
+		}
+
+		BuildSlotObs(static_cast<uint8_t>(slot), be, sim_tick, matchSeed, toggles, hasHumanTeammate, gSlotObs[slot]);
 		gSlotObsValid[slot] = true;
 
 		// Publish snapshot to optional Layer-3 lock-free double buffer inside player_act (R1).
@@ -502,16 +535,27 @@ extern "C" void PortCePlayerHooksAct(uint32_t sim_tick)
 			gTacticalState[slot].possessedUnit = (toggles & CE_TOGGLE_PLAY_UNIT)
 				? CePlayUnitSlotUnit(static_cast<uint8_t>(slot))
 				: kCeEntityHandleInvalid;
+			// When a human teammate has Commander authority on this team, Allied AI defers
+			// squad orders and never hijacks units out of the human's squads.
+			const bool deferToHumanCommander = hasHumanTeammate && ((toggles & CE_TOGGLE_COMMANDER) != 0u);
 			CeCommanderIntent cmd = {};
 			CePossessIntent possess = {};
 			CeAiTacticalL2Decide(&gTacticalState[slot], gSlotObs[slot], prior, &cmd, &possess);
-			if (cmd.valid && (toggles & CE_TOGGLE_COMMANDER))
+			if (cmd.valid && (toggles & CE_TOGGLE_COMMANDER) && !deferToHumanCommander)
 			{
 				int why = CE_WHY_NONE;
 				CeCmdIssueForSlot(static_cast<uint8_t>(slot), gSlotObs[slot].allegiance,
 				                  cmd.squadHandle, cmd.verb, cmd.goalX, cmd.goalY, &why, nullptr);
 			}
-			if (possess.valid && (toggles & CE_TOGGLE_PLAY_UNIT))
+			if (deferToHumanCommander && (toggles & CE_TOGGLE_PLAY_UNIT))
+			{
+				if (CePlayUnitSlotUnit(static_cast<uint8_t>(slot)) != kCeEntityHandleInvalid)
+				{
+					CePlayUnitSlotRelease(static_cast<uint8_t>(slot));
+					gTacticalState[slot].possessedUnit = kCeEntityHandleInvalid;
+				}
+			}
+			else if (possess.valid && (toggles & CE_TOGGLE_PLAY_UNIT))
 			{
 				if (possess.release)
 				{

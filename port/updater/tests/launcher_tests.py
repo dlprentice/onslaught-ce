@@ -28,6 +28,7 @@ echo "game_pid=$$"
 echo "out: args $*"
 echo "onslaught-ce: adapter Stand-in GPU (vendor 8086, device 1234, driver 1.2.3.4)" >&2
 echo "env: rec=${BEA_PORT_RECORD:-} clock=${BEA_PORT_CLOCK:-} build=${BEA_CE_BUILD:-} monitor=${BEA_AUDIO_MONITOR:-}"
+echo "rec_ce=${BEA_PORT_RECORD_CE:-}"
 echo "folder_logged=${BEA_CE_GAME_FOLDER_LOGGED:-}"
 echo "custom_user_dir=${BEA_CE_CUSTOM_USER_DIR:-unset} user_dir_set=${BEA_USER_DIR:+1}"
 # The Linux entry point receives the launcher's marker; a direct launch still reports both paths.
@@ -206,6 +207,30 @@ class Launcher(unittest.TestCase):
         meta = json.loads(sorted((self.user / "tapes").glob("*.tape.json"))[0].read_text())
         self.assertIs(meta["audio_monitor"], False)
         self.assertIn("monitor=0", r.stderr)
+
+    def test_record_ce_features_and_faithful_flag(self):
+        self.user.mkdir()
+        (self.user / "ce.ini").write_text("hud_scale=1\ncommander=1\n")
+        (self.user / "defaultoptions.bea").write_bytes(b"\x01\x02\x03")
+        (self.user / "online-profile.key").write_bytes(b"private-ed25519-key-material")
+        (self.user / "online-profile.ini").write_bytes(b"handle=TestPilot\n")
+        r = self.run_launcher("--record")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("rec_ce=1", r.stdout + r.stderr)
+        tapes = sorted((self.user / "tapes").glob("*.tape.json"))
+        self.assertEqual(len(tapes), 1)
+        meta = json.loads(tapes[0].read_text())
+        self.assertIs(meta["ce_features"], True)
+        self.assertEqual(sorted(meta["start_files"]), ["ce.ini", "defaultoptions.bea"])
+        # Faithful recording flag disables CE features and excludes ce.ini from start_files
+        r2 = self.run_launcher("--record-faithful")
+        self.assertEqual(r2.returncode, 0, r2.stdout + r2.stderr)
+        self.assertIn("rec_ce=\n", (r2.stdout + r2.stderr) + "\n")
+        tapes2 = sorted((self.user / "tapes").glob("*.tape.json"))
+        self.assertEqual(len(tapes2), 2)
+        meta2 = json.loads([t for t in tapes2 if t != tapes[0]][0].read_text())
+        self.assertIs(meta2["ce_features"], False)
+        self.assertEqual(sorted(meta2["start_files"]), ["defaultoptions.bea"])
 
     def test_normal_game_exit_does_not_hide_recording_failure(self):
         result = self.run_launcher("--record", FAKE="record-fail")

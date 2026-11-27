@@ -30,6 +30,9 @@
 
 #ifdef CE_VERSION
 bool PortCeLayer();	// ce.cpp
+extern "C" int PortCeBugClipActive(void) __attribute__((weak));
+extern "C" int PortCeBugClipWantFrame(unsigned *outMaxW, unsigned *outMaxH) __attribute__((weak));
+extern "C" void PortCeBugClipSubmitFrame(const void *pixels, int pitch, int width, int height, unsigned d3dFormat) __attribute__((weak));
 #endif
 #if defined(CE_VERSION) && defined(BEA_PUBLIC_GRAPHICS_HOST)
 bool PortDinputMouseAcquired();	// dinput.cpp owns the current gameplay/menu input intent
@@ -408,6 +411,43 @@ IDirect3DDevice9 *gDevice;		// the game's device (PortWideViewport)
 
 unsigned gResets;			// completed resets: Direct3D puts every sampler state back to its default (the BEA_PORT_D3DLOG record starts again)
 
+#ifdef CE_VERSION
+IDirect3DSurface9 *gClipFlat, *gClipScaled, *gClipSys;
+UINT gClipFlatW, gClipFlatH, gClipScaledW, gClipScaledH, gClipSysW, gClipSysH;
+D3DFORMAT gClipFlatFmt, gClipScaledFmt, gClipSysFmt;
+typedef ULONG (STDMETHODCALLTYPE *DeviceReleaseFn)(IDirect3DDevice9 *);
+DeviceReleaseFn gDeviceRelease;
+bool gReleasingClipSurfaces;
+
+void ReleaseBugClipSurfaces()
+{
+	if (gClipSys) { gClipSys->Release(); gClipSys = NULL; }
+	if (gClipScaled) { gClipScaled->Release(); gClipScaled = NULL; }
+	if (gClipFlat) { gClipFlat->Release(); gClipFlat = NULL; }
+	gClipFlatW = gClipFlatH = gClipScaledW = gClipScaledH = gClipSysW = gClipSysH = 0;
+}
+
+ULONG STDMETHODCALLTYPE DeviceRelease(IDirect3DDevice9 *dev)
+{
+	if (dev == gDevice && !gReleasingClipSurfaces && (gClipSys || gClipScaled || gClipFlat))
+	{
+		ULONG ownRefs = (gClipSys ? 1u : 0u) + (gClipScaled ? 1u : 0u) + (gClipFlat ? 1u : 0u);
+		dev->AddRef();
+		ULONG cur = gDeviceRelease(dev);
+		if (cur <= 1u + ownRefs)
+		{
+			gReleasingClipSurfaces = true;
+			ReleaseBugClipSurfaces();
+			gReleasingClipSurfaces = false;
+		}
+	}
+	ULONG left = gDeviceRelease(dev);
+	if (dev == gDevice && left == 0)
+		gDevice = NULL;
+	return left;
+}
+#endif
+
 HRESULT STDMETHODCALLTYPE Reset(IDirect3DDevice9 *device, D3DPRESENT_PARAMETERS *pp)
 {
 	HWND focus = NULL;
@@ -415,6 +455,7 @@ HRESULT STDMETHODCALLTYPE Reset(IDirect3DDevice9 *device, D3DPRESENT_PARAMETERS 
 	if (SUCCEEDED(device->GetCreationParameters(&cp)))
 		focus = cp.hFocusWindow;
 #ifdef CE_VERSION
+	ReleaseBugClipSurfaces();
 	CeCursorBeforeModeChange cursorBefore(focus, pp);
 #endif
 	const UINT prevBoxW = gBoxW, prevBoxH = gBoxH;
@@ -863,6 +904,93 @@ void TakeCeShot(IDirect3DDevice9 *dev)
 	if (status == CE_SHOT_SAVED) fprintf(stderr, PORT_LOG_PREFIX "screenshot %s saved (frame %u)\n", name, gFrames);
 	else fprintf(stderr, PORT_LOG_PREFIX "screenshot not saved (status %d, frame %u)\n", status, gFrames);
 	PortCePhotoShotDone(status, name);
+}
+
+// F9 bug clip capture: reuses GPU-downscaled target + system-memory surface so Present() stays fast and allocation-free.
+void CaptureBugClipFrame(IDirect3DDevice9 *dev, unsigned maxW, unsigned maxH)
+{
+	IDirect3DSurface9 *back = NULL;
+	if (FAILED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &back)) || !back)
+		return;
+	D3DSURFACE_DESC d;
+	back->GetDesc(&d);
+	if (!d.Width || !d.Height)
+	{
+		back->Release();
+		return;
+	}
+	UINT tw = d.Width, th = d.Height;
+	if (maxW && maxH && (tw > maxW || th > maxH))
+	{
+		double s = (double)maxW / (double)tw;
+		double sh = (double)maxH / (double)th;
+		if (sh < s) s = sh;
+		tw = (UINT)((double)tw * s + 0.5);
+		th = (UINT)((double)th * s + 0.5);
+	}
+	if (tw >= 16) tw &= ~15u;
+	if (th >= 16) th &= ~15u;
+	if (tw < 16) tw = d.Width;
+	if (th < 16) th = d.Height;
+
+	IDirect3DSurface9 *source = back;
+	if (d.MultiSampleType != D3DMULTISAMPLE_NONE)
+	{
+		if (!gClipFlat || gClipFlatW != d.Width || gClipFlatH != d.Height || gClipFlatFmt != d.Format)
+		{
+			if (gClipFlat) { gClipFlat->Release(); gClipFlat = NULL; }
+			if (SUCCEEDED(dev->CreateRenderTarget(d.Width, d.Height, d.Format, D3DMULTISAMPLE_NONE, 0, FALSE, &gClipFlat, NULL)))
+			{
+				gClipFlatW = d.Width; gClipFlatH = d.Height; gClipFlatFmt = d.Format;
+			}
+		}
+		if (!gClipFlat || FAILED(dev->StretchRect(back, NULL, gClipFlat, NULL, D3DTEXF_NONE)))
+		{
+			back->Release();
+			return;
+		}
+		source = gClipFlat;
+	}
+
+	UINT finalW = d.Width, finalH = d.Height;
+	D3DFORMAT finalFmt = d.Format;
+	IDirect3DSurface9 *finalSrc = source;
+	if (tw != d.Width || th != d.Height)
+	{
+		if (!gClipScaled || gClipScaledW != tw || gClipScaledH != th || gClipScaledFmt != d.Format)
+		{
+			if (gClipScaled) { gClipScaled->Release(); gClipScaled = NULL; }
+			if (SUCCEEDED(dev->CreateRenderTarget(tw, th, d.Format, D3DMULTISAMPLE_NONE, 0, FALSE, &gClipScaled, NULL)))
+			{
+				gClipScaledW = tw; gClipScaledH = th; gClipScaledFmt = d.Format;
+			}
+		}
+		if (gClipScaled &&
+			(SUCCEEDED(dev->StretchRect(source, NULL, gClipScaled, NULL, D3DTEXF_LINEAR)) ||
+			 SUCCEEDED(dev->StretchRect(source, NULL, gClipScaled, NULL, D3DTEXF_POINT))))
+		{
+			finalSrc = gClipScaled;
+			finalW = tw; finalH = th;
+		}
+	}
+	if (!gClipSys || gClipSysW != finalW || gClipSysH != finalH || gClipSysFmt != finalFmt)
+	{
+		if (gClipSys) { gClipSys->Release(); gClipSys = NULL; }
+		if (SUCCEEDED(dev->CreateOffscreenPlainSurface(finalW, finalH, finalFmt, D3DPOOL_SYSTEMMEM, &gClipSys, NULL)))
+		{
+			gClipSysW = finalW; gClipSysH = finalH; gClipSysFmt = finalFmt;
+		}
+	}
+	if (gClipSys && SUCCEEDED(dev->GetRenderTargetData(finalSrc, gClipSys)))
+	{
+		D3DLOCKED_RECT lr;
+		if (SUCCEEDED(gClipSys->LockRect(&lr, NULL, D3DLOCK_READONLY)))
+		{
+			PortCeBugClipSubmitFrame(lr.pBits, lr.Pitch, (int)finalW, (int)finalH, (unsigned)finalFmt);
+			gClipSys->UnlockRect();
+		}
+	}
+	back->Release();
 }
 #endif
 
@@ -1335,6 +1463,14 @@ HRESULT STDMETHODCALLTYPE Present(IDirect3DDevice9 *dev, const RECT *src, const 
 #ifdef CE_VERSION
 	if (PortCePhotoShotWanted())
 		TakeCeShot(dev);
+	if (PortCeBugClipWantFrame && PortCeBugClipSubmitFrame)
+	{
+		unsigned maxW = 0, maxH = 0;
+		if (PortCeBugClipWantFrame(&maxW, &maxH))
+			CaptureBugClipFrame(dev, maxW, maxH);
+		else if ((gClipSys || gClipScaled || gClipFlat) && PortCeBugClipActive && !PortCeBugClipActive())
+			ReleaseBugClipSurfaces();
+	}
 #endif
 	// testhooks.h: a frame a test harness asked for, and its end (closed as the player closes the window). Null in every
 	// build but a --test-kit one.
@@ -1447,6 +1583,7 @@ HRESULT STDMETHODCALLTYPE CreateDevice(IDirect3D9 *d3d, UINT adapter, D3DDEVTYPE
 	}
 	unsigned short before = ControlWord();
 #ifdef CE_VERSION
+	ReleaseBugClipSurfaces();
 	CeCursorBeforeModeChange cursorBefore(focus, pp);
 #endif
 	DesktopFullscreen(focus, pp);
@@ -1490,6 +1627,9 @@ HRESULT STDMETHODCALLTYPE CreateDevice(IDirect3D9 *d3d, UINT adapter, D3DDEVTYPE
 		void **table = HookTable(*out, kDeviceSlots);
 #ifdef CE_VERSION
 		NoteDeviceTable(table);
+		if (!gDeviceRelease)
+			gDeviceRelease = (DeviceReleaseFn)table[2];
+		SetSlot(table, 2, (void *)&DeviceRelease);
 #endif
 		if (!gPresent)
 			gPresent = (PresentFn)table[17];

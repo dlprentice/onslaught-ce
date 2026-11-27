@@ -77,6 +77,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+extern "C" int PortCeRecordFeaturesAllowed(void) __attribute__((weak));
 #include <string.h>
 
 #if !defined(__clang__) && !defined(__GNUC__)
@@ -253,7 +254,7 @@ bool TacticalMapAllowed()
 // or a Commander match (a versus level one person plays: ce_cmdmatch.h holds the one admission rule, which the order layer asks too).
 bool Eligible()
 {
-	if (!CeCmdMapOn() || !PortCeLayer() || PortRecording()) return false;
+	if (!CeCmdMapOn() || !PortCeLayer() || (PortRecording() && !(PortCeRecordFeaturesAllowed && PortCeRecordFeaturesAllowed()))) return false;
 	if ((CE_BootRequested && CE_BootRequested()) || (CE_SessionActive && CE_SessionActive())) return false;
 	if ((PortCeMuseumVisitActive && PortCeMuseumVisitActive()) || (PortCeEditorActive && PortCeEditorActive())) return false;
 	if (PLAYABLE_DEMO || CLIPARAMS.mAutoConfigTest || CLIPARAMS.mRecordDemo || CLIPARAMS.mPlaybackDemo || CLIPARAMS.mStressTest ||
@@ -3439,7 +3440,7 @@ CeCommanderCameraContext StrategicContext() {
     if (!Allowed() || GAME.IsPaused()) return c;
     CPlayer* player = GAME.GetPlayer(0);
     CBattleEngine* pilot = player ? player->GetBattleEngine() : NULL;
-    const CeEntityHandle pilotHandle = CeEntityHandleFor(pilot);
+    const CeEntityHandle pilotHandle = CeEntityHandleLookup(pilot);
     CCamera* camera = GAME.GetCurrentCamera(0);
     // Track pilot identity via monotonic 32-bit CE entity handles so reused storage
     // and 16-bit CThing::sThingCount wrap-around are always distinguished cleanly.
@@ -4392,10 +4393,13 @@ void PanMapFrame()
 #ifdef CE_COMMANDER_TEST
 unsigned gTestFrameCount = 0, gTestOpenedAt = 0;		// frames seen by PortCeCmdFrame, and the frame the view last opened at
 #endif
+bool gDeferredMapUnpause = false;
 void Close()
 {
     const bool wasStrategic = gStrategic;
-    const bool ownedStrategicInput = LT.GetKeytrap() == (pKeyTrapper)Trap;
+    const pKeyTrapper currentTrap = LT.GetKeytrap();
+    const bool ownedStrategicInput = currentTrap == (pKeyTrapper)Trap;
+    const bool competingOverlay = currentTrap != NULL && !ownedStrategicInput;
     BeginNativeReturn();
     if (gOpen && wasStrategic) {
         if (gStrategicOwner.Leave(StrategicContext()) == CeCommanderCameraResult::RestorePending) {
@@ -4442,8 +4446,21 @@ void Close()
 	{
 		RelinquishBuriedController(controller, &gSink);
 	}
-	if (!wasStrategic) { GAME.*GameAccess::PauseField() = FALSE; }
-	if (!wasStrategic || ownedStrategicInput) { InitMouse(); }
+	if (!wasStrategic)
+	{
+		if (competingOverlay)
+		{
+			// Another overlay (e.g. Console or Photo Mode) took the keytrap while paused in 2D map:
+			// keep combat paused behind the overlay and do not steal mouse capture until it closes.
+			gDeferredMapUnpause = true;
+		}
+		else
+		{
+			gDeferredMapUnpause = false;
+			GAME.*GameAccess::PauseField() = FALSE;
+		}
+	}
+	if (ownedStrategicInput || (!wasStrategic && !competingOverlay)) { InitMouse(); }
 #ifdef CE_COMMANDER_TEST
 	{
 		CeCmdHash h;
@@ -4483,6 +4500,7 @@ void Open(bool strategic)
 	}
 	if (!strategic) { GAME.Pause(); }
 	if (!strategic) { if (!GAME.IsPaused()) return; }
+	gDeferredMapUnpause = false;
     if (strategic) UnitPointerSeed();
 	gOpening = true;
 	ShutdownMouse();		// the pointer it starts from stays in window pixels, which the map reads (PortCeCmdMapOpen)
@@ -5022,6 +5040,16 @@ void PortCeCmdFrame()
 	LivePointer pointer;	// the camera's update reads the pointer (a grabbed view follows it)
     if (gOpen && gStrategic) { UnitPointerObserve(); StrategicFrame(); }
 	if (gOpen && (!Allowed() || LT.GetKeytrap() != (pKeyTrapper)Trap)) Close();
+	if (!gOpen && gDeferredMapUnpause && !LT.GetKeytrap())
+	{
+		gDeferredMapUnpause = false;
+		const bool menuOpen = GAMEINTERFACE.IsMenuUp() || (GAME.GetPauseMenu() && GAME.GetPauseMenu()->mActive);
+		if (!menuOpen && GAME.IsPaused())
+		{
+			GAME.*GameAccess::PauseField() = FALSE;
+			InitMouse();
+		}
+	}
 	MatchFrame();
 #ifdef CE_COMMANDER_TEST
 	TestFrame();
@@ -5068,6 +5096,7 @@ void PortCeCmdLevelEnd()
     CePlayUnitLevelEnd();
     gStrategicOwner.Reset();
 	Close();
+    gDeferredMapUnpause = false;
     CancelNativeReturn();
     gNativePresented = false;
     gNativeEntering = false;

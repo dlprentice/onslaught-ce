@@ -38,7 +38,7 @@ static void check(bool yes, const char *what) { if (!yes) { std::fprintf(stderr,
 int main() {
     Arg args[2] = {"photo", "on"};
     CmdPhoto(2, args);
-    check(line == "Photo Mode on: HUD hidden. F11 or photo ends it; F12 saves a screenshot." && closed && PortCePhotoOn() && filtered &&
+    check(line == "Photo Mode on: HUD hidden. F11 or photo ends it, F12 saves a screenshot." && closed && PortCePhotoOn() && filtered &&
           !CLIPARAMS.mKillHUD, "console-on turns photo mode on, closes the panel and leaves -killhud alone");
     closed = false;
     std::strcpy(args[1], "off"); CmdPhoto(2, args);

@@ -195,6 +195,7 @@ struct { bool mRecordDemo=false,mPlaybackDemo=false,mStressTest=false,mAttractMo
 struct CDXBitmapFont {}; struct CDXTexture {};
 static bool menus=true,recording=false,network=false,session=false,lockstep=false,netMenu=false,mods=false,museum=false,gallery=false,photo=false,commander=false,drawHooks=false;
 bool PortCeMenus(){return menus;} bool PortRecording(){return recording;}
+extern "C" int __attribute__((weak)) PortCeRecordFeaturesAllowed(void){return 0;}
 extern "C" int CE_BootRequested(){return network;}
 extern "C" int CE_SessionActive(){return session;}
 extern "C" int CE_LockstepRequested(){return lockstep;}

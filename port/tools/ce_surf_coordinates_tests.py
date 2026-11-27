@@ -115,6 +115,7 @@ struct AuthoredLandscape { void *mMirrorTexture = nullptr; void *mDepthSurface =
 struct { AuthoredCamera camera; AuthoredLandscape landscape; int mCurrentViewpoint = 0;
          AuthoredCamera *GetCamera() { return &camera; } AuthoredLandscape *GetLandscape() { return &landscape; } } ENGINE;
 struct { bool IsMultiplayer() { return false; } float GetRenderFrameLength() { return 1.f / 30; } } GAME;
+inline bool CePolicyFullDetailShading() { return !GAME.IsMultiplayer(); }
 struct { bool KeyOn(int) { return false; } } PLATFORM;
 struct { struct { float SunPosX = 0, SunPosY = 0; } mHFP;
          DWORD GetWaterColour() { return 0x406080; } float GetFogDensity() { return 0; } DWORD GetFog() { return 0; }

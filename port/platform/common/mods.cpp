@@ -47,6 +47,7 @@
 #endif
 #include <windows.h>
 #include <winternl.h>
+#include "ce_win_reparse.h"
 #else
 #include <dirent.h>
 #include <fcntl.h>
@@ -55,6 +56,7 @@
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+extern "C" { extern char **environ; }
 #endif
 
 extern "C" {
@@ -203,12 +205,29 @@ std::string Clean(const std::string &s, size_t n = 64)
 const char *Fence()
 {
 	static const char *const names[] = {"BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_PROBES", "BEA_PORT_RECORD",
-										"BEA_PORT_PILOT", "BEA_PORT_AUTOPILOT", "BEA_NET_HOST", "BEA_NET_JOIN", "BEA_NET_HANDOFF"};
+										"BEA_PORT_PILOT", "BEA_PORT_AUTOPILOT", "BEA_NET_HOST", "BEA_NET_JOIN", "BEA_NET_HANDOFF",
+										"BEA_NET_HANDOFF_FILE", "BEA_LOCKSTEP_HOST", "BEA_LOCKSTEP_JOIN", "BEA_CE_PROJECT"};
 	for (const char *n : names)
 	{
 		const char *v = getenv(n);
 		if (v && *v)
 			return n;
+	}
+#ifdef _WIN32
+	if (char **env = _environ)
+#else
+	if (char **env = environ)
+#endif
+	{
+		for (; *env; ++env)
+		{
+			if (!strncmp(*env, "BEA_LOCKSTEP_", 13))
+			{
+				const char *eq = strchr(*env, '=');
+				if (eq && eq[1])
+					return "BEA_LOCKSTEP_*";
+			}
+		}
 	}
 	return NULL;
 }
@@ -1655,7 +1674,8 @@ const char *Verify(HANDLE h, bool folder, Identity *id)
 		!GetFileInformationByHandleEx(h, FileBasicInfo, &basic, sizeof basic))
 		return "a handle that cannot be queried";
 	if (tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)
-		return "a reparse point (a link or a junction, or a file a cloud or storage service keeps elsewhere)";
+		if (ce_win_tag_is_link(tag.FileAttributes, tag.ReparseTag))
+			return "a reparse point (a link or a junction, or a file a cloud or storage service keeps elsewhere)";
 	if (((tag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) != folder)
 		return folder ? "a file where a folder should be" : "a folder where a file should be";
 	if (folder)
@@ -2553,7 +2573,7 @@ bool ListModsFolder(std::vector<Listed> *out)
 		char name[4 * MAX_PATH];
 		if (found.cFileName[0] == L'.' || !WideCharToMultiByte(CP_UTF8, 0, found.cFileName, -1, name, sizeof name, NULL, NULL))
 			continue;
-		const bool link = (found.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0, folder = (found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+		const bool link = ce_win_find_is_link(found.dwFileAttributes, found.dwReserved0) != 0, folder = (found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
 		if (link || folder)
 			out->push_back({name, link ? 1 : 0});
 		else if (ArchiveFileName(name))

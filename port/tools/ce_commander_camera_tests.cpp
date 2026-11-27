@@ -463,6 +463,8 @@ struct Game {
     CPlayer* player = NULL;
     CCamera* camera = NULL;
     CCONTROLLER controller;
+    struct PauseMenuStub { int mActive = 0; } pauseMenu;
+    PauseMenuStub* GetPauseMenu() { return &pauseMenu; }
     bool IsPaused() { return paused; }
     void Pause() { ++pause_calls; paused = true; }
     CPlayer* GetPlayer(int player_index) { VERIFY(player_index == 0); return player; }
@@ -475,6 +477,8 @@ struct Game {
         if (!paused) { ++simulation_ticks; player->pilot->life -= 1; }
     }
 } GAME;
+struct { bool IsMenuUp() { return false; } } GAMEINTERFACE;
+inline void CeCommanderLevelEnd() {}
 struct Shell {
     bool KeyDown[256] = {};
     KeyTrap GetKeytrap() { return GAME.controller.trap; }
@@ -701,6 +705,13 @@ CeEntityHandle CeEntityHandleFor(const CBattleEngine* engine) {
 CeEntityHandle CeEntityHandleLookup(const CThing* thing) {
     return thing ? gTestEntityHandles.Lookup(reinterpret_cast<std::uintptr_t>(thing)) : kCeEntityHandleInvalid;
 }
+CeEntityHandle CeEntityHandleLookup(const CBattleEngine* engine) {
+    if (!engine) return kCeEntityHandleInvalid;
+    const CeEntityHandle h = gTestEntityHandles.Lookup(reinterpret_cast<std::uintptr_t>(engine));
+    if (h == kCeEntityHandleInvalid) return kCeEntityHandleInvalid;
+    const std::uint64_t stamp = 0x10000ull | static_cast<std::uint64_t>(static_cast<std::uint16_t>(engine->creation_number));
+    return gTestEntityHandles.StampOf(h) == stamp ? h : kCeEntityHandleInvalid;
+}
 CThing* CeEntityHandleResolve(CeEntityHandle handle) {
     return reinterpret_cast<CThing*>(gTestEntityHandles.Resolve(handle));
 }
@@ -743,6 +754,7 @@ void ClearUnitGroupSlot(int);
 #pragma GCC diagnostic ignored "-Wcast-function-type"
 #endif
 static int gHudFollowSquad = -1;
+static bool gDeferredMapUnpause = false;
 #include "ce_commander_strategic_actual.inc"
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic pop
@@ -790,6 +802,7 @@ void Fixture() {
     fixture_mouse[0]=fixture_mouse[1]=fixture_mouse[2]=0;
     gStrategicOwner.Reset(); gOpen = false; gStrategic = false;
     GAME = Game(); pilot = CBattleEngine(); player.pilot = &pilot;
+    CeEntityHandleResetWorld(); CeEntityHandleFor(&pilot);
     original_camera = CGenericCamera(); original_camera.mPos = FVector(3, 5, 7);
     pilot.position = FVector(200, 220, 12);
     live_squads.assign(2, CeCmdSquad());

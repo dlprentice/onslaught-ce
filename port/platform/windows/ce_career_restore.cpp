@@ -32,6 +32,7 @@ CeCareerStorageStatus CeCareerRestoreSuggest(const CeCareerRestoreRequest &,
 #include "ce_backup_paths.h"
 #include "../common/ce_backup_name.h"
 #include "../common/ce_backup_verify.h"
+#include "../common/ce_win_reparse.h"
 #include <algorithm>
 #include <cstddef>
 #include <cstdio>
@@ -349,11 +350,12 @@ bool readFileStamp(HANDLE h, const Wide &leaf, FileStamp &s,
   FILE_BASIC_INFO basic{};
   FILE_STANDARD_INFO standard{};
   const DWORD forbidden =
-      FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY |
-      FILE_ATTRIBUTE_SYSTEM | (allowHidden ? 0u : FILE_ATTRIBUTE_HIDDEN);
+      FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_SYSTEM |
+      (allowHidden ? 0u : FILE_ATTRIBUTE_HIDDEN);
   if (GetFileType(h) != FILE_TYPE_DISK ||
       !GetFileInformationByHandleEx(h, FileBasicInfo, &basic, sizeof(basic)) ||
       (basic.FileAttributes & forbidden) ||
+      ce_win_handle_is_link(h, basic.FileAttributes) ||
       !GetFileInformationByHandleEx(h, FileStandardInfo, &standard,
                                     sizeof(standard)) ||
       standard.Directory || standard.DeletePending ||
@@ -374,7 +376,7 @@ bool readDirStamp(HANDLE h, DirStamp &s) {
   if (!dirInfo(h, s.id) ||
       !GetFileInformationByHandleEx(h, FileBasicInfo, &basic, sizeof(basic)) ||
       !(basic.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) ||
-      (basic.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ||
+      ce_win_handle_is_link(h, basic.FileAttributes) ||
       !GetFileInformationByHandleEx(h, FileStandardInfo, &standard,
                                     sizeof(standard)) ||
       !standard.Directory || standard.DeletePending)
@@ -566,18 +568,46 @@ struct Member {
   Bytes bytes;
 };
 
+struct SkippedMember {
+  std::string name;
+  bool user = false;
+  FileStamp identity{};
+};
+
 struct Snapshot {
   std::vector<Member> all;
   std::map<std::string, size_t> visible;
+  std::vector<SkippedMember> skipped;
 };
 
+bool hasCareers(const Snapshot &s) {
+  for (const auto &it : s.visible)
+    if (career(it.first))
+      return true;
+  return false;
+}
+
+void logSkippedSave(bool fromUser, const std::string &name,
+                    const char *reason) {
+  std::fprintf(
+      stderr,
+      "onslaught-ce: career storage skipped unreadable %s save \"%s\" (%s)\n",
+      fromUser ? "user" : "game", name.c_str(), reason);
+}
+
 bool equal(const Snapshot &a, const Snapshot &b) {
-  if (a.all.size() != b.all.size() || a.visible != b.visible)
+  if (a.all.size() != b.all.size() || a.visible != b.visible ||
+      a.skipped.size() != b.skipped.size())
     return false;
   for (size_t i = 0; i < a.all.size(); ++i)
     if (a.all[i].name != b.all[i].name || a.all[i].user != b.all[i].user ||
         !sameStamp(a.all[i].identity, b.all[i].identity) ||
         a.all[i].bytes != b.all[i].bytes)
+      return false;
+  for (size_t i = 0; i < a.skipped.size(); ++i)
+    if (a.skipped[i].name != b.skipped[i].name ||
+        a.skipped[i].user != b.skipped[i].user ||
+        !sameStamp(a.skipped[i].identity, b.skipped[i].identity))
       return false;
   return true;
 }
@@ -634,7 +664,7 @@ struct Session {
     }
     locked = true;
     roots();
-    saved = snapshot();
+    saved = snapshot("", true);
   }
 
   ~Session() {
@@ -722,7 +752,8 @@ struct Session {
     slotsPresent = true;
   }
 
-  Snapshot snapshot(const std::string &exclude = "") const {
+  Snapshot snapshot(const std::string &exclude = "",
+                    bool logSkipped = false) const {
     Snapshot s;
     size_t total = 0;
     std::map<std::string, std::string> spelling;
@@ -751,20 +782,49 @@ struct Session {
       for (const std::string &name : names) {
         if (fromUser && name == exclude)
           continue;
-        require(portable(name));
+        const Wide wideName = toWide(name);
+        Handle probe = child(scan.h, wideName, false, false);
+        FileStamp fs{};
+        require(bool(probe) && readFileStamp(probe.h, wideName, fs));
+        closeNow(probe);
+        for (const Member &existing : s.all)
+          require(!sameId(existing.identity.id, fs.id));
+        for (const SkippedMember &existing : s.skipped)
+          require(!sameId(existing.identity.id, fs.id));
+        if (!portable(name)) {
+          if (logSkipped)
+            logSkippedSave(fromUser, name, "non-portable or overlong filename");
+          s.skipped.push_back(SkippedMember{name, fromUser, fs});
+          continue;
+        }
         const std::string key = lower(name);
         auto was = spelling.find(key);
         require(was == spelling.end() || (was->second == name && !fromUser));
         spelling[key] = name;
+        if (fs.size != CE_CAREER_SIZE) {
+          if (logSkipped)
+            logSkippedSave(fromUser, name,
+                           fs.size == 0 ? "empty 0-byte file"
+                                        : "wrong file size");
+          s.skipped.push_back(SkippedMember{name, fromUser, fs});
+          continue;
+        }
         Member m;
         m.name = name;
         m.user = fromUser;
-        m.bytes = readFile(scan.h, toWide(name), m.identity);
+        m.bytes = readFile(scan.h, wideName, m.identity);
         for (const Member &existing : s.all)
           require(!sameId(existing.identity.id, m.identity.id));
+        for (const SkippedMember &existing : s.skipped)
+          require(!sameId(existing.identity.id, m.identity.id));
         SCeCareerView view{};
-        require(CeCareerViewBuild(m.bytes.data(), int(m.bytes.size()), &view) &&
-                CeCareerViewPlausible(view));
+        if (!CeCareerViewBuild(m.bytes.data(), int(m.bytes.size()), &view) ||
+            !CeCareerViewPlausible(view)) {
+          if (logSkipped)
+            logSkippedSave(fromUser, name, "corrupt or unreadable career data");
+          s.skipped.push_back(SkippedMember{name, fromUser, m.identity});
+          continue;
+        }
         total += m.bytes.size();
         require(s.all.size() < kCountLimit && total <= kSetLimit);
         if (!s.visible.count(name))
@@ -793,6 +853,8 @@ struct Session {
       m.bytes = readFile(user.h(), actualLeaf, m.identity);
       for (const Member &existing : s.all)
         require(!sameId(existing.identity.id, m.identity.id));
+      for (const SkippedMember &existing : s.skipped)
+        require(!sameId(existing.identity.id, m.identity.id));
       total += m.bytes.size();
       require(s.all.size() < kCountLimit && total <= kSetLimit);
       s.visible[m.name] = s.all.size();
@@ -801,7 +863,6 @@ struct Session {
       require(optStatus == kStatusObjectNameNotFound ||
               optStatus == kStatusObjectPathNotFound);
     }
-    require(!s.visible.empty());
     return s;
   }
 
@@ -911,12 +972,15 @@ std::set<std::string> names(const CeCareerRestoreRequest &r) {
     }));
     require(entries.size() <= kCountLimit);
     for (const std::string &entry : entries) {
-      require(portable(entry));
       const Wide wideEntry = toWide(entry);
       Handle f = child(folder, wideEntry, false, false);
       FileStamp st{};
       require(bool(f) && readFileStamp(f.h, wideEntry, st));
       const std::string key = lower(entry);
+      if (!portable(entry)) {
+        found.insert(key);
+        continue;
+      }
       auto was = spellings.find(key);
       require(was == spellings.end() || (was->second == entry && !fromUser));
       spellings[key] = entry;
@@ -974,7 +1038,14 @@ std::string proposal(const CopyStem &base, unsigned number) {
   if (number > 1)
     suffix += " " + std::to_string(number);
   require(suffix.size() < 31);
-  std::string stem = base.name.substr(0, 31 - suffix.size());
+  const size_t maxStem = 31 - suffix.size();
+  size_t cut = std::min(base.name.size(), maxStem);
+  if (cut < base.name.size()) {
+    while (cut > 0 &&
+           (static_cast<unsigned char>(base.name[cut]) & 0xc0u) == 0x80u)
+      --cut;
+  }
+  std::string stem = base.name.substr(0, cut);
   while (!stem.empty() && (stem.back() == ' ' || stem.back() == '.'))
     stem.pop_back();
   require(!stem.empty());
@@ -1236,11 +1307,16 @@ CeCareerRestoreAsNew(const CeCareerRestoreRequest &request) {
     const Wide wideTarget = toWide(target);
     for (const Member &member : session.saved.all)
       require(lower(member.name) != lower(target), Status::Occupied);
+    for (const SkippedMember &member : session.saved.skipped)
+      require(lower(member.name) != lower(target), Status::Occupied);
     require(!existsEntry(session.slots.h, wideTarget) &&
                 !existsEntry(session.original.h, wideTarget),
             Status::Occupied);
-    backup(session, out, kRestoreReason);
-    checkedBackup(session, out);
+    const bool needBackup = hasCareers(session.saved);
+    if (needBackup) {
+      backup(session, out, kRestoreReason);
+      checkedBackup(session, out);
+    }
     require(selected(request) == payload, Status::Changed);
     session.permission();
     require(request.namePermitted(request.owner, request.sourceName, target));
@@ -1270,7 +1346,8 @@ CeCareerRestoreAsNew(const CeCareerRestoreRequest &request) {
                 !existsEntry(session.original.h, wideTarget),
             Status::Occupied);
     session.check();
-    checkedBackup(session, out);
+    if (needBackup)
+      checkedBackup(session, out);
     require(selected(request) == payload, Status::Changed);
     session.permission();
     require(request.namePermitted(request.owner, request.sourceName, target));
@@ -1296,7 +1373,8 @@ CeCareerRestoreAsNew(const CeCareerRestoreRequest &request) {
               Status::Uncertain);
       verifyIdentical(finalFile.h, payload);
     }
-    checkedBackup(session, out);
+    if (needBackup)
+      checkedBackup(session, out);
     require(selected(request) == payload, Status::Changed);
     session.check(target, false);
     require(request.namePermitted(request.owner, request.sourceName, target));

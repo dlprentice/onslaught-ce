@@ -68,8 +68,8 @@ static int user_inside_game(const char *user,const char *game) { (void)user;(voi
 static int start_game(char **args,int n,const char *folder)
 { (void)folder;++games;game_args=args;game_argc=n;return 0; }
 static int finish_recording(int rc) { return rc; }
-static void start_recording(char **args,int n)
-{ (void)args;(void)n;++records; if(!sReplay && !getenv("TEST_RECORD_FAIL")) strcpy(sRecordingPath,"authored.tape"); }
+static void start_recording_ex(char **args,int n,int ce_features)
+{ (void)args;(void)n;(void)ce_features;++records; if(!sReplay && !getenv("TEST_RECORD_FAIL")) strcpy(sRecordingPath,"authored.tape"); }
 static int ask_box(const SDL_MessageBoxData *box,int *which,int terminal)
 { (void)terminal;notice_content = strstr(box->message,"gamepads and flight sticks do not work") &&
   strstr(box->message,"keyboard and mouse");++asks;const char *choice=getenv("TEST_ASK_CHOICE");

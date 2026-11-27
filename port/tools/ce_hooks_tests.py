@@ -611,12 +611,12 @@ class IndependenceTests(unittest.TestCase):
         for f in SITE_FILES:
             touching = [p for p in patches if not p.name.startswith("03") and re.search(r"^--- a/" + re.escape(f) + r"$", p.read_text(encoding="latin-1"), re.M)]
             for skip in touching:
-                hook_patches = [p.stem for p in patches if p.name.startswith("03") and re.search(r"^--- a/" + re.escape(f) + r"$", p.read_text(encoding="latin-1"), re.M)]
+                hook_patches = [p.stem for p in patches if "-ce-hook-" in p.name and re.search(r"^--- a/" + re.escape(f) + r"$", p.read_text(encoding="latin-1"), re.M)]
                 allowed = tuple(h + ".patch" for h in hook_patches if (h, skip.stem) in DEPENDS)
                 try:
                     build.patched_text([f], skip=(skip.name,) + allowed)
                 except RuntimeError as error:
-                    if str(error).startswith("03"):
+                    if "-ce-hook-" in str(error).splitlines()[0]:
                         problems.append(f"{f}: without {skip.name}: {str(error).splitlines()[0]}")
         self.assertEqual(problems, [])
 

@@ -228,7 +228,7 @@ class MusicTests(unittest.TestCase):
         mutants = [
             # (name, file, old, new, the case that must fail)
             ("no-tape-fence", "music", '"BEA_PORT_TAPE", "BEA_PORT_PROBES"', '"BEA_UNUSED", "BEA_PORT_PROBES"', ("fenced", {"BEA_PORT_TAPE": "1", "BEA_PORT_CE_LAYER": "1"})),
-            ("no-recording-fence", "music", "if (!PortCeLayer() || PortRecording()) return false;", "if (!PortCeLayer()) return false;",
+            ("no-recording-fence", "music", "\t\tif (PortRecording()) return false;\n", "",
              ("fenced", {"TEST_RECORDING": "1"})),
             ("no-attract-fence", "music", "CLIPARAMS.mStressTest || CLIPARAMS.mAttractMode", "CLIPARAMS.mStressTest", ("fenced", {"TEST_ATTRACT": "1"})),
             ("game-rand-shuffle", "music", "if (!shuffle) shuffle = CE_MusicSeed();", "shuffle = unsigned(rand()) * 2654435761u + 1;", ("random", None)),

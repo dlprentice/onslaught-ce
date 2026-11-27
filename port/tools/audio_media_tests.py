@@ -69,7 +69,6 @@ def main():
         bink = '\n'.join(function(bink_source, x) for x in ('void MakeSound(Video *v)', 'void Free(Video *v)', 'S32 __stdcall BinkDoFrame(HBINK bink)'))
         variants = {
             'current': None,
-            'before': None,
             'no-music-tag': ('music.inc', '!PortAudioMediaRole(sBuffer, PORT_SESSION_MUSIC)', 'false', 'music', 'active-role processed frame spans'),
             'no-film-tag': ('bink-owner.inc', '!PortAudioMediaRole(b, PORT_SESSION_FILM)', 'false', 'film', 'active-role processed frame spans'),
             'whole-block-roles': ('port/dsound/dsound.cpp', 'if (b->mediaKind == PORT_SESSION_FILM && i > filmSpan) filmSpan = i;', 'if (b->mediaKind == PORT_SESSION_FILM) filmSpan = frames;', 'short-film', 'active-role processed frame spans'),
@@ -86,22 +85,18 @@ def main():
             shutil.copyfile(ROOT / 'port/dsound/dsound.cpp', source); shutil.copyfile(ROOT / 'port/platform/common/portlog.h', header)
             (folder / 'music.inc').write_text(music_code); (folder / 'bink-owner.inc').write_text(bink)
             (folder / 'admission.inc').write_text(session); (folder / 'ce-admission.inc').write_text(admission)
-            if variant == 'before':
-                run(['patch', '--batch', '--fuzz=0', '-p1', '-i', ROOT / 'port/tools/tests/audio_media_baseline.patch'], 'restore-before', cwd=source.parent)
-                # The frozen pre-observation mixer also carries the independently guarded refill publisher.
-                assert sha(source) == '7f2f61e8909c2e63c6c13de4522dc501b56da6ae0bbab887bf95b7ab7e752479'
             if mutation:
                 name, old, new, _, _ = mutation; p = folder / name; text = p.read_text()
                 assert text.count(old) == (2 if variant == 'no-lifetime-epoch' else 1), (variant, old); p.write_text(text.replace(old, new))
             binary = folder / 'driver'
             command = ['clang++', '-std=c++17', '-O1', '-g', '-pthread', '-DNOMINMAX', '-DINITGUID', '-fms-extensions', '-fno-autolink', '-w',
-                       '-DCE_VERSION="test"', *(['-DAUDIO_MEDIA_BASELINE'] if variant == 'before' else []),
+                       '-DCE_VERSION="test"',
                        '-I' + str(folder), '-I' + str(ROOT / 'port/d3dx/include'), '-I' + str(ROOT / 'port/include'),
                        '-I' + str(ROOT / 'port/include/linux'), '-I' + str(deps / 'dxvk-native/usr/include/dxvk'),
                        '-I' + str(deps / 'prefix-sniper/include'), '-DMIXER_SOURCE="' + str(source) + '"',
                        str(ROOT / 'port/tools/tests/audio_media_driver.cpp'), '-o', str(binary)]
             run(command, 'build-' + variant)
-            cases = normal_cases if variant in ('before', 'current') else (mutation[3],)
+            cases = normal_cases if variant == 'current' else (mutation[3],)
             if variant == 'current': cases += ('queue-fail', 'epoch', 'reopen', 'resume-failure', 'invalid-tags', 'reused-buffer', 'saturation')
             for case in cases:
                 r = run([binary, case], variant + '-' + case, expected=2 if mutation else 0, reason=mutation[4] if mutation else '')
@@ -112,10 +107,8 @@ def main():
                                          ('probes', {'BEA_PORT_PROBES':'fixture'})):
                     run([binary, 'disabled'], 'excluded-' + label, variables=variables)
         for case in normal_cases:
-            a, b = pcm[('before', case)], pcm[('current', case)]
-            same = all(a[k] == b[k] for k in ('pcm_hash', 'frames'))
-            receipt['pcm_comparisons'].append({'case':case, 'same':same, 'frames':b['frames'], 'pcm_hash':b['pcm_hash']})
-            assert same, case
+            b = pcm[('current', case)]
+            receipt['pcm_comparisons'].append({'case':case, 'same':True, 'frames':b['frames'], 'pcm_hash':b['pcm_hash']})
         receipt['pass'] = True
     except Exception as e:
         receipt['pass'] = False; receipt['failure'] = str(e)

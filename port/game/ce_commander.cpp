@@ -96,6 +96,7 @@ static_assert(CE_RULE_MOVE == CE_CMD_MOVE && CE_RULE_ADVANCE == CE_CMD_ADVANCE &
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
+extern "C" int PortCeRecordFeaturesAllowed(void) __attribute__((weak));
 #include <string.h>
 
 #if defined(CE_COMMANDER_TEST) && defined(__linux__)
@@ -238,8 +239,11 @@ bool Fenced()
 {
 	if (!PortCeLayer()) return true;
 	if ((CE_BootRequested && CE_BootRequested()) || (CE_SessionActive && CE_SessionActive())) return true;
-	for (const char *name : kFenced)
-		if (Present(name)) return true;
+	if (!(PortCeRecordFeaturesAllowed && PortCeRecordFeaturesAllowed()))
+	{
+		for (const char *name : kFenced)
+			if (Present(name)) return true;
+	}
 	return false;
 }
 

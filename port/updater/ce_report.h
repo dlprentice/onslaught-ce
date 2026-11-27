@@ -18,6 +18,7 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <io.h>
+#include "../platform/common/ce_win_reparse.h"
 #else
 #include <dirent.h>
 #include <sys/stat.h>
@@ -148,6 +149,10 @@ static inline int ce_latest_tape(const char *user, char *out, size_t n)
 	return 1;
 }
 
+/* The newest F9 bug clip in <user>/clips (prefers .zip over legacy .avi, numeric YYYYMMDD-HHMMSS[-N] order); 0 if none.
+ * Defined below after ce_settings_subdir_open_ex so clips/ never follows symlinks or reparse links. */
+static inline int ce_latest_clip(const char *user, char *out, size_t n);
+
 /* A path as the player would type it, without their account name: ~/... on Linux, %APPDATA%\... on Windows. */
 static inline int ce_path_prefix_eq(const char *path, const char *base, size_t l)
 {
@@ -240,7 +245,7 @@ static inline void ce_url_encode(const char *in, char *out, size_t n)
 /* The pre-filled issue page (bug_report.md's sections), naming the version, the build, the OS and the files to attach. */
 static inline void ce_report_url(const char *version, const char *build, const char *user, char *out, size_t n)
 {
-	char os[256], log[4096], tape[4096], shortlog[4096], shorttape[4096], body[8192], title[256];
+	char os[256], log[4096], tape[4096], clip[4096], shortlog[4096], shorttape[4096], shortclip[4096], body[8192], title[256];
 	char ebody[3 * sizeof body], etitle[3 * sizeof title];
 	ce_os_name(os, sizeof os);
 	snprintf(log, sizeof log, "%s%sonslaught-ce.log", user,
@@ -253,6 +258,14 @@ static inline void ce_report_url(const char *version, const char *build, const c
 	ce_short_path(log, shortlog, sizeof shortlog);
 	int haveTape = ce_latest_tape(user, tape, sizeof tape);
 	if (haveTape) ce_short_path(tape, shorttape, sizeof shorttape);
+	int haveClip = ce_latest_clip(user, clip, sizeof clip);
+	int clipIsZip = 0;
+	if (haveClip)
+	{
+		ce_short_path(clip, shortclip, sizeof shortclip);
+		size_t cl = strlen(shortclip);
+		clipIsZip = (cl > 4 && !strcmp(shortclip + cl - 4, ".zip"));
+	}
 	snprintf(body, sizeof body,
 			 "**What happened**\n\n\n\n"
 			 "**Steps to reproduce**\n\n1. \n\n"
@@ -261,12 +274,19 @@ static inline void ce_report_url(const char *version, const char *build, const c
 			 "**Files**\n\n"
 			 "Please attach the logs that exist: `%s`, plus `onslaught-ce.old.log`, `onslaught-ce.concurrent-1.log` and "
 			 "`onslaught-ce.concurrent-2.log` from the same folder. Drag them into this box.\n"
+			 "%s%s%s"
 			 "%s%s%s\n"
 			 "**System**\n\n"
 			 "- Onslaught CE V%s" CE_VERSION_NOTE ", build %s\n"
 			 "- %s\n",
-			 shortlog, haveTape ? "Optional, if you recorded the session: the tape `" : "",
-			 haveTape ? shorttape : "", haveTape ? "` and its `.json` (it can help us reproduce what happened).\n" : "",
+			 shortlog,
+			 haveTape ? "Optional, if you recorded the session: mention that `" : "",
+			 haveTape ? shorttape : "",
+			 haveTape ? "` and its `.json` exist (do not drag raw `.tape` files directly; a maintainer will agree a route).\n" : "",
+			 haveClip ? (clipIsZip ? "Optional, if you captured a clip (F9): drag `" : "Optional, if you captured a clip (F9): zip `") : "",
+			 haveClip ? shortclip : "",
+			 haveClip ? (clipIsZip ? "` straight into this box (it bundles the video and scrubbed report).\n"
+			                       : "` and its `.txt` report before attaching (GitHub does not accept raw `.avi` files).\n") : "",
 			 version, build && *build ? build : "unknown", os);
 	snprintf(title, sizeof title, "Problem: (describe it in a few words) [V%s]", version);
 	ce_url_encode(body, ebody, sizeof ebody);
@@ -444,7 +464,11 @@ static inline int ce_settings_dir_open_ex(const char *path, int create, CeSettin
 		dir->path[end] = saved;
 		BY_HANDLE_FILE_INFORMATION info;
 		if (h == INVALID_HANDLE_VALUE || !GetFileInformationByHandle(h, &info) ||
+#ifdef CE_WIN_REPARSE_H
+			!(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || ce_win_handle_is_link(h, info.dwFileAttributes) ||
+#else
 			!(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ||
+#endif
 			dir->count == (int)(sizeof dir->handles / sizeof dir->handles[0]))
 		{
 			if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
@@ -606,7 +630,11 @@ static inline int ce_settings_subdir_open_ex(const char *root, const char *sub, 
 	}
 	BY_HANDLE_FILE_INFORMATION info;
 	if (h == INVALID_HANDLE_VALUE || !GetFileInformationByHandle(h, &info) ||
+#ifdef CE_WIN_REPARSE_H
+		!(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || ce_win_handle_is_link(h, info.dwFileAttributes) ||
+#else
 		!(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ||
+#endif
 		dir->count == (int)(sizeof dir->handles / sizeof dir->handles[0]))
 	{
 		if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
@@ -634,6 +662,151 @@ static inline int ce_settings_subdir_open_ex(const char *root, const char *sub, 
 		return 0;
 	}
 	dir->fd = next;
+	return 1;
+#endif
+}
+
+typedef struct CeClipSortKey
+{
+	int is_zip;
+	int is_dated;
+	uint64_t stamp;
+	uint32_t seq;
+} CeClipSortKey;
+
+static inline int ce_clip_parse_digits(const char *s, size_t n, uint64_t *out)
+{
+	if (!n || n > 18) return 0;
+	uint64_t v = 0;
+	for (size_t i = 0; i < n; ++i)
+	{
+		if (s[i] < '0' || s[i] > '9') return 0;
+		v = v * 10ull + (uint64_t)(s[i] - '0');
+	}
+	*out = v;
+	return 1;
+}
+
+static inline int ce_clip_parse_key(const char *name, CeClipSortKey *key)
+{
+	const char *prefix = "onslaught-ce-clip-";
+	const size_t plen = 18;
+	if (!name || !key) return 0;
+	size_t l = strlen(name);
+	if (l <= plen + 4 || l >= 80 || strncmp(name, prefix, plen) != 0) return 0;
+	int is_zip = 0;
+	if (!strcmp(name + l - 4, ".zip")) is_zip = 1;
+	else if (!strcmp(name + l - 4, ".avi")) is_zip = 0;
+	else return 0;
+
+	const char *body = name + plen;
+	size_t blen = l - plen - 4;
+	uint64_t date_part = 0, time_part = 0, seq_part = 1;
+	if (blen >= 15 && body[8] == '-' &&
+	    ce_clip_parse_digits(body, 8, &date_part) &&
+	    ce_clip_parse_digits(body + 9, 6, &time_part))
+	{
+		if (blen > 15)
+		{
+			if (body[15] != '-' || blen <= 16 || blen - 16 > 9 ||
+			    !ce_clip_parse_digits(body + 16, blen - 16, &seq_part))
+				return 0;
+		}
+		key->is_zip = is_zip;
+		key->is_dated = 1;
+		key->stamp = date_part * 1000000ull + time_part;
+		key->seq = (uint32_t)seq_part;
+		return 1;
+	}
+	/* Fallback tick-based clip name: <digits> or <digits>-<seq>. */
+	const char *dash = (const char *)memchr(body, '-', blen);
+	size_t main_len = dash ? (size_t)(dash - body) : blen;
+	uint64_t tick_part = 0;
+	if (!ce_clip_parse_digits(body, main_len, &tick_part)) return 0;
+	if (dash)
+	{
+		size_t slen = blen - main_len - 1;
+		if (!slen || slen > 9 || !ce_clip_parse_digits(dash + 1, slen, &seq_part))
+			return 0;
+	}
+	key->is_zip = is_zip;
+	key->is_dated = 0;
+	key->stamp = tick_part;
+	key->seq = (uint32_t)seq_part;
+	return 1;
+}
+
+static inline int ce_clip_key_newer(const CeClipSortKey *a, const CeClipSortKey *b)
+{
+	if (a->is_zip != b->is_zip) return a->is_zip > b->is_zip;
+	if (a->is_dated != b->is_dated) return a->is_dated > b->is_dated;
+	if (a->stamp != b->stamp) return a->stamp > b->stamp;
+	return a->seq > b->seq;
+}
+
+static inline int ce_latest_clip(const char *user, char *out, size_t n)
+{
+	CeSettingsDir dir;
+	if (!ce_settings_subdir_open_ex(user, "clips", 0, &dir, NULL)) return 0;
+	char best[80] = "";
+	CeClipSortKey bestKey = {0, 0, 0, 0};
+	int haveBest = 0;
+#ifdef _WIN32
+	char pattern[4500];
+	if ((size_t)snprintf(pattern, sizeof pattern, "%s\\onslaught-ce-clip-*", dir.path) < sizeof pattern)
+	{
+		WIN32_FIND_DATAA fd;
+		HANDLE h = FindFirstFileA(pattern, &fd);
+		if (h != INVALID_HANDLE_VALUE)
+		{
+			do
+			{
+				if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ||
+				    ce_win_find_is_link(fd.dwFileAttributes, fd.dwReserved0))
+					continue;
+				CeClipSortKey key;
+				if (ce_clip_parse_key(fd.cFileName, &key) && (!haveBest || ce_clip_key_newer(&key, &bestKey)))
+				{
+					snprintf(best, sizeof best, "%s", fd.cFileName);
+					bestKey = key;
+					haveBest = 1;
+				}
+			}
+			while (FindNextFileA(h, &fd));
+			FindClose(h);
+		}
+	}
+	ce_settings_dir_close(&dir);
+	if (!haveBest) return 0;
+	snprintf(out, n, "%.*s\\clips\\%s", (int)ce_trim_sep_len(user, 1), user, best);
+	return 1;
+#else
+	int dfd = openat(dir.fd, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	DIR *d = dfd >= 0 ? fdopendir(dfd) : NULL;
+	if (!d)
+	{
+		if (dfd >= 0) close(dfd);
+		ce_settings_dir_close(&dir);
+		return 0;
+	}
+	struct dirent *e;
+	while ((e = readdir(d)))
+	{
+		CeClipSortKey key;
+		if (!ce_clip_parse_key(e->d_name, &key) || (haveBest && !ce_clip_key_newer(&key, &bestKey)))
+			continue;
+		struct stat st;
+		if (fstatat(dir.fd, e->d_name, &st, AT_SYMLINK_NOFOLLOW) == 0 && S_ISREG(st.st_mode))
+		{
+			snprintf(best, sizeof best, "%s", e->d_name);
+			bestKey = key;
+			haveBest = 1;
+		}
+	}
+	closedir(d);
+	ce_settings_dir_close(&dir);
+	if (!haveBest) return 0;
+	snprintf(out, n, "%.*s/clips/%s", (int)ce_trim_sep_len(user, 1), user, best);
 	return 1;
 #endif
 }
@@ -807,7 +980,11 @@ static inline int ce_ini_edit_file(const char *ini, const char *key, const char 
 	{
 		BY_HANDLE_FILE_INFORMATION info;
 		if (GetFileType(in) == FILE_TYPE_DISK && GetFileInformationByHandle(in, &info) &&
+#ifdef CE_WIN_REPARSE_H
+			!(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && !ce_win_handle_is_link(in, info.dwFileAttributes))
+#else
 			!(info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)))
+#endif
 		{
 			readonly = (info.dwFileAttributes & FILE_ATTRIBUTE_READONLY) != 0;
 			input = _open_osfhandle((intptr_t)in, _O_RDONLY | _O_BINARY);

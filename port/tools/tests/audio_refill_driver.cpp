@@ -308,7 +308,7 @@ struct CBaseWaveFileRead {
 #ifdef AUDIO_REFILL_OVERLAP
  if(fixtureFramesRemaining>=0){frames=std::min(frames,(unsigned)fixtureFramesRemaining);fixtureFramesRemaining-=frames;}
 #endif
- for(unsigned i=0;i<frames;++i){short v=namedMusicReads?marker:1000+1000*(frame/65536);++frame;memcpy(out+i*4,&v,2);
+ for(unsigned i=0;i<frames;++i){short v=namedMusicReads?marker:(short)(1000+1000*((frame/65536)%24));++frame;memcpy(out+i*4,&v,2);
 #ifdef AUDIO_REFILL_OVERLAP
  RefillWriteBoundary(i);
 #endif
@@ -347,7 +347,7 @@ static int CountersMain(const char *mode){
  if(twice){InitMusicStream();char second[]="authored sequence";PlayMusicStream(second);Check(Dispatch()==1,"second play wake admitted");}
  if(prime){void *p1=nullptr,*p2=nullptr;DWORD n1=0,n2=0;Check(SUCCEEDED(sBuffer->Lock(262144,262144,&p1,&n1,&p2,&n2,0)),"prime lock");sBuffer->Unlock(p1,n1,p2,n2);}
  unsigned total=0,dispatches=0,oldDispatches=0,mismatch=0;uint64_t fnv=14695981039346656037ull;const unsigned target=limit?65536*150u:262144u;
- auto consume=[&](unsigned n){auto pcm=MixFrames(n);for(unsigned i=0;i<n;++i){short input=1000+1000*((total+i)/65536);short want=(short)lrintf((float)input*(32767.f/32768.f));if(pcm[i*2]!=want)++mismatch;fnv=(fnv^(uint16_t)pcm[i*2])*1099511628211ull;fnv=(fnv^(uint16_t)pcm[i*2+1])*1099511628211ull;}total+=n;};
+ auto consume=[&](unsigned n){auto pcm=MixFrames(n);for(unsigned i=0;i<n;++i){short input=(short)(1000+1000*(((total+i)/65536)%24));short want=(short)lrintf((float)input*(32767.f/32768.f));if(pcm[i*2]!=want)++mismatch;fnv=(fnv^(uint16_t)pcm[i*2])*1099511628211ull;fnv=(fnv^(uint16_t)pcm[i*2+1])*1099511628211ull;}total+=n;};
  if(stalled){consume(131072+4410);dispatches+=Dispatch();}
  std::deque<std::pair<unsigned,DWORD>> oldQueue;unsigned block=0;bool restarted=false;
  while(total<target){consume(std::min(441u,target-total));dispatches+=Dispatch();++block;
@@ -365,7 +365,7 @@ int main(int argc,char **argv){
 #endif
  if(argc!=2)return 1;diagnosticsEnabled=PortSessionEnabled();device=Make<Sound>();InitMusicStream();char name[]="authored sequence";PlayMusicStream(name);Check(Dispatch()==1,"actual play wake admitted");
  Check(gMixer.numVoices==1,"one actual looping music buffer");unsigned diagnosticClocks=clockReads;unsigned total=0,mismatch=0,first_bad=0,dispatches=0;bool stalled=!strncmp(argv[1],"starved",7);bool limit=strstr(argv[1],"limit");
- auto consume=[&](unsigned n){auto pcm=MixFrames(n);for(unsigned i=0;i<n;++i){short input=1000+1000*((total+i)/65536);short want=(short)lrintf((float)input*(32767.f/32768.f));if(pcm[i*2]!=want){if(!mismatch)first_bad=total+i;++mismatch;}}total+=n;};
+ auto consume=[&](unsigned n){auto pcm=MixFrames(n);for(unsigned i=0;i<n;++i){short input=(short)(1000+1000*(((total+i)/65536)%24));short want=(short)lrintf((float)input*(32767.f/32768.f));if(pcm[i*2]!=want){if(!mismatch)first_bad=total+i;++mismatch;}}total+=n;};
  if(stalled){for(unsigned i=0;i<(limit?20u:1u);++i){consume(131072+4410);dispatches+=Dispatch();}}
  while(total<(limit?65536*150u:262144u)){unsigned n=std::min(441u,(limit?65536*150u:262144u)-total);consume(n);dispatches+=Dispatch();}
  Check((mismatch>0)==stalled,"delayed worker control discriminates native stream continuity");

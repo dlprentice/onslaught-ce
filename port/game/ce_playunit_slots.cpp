@@ -36,6 +36,23 @@ bool IsNormalSquad(CSquad *squad)
 	return squad && !strcmp(squad->_GetClassName(), "CNormalSquad");
 }
 
+// Headless AI slot possession drives units via ground-projected GoToPoint(MAP.Collide(dst));
+// only mobile ground units (never aircraft, naval vessels, or stationary turrets) are eligible.
+bool IsEligibleGroundDriveClass(int classId)
+{
+	return classId == CE_PLAYUNIT_CLASS_TANK ||
+	       classId == CE_PLAYUNIT_CLASS_INFANTRY ||
+	       classId == CE_PLAYUNIT_CLASS_ARTILLERY;
+}
+
+bool IsEligibleGroundDriveUnit(const CUnit *u)
+{
+	if (!u) return false;
+	const unsigned kind = static_cast<unsigned>(const_cast<CUnit *>(u)->GetThingType());
+	return (kind & THING_TYPE_GROUND_UNIT) != 0u &&
+	       (kind & (THING_TYPE_AIR_UNIT | THING_TYPE_NAVAL | THING_TYPE_EMPLACEMENT)) == 0u;
+}
+
 void FillFacts(CUnit *u, int allegiance, CePlayUnitFacts &f)
 {
 	memset(&f, 0, sizeof(f));
@@ -114,7 +131,7 @@ int CePlayUnitSlotsListTakeable(int allegiance, CePlayUnitSlotCandidate *out, in
 		CePlayUnitFacts facts;
 		FillFacts(u, allegiance, facts);
 		const int classId = CePlayUnitClassFor(facts);
-		if (classId < 0) continue;
+		if (classId < 0 || !IsEligibleGroundDriveClass(classId) || !IsEligibleGroundDriveUnit(u)) continue;
 		const FVector pos = u->GetPos();
 		const float maxL = u->GetMaxLife();
 		CePlayUnitSlotCandidate &c = out[count++];
@@ -176,8 +193,27 @@ bool CePlayUnitSlotTake(uint8_t slot, int allegiance, CeEntityHandle unitHandle,
 
 	CePlayUnitFacts facts;
 	FillFacts(u, allegiance, facts);
+	const int classId = CePlayUnitClassFor(facts);
+	if (classId < 0 || !IsEligibleGroundDriveClass(classId) || !IsEligibleGroundDriveUnit(u))
+	{
+		if (outReason) *outReason = "non-ground unit ineligible for AI slot";
+		return false;
+	}
 	CSquad *sq = u->GetSquad();
-	const CeEntityHandle prevSqHandle = sq ? CeEntityHandleLookup(sq) : kCeEntityHandleInvalid;
+	CeEntityHandle prevSqHandle = kCeEntityHandleInvalid;
+	if (sq && IsNormalSquad(sq))
+	{
+		// When commander=0, squads are not pre-registered by ce_commander.cpp::Scan().
+		// Register in SIM via CeEntityHandleFor(sq) so ReturnUnitToWorld() never orphans the unit.
+		prevSqHandle = CeEntityHandleLookup(sq);
+		if (prevSqHandle == kCeEntityHandleInvalid)
+			prevSqHandle = CeEntityHandleFor(sq);
+		if (prevSqHandle == kCeEntityHandleInvalid)
+		{
+			if (outReason) *outReason = "squad handle unavailable";
+			return false;
+		}
+	}
 	const int prevAi = static_cast<int>(u->GetAIState());
 
 	// Validate eligibility, contention, and human ownership BEFORE releasing any previous lease.
@@ -203,7 +239,8 @@ bool CePlayUnitSlotDrive(uint8_t slot, float goalX, float goalY, bool fire, floa
 	if (!s || !s->active) return false;
 	CUnit *u = CeEntityHandleResolveUnit(s->unitHandle);
 	if (!u || u->IsDying() || u->IsShuttingDown() || u->GetLife() <= 0.f ||
-	    (int)u->GetAllegiance() != s->allegiance || IsHumanDrivenUnit(u))
+	    (int)u->GetAllegiance() != s->allegiance || IsHumanDrivenUnit(u) ||
+	    !IsEligibleGroundDriveClass(s->classId) || !IsEligibleGroundDriveUnit(u))
 	{
 		CePlayUnitSlotRelease(slot);
 		return false;

@@ -14,6 +14,7 @@
 #include "../platform/common/ce_backup_name.h"
 #include "../platform/common/ce_career_backup.h"
 #include "../platform/common/ce_career_publish.h"
+#include "../platform/common/ce_record_mode.h"
 #include "../platform/common/portlog.h"
 
 #include <stdio.h>
@@ -100,7 +101,7 @@ bool	permit()
 {
 	const char *r = getenv("BEA_PORT_RECORD"), *t = getenv("BEA_PORT_TAPE");
 	return PortCeMenus() && PortCeProjectCareerAllowed() && PortCeExtrasActive() &&
-		   (!r || !*r) && (!t || !*t);
+		   (ce_record_ce_allowed() || ((!r || !*r) && (!t || !*t)));
 }
 
 bool	permitAdapter(void *)

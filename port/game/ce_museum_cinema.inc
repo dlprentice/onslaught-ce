@@ -1,3 +1,6 @@
+}
+#include "text.h"
+namespace {
 namespace CinemaControls = CeMuseumCinemaControls;
 namespace CinemaConsole = CeMuseumCinemaConsole;
 // SPDX-License-Identifier: GPL-3.0-only
@@ -314,9 +317,11 @@ bool CinemaStartFilm(void *, const CeMuseumCinemaCatalogue::Entry &entry) {
     CinemaClose(Idle);
     char path[512];
     if (!CinemaFilmPath(entry.stem, path, sizeof(path))) return false;
-    s.film = BinkOpen(path, BINKPRELOADALL);
+    U32 soundTrack = (TEXT.mLoaded && TEXT.GetLanguage() > 0) ? (U32)TEXT.GetLanguage() : 0u;
+    BinkSetSoundTrack(1, &soundTrack);
+    s.film = BinkOpen(path, BINKPRELOADALL | BINKSNDTRACK);
     if (!s.film) return false;
-    BinkSetVolume(s.film, 0, 0);	// silent until CeMuseumFilm::Start
+    BinkSetVolume(s.film, soundTrack, 0);	// silent until CeMuseumFilm::Start
     // A film that cannot be shown is closed to Idle here; CinemaOpen decides what the
     // console says about it (only "no film at all can be shown" locks it).
     if (!s.film->Frames || !s.film->Width || !s.film->Height || s.film->Width>2048 || s.film->Height>2048 || !CinemaProjectionTarget()) { CinemaClose(Idle); return false; }

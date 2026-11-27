@@ -220,7 +220,11 @@ int main(int argc, char **argv)
     }
 #endif
     char *args[] = {"-level", "100", "quote\"and\\slash"};
+#ifdef REPRO_BASELINE
     start_recording(args, 3);
+#else
+    start_recording_ex(args, 3, 0);
+#endif
     const char *record = getenv("BEA_PORT_RECORD");
     if (fixture_fail_flush || fixture_fail_close || fixture_fail_fdopen || !strcmp(mode, "write-failure") ||
         !strcmp(mode, "exhausted"))
@@ -248,7 +252,11 @@ int main(int argc, char **argv)
         create_file(path, "first tape sentinel");
         unset_env("BEA_PORT_RECORD");
         char *next[] = {"second"};
+#ifdef REPRO_BASELINE
         start_recording(next, 1);
+#else
+        start_recording_ex(next, 1, 0);
+#endif
         const char *second = getenv("BEA_PORT_RECORD");
         size_t after_length = 0;
         char *after = read_all(json, &after_length);

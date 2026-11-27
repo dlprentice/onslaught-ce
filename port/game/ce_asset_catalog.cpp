@@ -24,6 +24,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include "../platform/common/ce_win_reparse.h"
 #else
 #include <dirent.h>
 #include <fcntl.h>
@@ -242,7 +243,8 @@ struct Root {
                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
                              FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
         BY_HANDLE_FILE_INFORMATION info = {};
-        if (handle == INVALID_HANDLE_VALUE || !(GetFileInformationByHandle(handle, &info) && !(info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) ||
+        if (handle == INVALID_HANDLE_VALUE || !GetFileInformationByHandle(handle, &info) ||
+            ce_win_handle_is_link(handle, info.dwFileAttributes) ||
             !(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || !FinalPath(handle, path)) return false;
         while (path.size() > 1 && path.back() == L'\\') path.pop_back();
         return true;
@@ -269,7 +271,7 @@ struct Directory {
             BY_HANDLE_FILE_INFORMATION info = {};
             const bool valid = next != INVALID_HANDLE_VALUE && GetFileInformationByHandle(next, &info) &&
                                (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
-                               !(info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) && InsideRoot(next, root.path);
+                               !ce_win_handle_is_link(next, info.dwFileAttributes) && InsideRoot(next, root.path);
             if (!valid) { if (next != INVALID_HANDLE_VALUE) CloseHandle(next); return false; }
             if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle);
             handle = next;
@@ -310,7 +312,8 @@ struct Directory {
         do {
             if (std::wcscmp(data.cFileName, L".") == 0 || std::wcscmp(data.cFileName, L"..") == 0) continue;
             if (++visited > kMaxDirectoryEntries) { good = false; break; }
-            if (!(data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || (data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) continue;
+            if (!(data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ||
+                ce_win_find_is_link(data.dwFileAttributes, data.dwReserved0)) continue;
             Name name;
             if (!Utf8FromWide(data.cFileName, name.utf8)) { bad_name = true; continue; }
             name.native = data.cFileName;
@@ -333,7 +336,8 @@ struct File {
                              nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_RANDOM_ACCESS, nullptr);
         return handle != INVALID_HANDLE_VALUE && GetFileType(handle) == FILE_TYPE_DISK &&
                GetFileInformationByHandle(handle, &before) &&
-               !(before.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) &&
+               !(before.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
+               !ce_win_handle_is_link(handle, before.dwFileAttributes) &&
                InsideRoot(handle, root.path);
     }
     uint64_t Size() const { return (static_cast<uint64_t>(before.nFileSizeHigh) << 32) | before.nFileSizeLow; }

@@ -8,6 +8,7 @@
 #include "../platform/common/portlog.h"
 #endif
 #include "ce_graphics_policy.h"
+extern "C" int PortCeRecordFeaturesAllowed(void) __attribute__((weak));
 #include <stdlib.h>
 #include <errno.h>
 
@@ -146,11 +147,14 @@ void Report(const char *event)
 bool PortCeGraphicsPolicyActive()
 {
 #ifdef CE_VERSION
-    const char *names[] = {"BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_PROBES", "BEA_PORT_RECORD"};
-    for (const char *name : names)
+    if (!(PortCeRecordFeaturesAllowed && PortCeRecordFeaturesAllowed()))
     {
-        const char *value = getenv(name);
-        if (value && *value) return false;
+        const char *names[] = {"BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_PROBES", "BEA_PORT_RECORD"};
+        for (const char *name : names)
+        {
+            const char *value = getenv(name);
+            if (value && *value) return false;
+        }
     }
     return PortCeLayer();
 #else

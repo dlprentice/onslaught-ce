@@ -95,19 +95,18 @@ holds the pipe.
 
 ## Session recording
 
-`--record`, or `record_sessions=1` in `ce.ini` (the Main Menu's Onslaught CE page writes it), starts the game in record mode (port/platform/common/replay.cpp):
+`--record`, `--record-faithful`, or `record_sessions=1` in `ce.ini` (the Main Menu's Onslaught CE page writes it), starts the game in record mode (port/platform/common/replay.cpp):
 `BEA_PORT_RECORD=<user folder>/tapes/YYYYMMDD-HHMMSS-PID-SERIAL.tape` (PID and SERIAL are eight hex digits each) and, unless set, `BEA_PORT_CLOCK=shim`, so the game runs
 at 30 Presents a second and its tape (keyboard and mouse only; controller input is not recorded) can be replayed. The
 launcher prints one line saying so. Never while a tape is replayed (`BEA_PORT_TAPE`) or another recording is set
-(`BEA_PORT_RECORD`). In record mode the CE layer is off, the
+(`BEA_PORT_RECORD`). By default (`--record` or `record_sessions=1`), the launcher also sets `BEA_PORT_RECORD_CE=1` so Onslaught CE features, widescreen, HUD scaling, session diagnostics and the Onslaught CE menu stay enabled (mods remain off for replay reproducibility); `--record-faithful` leaves `BEA_PORT_RECORD_CE` unset so the CE layer stays off in 4:3 faithful mode. In both modes, the
 front end and pause menu get keys, typed text (tape 2's `C` lines) and the window mouse (`W` lines; no focus messages) and the battle
 gets the DirectInput mouse. The launcher also sets `BEA_AUDIO_MONITOR=1` unless it is set, so the session is heard
 (port/dsound/README.md: a write-only monitor of the virtual clock's mix).
 
-Because the CE layer is off while recording, the Onslaught CE page that switched `record_sessions=1` on is hidden in
-every recorded session. So while it is set, each start asks first (an SDL message box): **Record** (Enter), **Not this
+While `record_sessions=1` is set, each start asks first (an SDL message box): **Record** (Enter), **Not this
 time** (Escape) or **Turn recording off**, which sets `record_sessions=0`. `--no-record` does the same as Turn recording off
-without asking; `--record` records without asking. Where no box can be shown (no display, or a dialog that fails or
+without asking; `--record` and `--record-faithful` record without asking. Where no box can be shown (no display, or a dialog that fails or
 crashes: on Linux every box is shown by a child process, `ask_box`), the question goes to the terminal when there is
 one; with nobody to ask, the session is recorded, as set. Tests answer with `BEA_RECORD_ANSWER=record|once|stop`. The launcher and the game change `ce.ini` the same way
 (`ce_ini_write`, ce_report.h): the whole file is written to `ce.ini.tmp`, every write and the close are checked, and it
@@ -118,9 +117,11 @@ The tape is replay.cpp's format 2 (`# onslaught tape 2`, then `K`, `M`, `C`, `W_
 parser counts and skips lines it does not know. The rebuild's parser ([onslaught-godot](https://github.com/dlprentice/onslaught-godot)
 `rebuild/OnslaughtRebuild.Parity/RetailTape.cs`) reads the header and every line kind listed above, and a build that reads only format 1 drops the `C` and `W` lines and drifts, so `run.py`, `check_tape.sh` and `replay_session.py` refuse a newer
 format. The session's details go in a sidecar `<name>.tape.json`: format (`onslaught-ce session tape 2`), the tape line
-kinds, `audio_monitor`, tape name, CE version, build, platform, OS, UTC date, clock, Presents a second,
-the game arguments, and `start_files`, the user folder's game files as the session started (options, careers, the
-game's own text files; base64; the launcher's files and anything over 1 MB left out; 4 MB in all). Replay a player's session from a fresh writable folder with its start files (a maintainer tool: `run.py` is not in this tree):
+kinds, `audio_monitor`, `ce_features`, tape name, CE version, build, platform, OS, UTC date, clock, Presents a second,
+the game arguments, and `start_files`, the user folder's retail state files as the session started (options, registry,
+careers; plus, when `ce_features` is true, a filtered safe subset of `ce.ini` gameplay/UI settings with local paths,
+endpoints and private keys stripped; base64; private credentials, logs, mods, backups and anything over 1 MB left out;
+4 MB in all). Replay a player's session from a fresh writable folder with its start files (a maintainer tool: `run.py` is not in this tree):
 
     python3 port/tools/run.py NAME --shim-clock --tape S.tape --start S.tape.json --probes --every 1 -- GAME_ARGS
 
@@ -128,8 +129,8 @@ game's own text files; base64; the launcher's files and anything over 1 MB left 
 
 `--report` opens `https://github.com/dlprentice/onslaught-ce/issues/new?template=bug_report.md&title=...&body=...`
 in the browser (`SDL_OpenURL`; `BEA_REPORT_NO_OPEN=1` only prints it), with the body in the template's sections, the
-version, build and OS, and the paths of the log and the newest tape (home or `%APPDATA%` shortened to `~` or
-`%APPDATA%`). It prints the user folder and the address; on Windows without a console a message box names the folder.
+version, build and OS, and the paths of the log, the newest tape, and the newest F9 bug-clip `.zip` in `<user folder>/clips` (home or `%APPDATA%` shortened to `~` or
+`%APPDATA%`). F9 in ordinary CE play packages a 20 FPS MJPEG+PCM `.avi` and a scrubbed `.txt` report into one GitHub-ready `.zip` that can be dragged straight into the issue box. It prints the user folder and the address; on Windows without a console a message box names the folder.
 The main menu's Onslaught CE page (port/game/ce_frontend.cpp) calls the same page through `extern "C" int CE_OpenReportPage(void)` (port/platform/common/ce.cpp,
 public builds only; it does nothing where the CE layer is off). Nothing is sent: the player submits the issue or not.
 The issue template is `.github/ISSUE_TEMPLATE/bug_report.md`, with `config.yml` beside it (links to Discussions and to the security advisory form); the body above repeats the template's sections.

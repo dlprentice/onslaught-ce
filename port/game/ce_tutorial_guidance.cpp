@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+extern "C" int PortCeRecordFeaturesAllowed(void) __attribute__((weak));
 
 bool PortCeLayer();
 int PortCeGamepadInputs(int id, int pad, SControlInput *out);
@@ -45,20 +46,24 @@ int sKind[MAX_HELP_TEXT_MESSAGES];
 
 bool Enabled()
 {
-	if (!PortCeLayer() || (PortRecording && PortRecording()) || PLAYABLE_DEMO || CLIPARAMS.mAutoConfigTest || CLIPARAMS.mRecordDemo ||
+	const bool ceRecord = (PortCeRecordFeaturesAllowed && PortCeRecordFeaturesAllowed());
+	if (!PortCeLayer() || (!ceRecord && PortRecording && PortRecording()) || PLAYABLE_DEMO || CLIPARAMS.mAutoConfigTest || CLIPARAMS.mRecordDemo ||
 		CLIPARAMS.mPlaybackDemo || GAME.IsMultiplayer() || GAME.GetCurrentlyRunningLevelNum() != 100 ||
 		TEXT.GetLanguage() != 0)
 		return false;
 	if ((CE_BootRequested && CE_BootRequested()) || (CE_SessionActive && CE_SessionActive()))
 		return false;
 	// Explicitly guard even if BEA_PORT_CE_LAYER forces the CE layer on during a tape or test.
-	const char *names[] = {"BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_PROBES", "BEA_PORT_RECORD",
-		"BEA_PORT_PILOT", "BEA_PORT_AUTOPILOT", "BEA_NET_HOST", "BEA_NET_JOIN"};
-	for (const char *name : names)
+	if (!ceRecord)
 	{
-		const char *value = getenv(name);
-		if (value && *value)
-			return false;
+		const char *names[] = {"BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_PROBES", "BEA_PORT_RECORD",
+			"BEA_PORT_PILOT", "BEA_PORT_AUTOPILOT", "BEA_NET_HOST", "BEA_NET_JOIN"};
+		for (const char *name : names)
+		{
+			const char *value = getenv(name);
+			if (value && *value)
+				return false;
+		}
 	}
 	return true;
 }

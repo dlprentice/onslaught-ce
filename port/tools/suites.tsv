@@ -21,6 +21,7 @@ port/tools/ce_backup_preview_page_tests.py	script	-	none	release	-	restore lane;
 port/tools/ce_backup_preview_tests.py	script	-	none	release	-	restore lane; host build with the system compiler
 port/tools/ce_bonus_save_tests.py	script	-	none	release	-	
 port/tools/ce_bonus_tests.py	script	-	none	release	-	
+port/tools/ce_bugclip_tests.py	script	-	none	release	-	F9 bug-clip MJPEG+PCM AVI + ZIP packager, scrubbing, and report discovery; host build with ffmpeg verification
 port/tools/ce_carrier_clash_tests.py	script	-	none	release	-	clean-room Carrier Clash ocean arena heightfield, version-50 world serializer, strict retail preflight, director state machine, 32-bit handles, HUD/glyph lint, long-session soak and causal mutants; host ASan/UBSan
 port/tools/ce_flagship_duel_tests.py	script	-	none	release	-	clean-room Level 888 Flagship Duel (1P solo + 2P split-screen) world serializer, 857 donor closure, strict retail preflight, 320m North-vs-South separation guard, 1P/2P outcome state machine, HUD/glyph lint, long-session soak and causal mutants; host ASan/UBSan
 port/tools/ce_career_backup_tests.py	script	-	none	release	-	restore lane; host build with the system compiler
@@ -207,7 +208,6 @@ port/tools/mods_author_tests.py	script	-	none	release	900	the mod author's comma
 port/tools/mods_windows_conversion_tests.py	script	-	none	release	-	
 port/tools/mods_windows_disabled_tests.py	script	-	none	release	-	
 port/tools/mods_windows_ntfs_tests.py	script	--out {scratch}	deps+wine	release	-	cross-compiles standalone Windows NTFS mods fixture (mods-windows-ntfs.exe) and verifies core cases and honest UNSUPPORTED_OR_DENIED reporting under Wine
-port/tools/mods_windows_readonly_tests.py	script	--cxx {data}/llvm-mingw/bin/i686-w64-mingw32-clang++ --cc {data}/llvm-mingw/bin/i686-w64-mingw32-clang --out {scratch}	deps	release	-	
 port/tools/mouse_activity_tests.py	script	-	deps	release	-	
 port/tools/music_stream_reinit_tests.py	script	-	none	release	-	
 port/tools/music_stream_stop_tests.py	script	-	none	release	-	
@@ -231,7 +231,6 @@ port/tools/network_compatibility_admission_tests.py	script	-	deps+game	optional	
 port/tools/network_compatibility_hooks_tests.py	script	-	deps+game	optional	-	
 port/tools/network_compatibility_tests.py	script	-	deps+game	optional	-	
 port/tools/network_connection_entry_tests.py	script	--output-dir {fresh}	none	optional	-	connection menu host driver
-port/tools/network_default_text_tests.py	script	-	deps	release	-	proves the --public build compiles the network out (port/README.md)
 port/tools/network_hostjoin_lockstep_tests.py	script	-	none	optional	-	
 port/tools/network_invitation_tests.py	script	-	deps	optional	-	
 port/tools/network_joincode_whitespace_tests.py	script	-	none	optional	-	

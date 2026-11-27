@@ -45,6 +45,7 @@ class AuthorityBuildTests(unittest.TestCase):
             'ce_museum_visit.cpp', 'ce_museum_visit_generate.cpp',
             'ce_asset_catalog.cpp', 'ce_catalogue_menu.cpp', 'ce_catalogue_sounds.cpp',
             'ce_online_match.cpp', 'ce_online_service.cpp', 'ce_online_ui_bridge.cpp',
+            'ce_ai_strategist_l3.cpp',
         ))
         self.assertEqual(reviewed_host_modules, build.HOST_BUFFER_GAME_MODULES)
         for signaling in (False, True):
@@ -54,7 +55,7 @@ class AuthorityBuildTests(unittest.TestCase):
                     reviewed_host_modules - build.ONLINE_SIGNALING_GAME_MODULES
                 )
                 game_rows = [(source, rule) for source, rule, _ in build.port_sources("linux")
-                             if source.parent == build.PORT / "game"]
+                             if (build.PORT / "game") in source.parents]
                 host_rows = [(source, rule) for source, rule in game_rows if source.name in reviewed_host_modules]
                 rows = [(source, rule) for source, rule in game_rows if source.name not in reviewed_host_modules]
                 self.assertTrue(rows)

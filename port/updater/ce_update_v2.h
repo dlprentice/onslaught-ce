@@ -26,6 +26,7 @@
 #ifdef _WIN32
 #include <winhttp.h>
 #include <bcrypt.h>
+#include "../platform/common/ce_win_reparse.h"
 #else
 #include <sys/syscall.h>
 #include <sys/types.h>
@@ -221,25 +222,47 @@ static int upd_win_transient(DWORD err)
 	return err == ERROR_ACCESS_DENIED || err == ERROR_SHARING_VIOLATION;
 }
 
-static int upd_win_reparse_is_cloud_only(DWORD tag)
+static inline int upd_win_reparse_is_cloud_only(DWORD tag)
 {
-	/* Windows 11 OneDrive Files On-Demand (cldflt.sys) tags synced folders/files with non-surrogate
-	 * IO_REPARSE_TAG_CLOUD..CLOUD_F (0x9000001A..0x9000F01A). All symlinks, junctions, and volume mount
-	 * points set the name-surrogate bit (0x20000000) and remain strictly refused. */
-	return (tag & 0x20000000u) == 0 && (tag & ~0x0000F000u) == 0x9000001Au;
+	return ce_win_reparse_is_cloud_only(tag);
 }
 
-static int upd_win_handle_is_link(HANDLE h, DWORD attrs)
+static inline int upd_win_handle_is_link(HANDLE h, DWORD attrs)
 {
-	if (!(attrs & FILE_ATTRIBUTE_REPARSE_POINT)) return 0;
-	FILE_ATTRIBUTE_TAG_INFO tag;
-	memset(&tag, 0, sizeof tag);
-	if (GetFileInformationByHandleEx(h, FileAttributeTagInfo, &tag, sizeof tag) &&
-		upd_win_reparse_is_cloud_only(tag.ReparseTag))
-		return 0;
-	return 1;
+	return ce_win_handle_is_link(h, attrs);
+}
+
+/* 1 when Win32 CreateProcessW (without longPathAware) can launch path directly (< 260 UTF-16 code units)
+ * or via an 8.3 short path (< 260 UTF-16 code units); 0 when neither fits MAX_PATH. */
+static int upd_win_launchable_path(const char *path)
+{
+	WCHAR wplain[PATHN + 16];
+	if (!ce_win_wide_path(path, wplain, sizeof wplain / sizeof *wplain, 0)) return 0;
+	if (wcslen(wplain) < MAX_PATH) return 1;
+	WCHAR wext[PATHN + 16], wshort[PATHN + 16], wclean[PATHN + 16];
+	if (!ce_win_wide_path(path, wext, sizeof wext / sizeof *wext, 1)) return 0;
+	DWORD sn = GetShortPathNameW(wext, wshort, (DWORD)(sizeof wshort / sizeof *wshort));
+	if (sn == 0 || sn >= (DWORD)(sizeof wshort / sizeof *wshort)) return 0;
+	if (!ce_win_strip_extended(wshort, wclean, sizeof wclean / sizeof *wclean)) return 0;
+	return wcslen(wclean) < MAX_PATH;
 }
 #endif
+
+static int upd_sha256_file(const char *p, uint8_t out[32])
+{
+#ifdef _WIN32
+	for (int attempt = 0; attempt < 10; ++attempt)
+	{
+		if (sha256_file(p, out)) return 1;
+		DWORD err = GetLastError();
+		if (!upd_win_transient(err) && errno != EACCES) break;
+		if (attempt + 1 < 10) Sleep(attempt < 4 ? 25 : 75);
+	}
+	return 0;
+#else
+	return sha256_file(p, out);
+#endif
+}
 
 /* What path itself is, never following a final link: ABSENT, DIR, FILE (regular, one link), OTHER (a symlink, junction
  * or other reparse point, device, multiply linked file), or -1 when it cannot be inspected. */
@@ -318,12 +341,14 @@ static int upd_unlink_file(const char *path)
 #ifdef _WIN32
 	WCHAR wp[PATHN + 16];
 	if (!ce_win_wide_path(path, wp, sizeof wp / sizeof *wp, 1)) return 0;
-	for (int attempt = 0; attempt < 8; ++attempt)
+	for (int attempt = 0; attempt < 10; ++attempt)
 	{
-		SetFileAttributesW(wp, FILE_ATTRIBUTE_NORMAL);
+		DWORD attr = GetFileAttributesW(wp);
+		if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_READONLY))
+			SetFileAttributesW(wp, attr & ~FILE_ATTRIBUTE_READONLY);
 		if (DeleteFileW(wp)) return 1;
 		if (!upd_win_transient(GetLastError())) return 0;
-		Sleep(25);
+		if (attempt + 1 < 10) Sleep(attempt < 4 ? 25 : 50);
 	}
 	return 0;
 #else
@@ -336,11 +361,15 @@ static int upd_rmdir(const char *path)
 #ifdef _WIN32
 	WCHAR wp[PATHN + 16];
 	if (!ce_win_wide_path(path, wp, sizeof wp / sizeof *wp, 1)) return 0;
-	for (int attempt = 0; attempt < 8; ++attempt)
+	for (int attempt = 0; attempt < 10; ++attempt)
 	{
+		DWORD attr = GetFileAttributesW(wp);
+		if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_READONLY))
+			SetFileAttributesW(wp, attr & ~FILE_ATTRIBUTE_READONLY);
 		if (RemoveDirectoryW(wp)) return 1;
-		if (!upd_win_transient(GetLastError())) return 0;
-		Sleep(25);
+		DWORD err = GetLastError();
+		if (!upd_win_transient(err) && err != ERROR_DIR_NOT_EMPTY) return 0;
+		if (attempt + 1 < 10) Sleep(attempt < 4 ? 25 : 50);
 	}
 	return 0;
 #else
@@ -377,7 +406,14 @@ static int upd_file_create(UpdFile *f, const char *path, int exec)
 	(void)exec;
 	WCHAR wp[PATHN + 16];
 	if (!ce_win_wide_path(path, wp, sizeof wp / sizeof *wp, 1)) { f->h = INVALID_HANDLE_VALUE; return 0; }
-	f->h = CreateFileW(wp, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+	f->h = INVALID_HANDLE_VALUE;
+	for (int attempt = 0; attempt < 8; ++attempt)
+	{
+		f->h = CreateFileW(wp, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+		if (f->h != INVALID_HANDLE_VALUE) break;
+		if (!upd_win_transient(GetLastError())) break;
+		if (attempt + 1 < 8) Sleep(attempt < 4 ? 25 : 50);
+	}
 	if (f->h == INVALID_HANDLE_VALUE) return 0;
 	SetHandleInformation(f->h, HANDLE_FLAG_INHERIT, 0);
 	return 1;
@@ -392,8 +428,21 @@ static int upd_file_write(UpdFile *f, const void *p, size_t n)
 	if (f->failed) return 0;
 	if (!upd_write_budget(n)) { f->failed = 1; return 0; }
 #ifdef _WIN32
-	DWORD done = 0;
-	if (!WriteFile(f->h, p, (DWORD)n, &done, NULL) || done != n) f->failed = 1;
+	const char *c = (const char *)p;
+	while (n && !f->failed)
+	{
+		DWORD done = 0;
+		int wrote = 0;
+		for (int attempt = 0; attempt < 6; ++attempt)
+		{
+			if (WriteFile(f->h, c, (DWORD)n, &done, NULL)) { wrote = 1; break; }
+			if (!upd_win_transient(GetLastError())) break;
+			if (attempt + 1 < 6) Sleep(25);
+		}
+		if (!wrote || !done) { f->failed = 1; break; }
+		c += done;
+		n -= done;
+	}
 #else
 	for (const char *c = p; n && !f->failed;)
 	{
@@ -435,7 +484,17 @@ static char *upd_read_small(const char *path, size_t max, size_t *len)
 	if (upd_kind(path, NULL) != UPD_FILE) return NULL;
 #ifdef _WIN32
 	WCHAR wp[PATHN + 16];
-	FILE *f = ce_win_wide_path(path, wp, sizeof wp / sizeof *wp, 1) ? _wfopen(wp, L"rb") : NULL;
+	FILE *f = NULL;
+	if (ce_win_wide_path(path, wp, sizeof wp / sizeof *wp, 1))
+	{
+		for (int attempt = 0; attempt < 8; ++attempt)
+		{
+			f = _wfopen(wp, L"rb");
+			if (f) break;
+			if (!upd_win_transient(GetLastError()) && errno != EACCES) break;
+			if (attempt + 1 < 8) Sleep(25);
+		}
+	}
 #else
 	FILE *f = fopen(path, "rb");
 #endif
@@ -720,7 +779,7 @@ static int upd_tree_win(const char *path, int depth, int scan)
 	do
 	{
 		if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..")) continue;
-		if ((fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) && !upd_win_reparse_is_cloud_only(fd.dwReserved0))
+		if (ce_win_find_is_link(fd.dwFileAttributes, fd.dwReserved0))
 		{ sUpdRefusal = "it holds a link, junction or mount point"; ok = 0; }
 		else if (!ce_win_from_wide(fd.cFileName, cname, sizeof cname) ||
 			!*cname || !strcmp(cname, ".") || !strcmp(cname, "..") || strchr(cname, '\\') || strchr(cname, '/'))
@@ -1273,7 +1332,17 @@ static uint16_t upd_le16(const unsigned char *p) { return (uint16_t)(p[0] | p[1]
 static int upd_unpack(const char *pkg, UpdOut *o)
 {
 	WCHAR wpkg[PATHN + 16];
-	FILE *f = ce_win_wide_path(pkg, wpkg, sizeof wpkg / sizeof *wpkg, 1) ? _wfopen(wpkg, L"rb") : NULL;
+	FILE *f = NULL;
+	if (ce_win_wide_path(pkg, wpkg, sizeof wpkg / sizeof *wpkg, 1))
+	{
+		for (int attempt = 0; attempt < 10; ++attempt)
+		{
+			f = _wfopen(wpkg, L"rb");
+			if (f) break;
+			if (!upd_win_transient(GetLastError()) && errno != EACCES) break;
+			if (attempt + 1 < 10) Sleep(attempt < 4 ? 25 : 75);
+		}
+	}
 	if (!f) { say("update: could not open staged package (error %lu)", (unsigned long)GetLastError()); return 0; }
 	int ok = 0;
 	unsigned char *cd = NULL, *tail = NULL;
@@ -1515,8 +1584,15 @@ static int upd_state_store(const char *vdir, UpdLock *lk, UpdJournal *jr, UpdSta
 		{
 			for (int attempt = 0; attempt < 15; ++attempt)
 			{
-				int identity_ok = s->have_file ? (upd_kind(path, &now) == UPD_FILE && upd_same(&now, &s->file)) :
-					(upd_kind(path, NULL) == UPD_ABSENT);
+				int k = upd_kind(path, &now);
+				if (k < 0)
+				{
+					move_err = GetLastError();
+					if (!upd_win_transient(move_err)) break;
+					Sleep(attempt < 5 ? 25 : 75);
+					continue;
+				}
+				int identity_ok = s->have_file ? (k == UPD_FILE && upd_same(&now, &s->file)) : (k == UPD_ABSENT);
 				if (!identity_ok) { move_err = GetLastError(); break; }
 				DWORD flags = s->have_file ? (MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) : MOVEFILE_WRITE_THROUGH;
 				if (MoveFileExW(wtmp, wpath, flags)) { ok = 1; break; }
@@ -1547,7 +1623,7 @@ static int upd_state_store(const char *vdir, UpdLock *lk, UpdJournal *jr, UpdSta
 					upd_unlink_file(tmp);
 				}
 			}
-			else if (errno == EINVAL || errno == ENOSYS)
+			else if (errno == EINVAL || errno == ENOSYS || errno == EOPNOTSUPP)
 			{
 				/* A file system without RENAME_EXCHANGE: check, then the atomic replacing rename. */
 				ok = upd_kind(path, &now) == UPD_FILE && upd_same(&now, &s->file) && !rename(tmp, path);
@@ -1559,7 +1635,20 @@ static int upd_state_store(const char *vdir, UpdLock *lk, UpdJournal *jr, UpdSta
 		else
 		{
 			if (!syscall(SYS_renameat2, AT_FDCWD, tmp, AT_FDCWD, path, 1 /* RENAME_NOREPLACE */)) ok = 1;
-			else if ((errno == EINVAL || errno == ENOSYS) && !link(tmp, path)) ok = upd_unlink_file(tmp);
+			else if (errno == EINVAL || errno == ENOSYS || errno == EOPNOTSUPP)
+			{
+				if (!link(tmp, path)) ok = upd_unlink_file(tmp);
+				else if ((errno == EPERM || errno == EOPNOTSUPP || errno == ENOTSUP || errno == EINVAL) &&
+					upd_kind(path, NULL) == UPD_ABSENT)
+				{
+					/* A file system without RENAME_NOREPLACE or hard links (e.g. exFAT, FAT32, FUSE):
+					 * confirm absence while holding the versions/ lock, then rename. */
+					ok = !rename(tmp, path);
+					if (!ok) upd_unlink_file(tmp);
+					else say("update: initial state saved with rename (no RENAME_NOREPLACE or hard links on this file system)");
+				}
+				else upd_unlink_file(tmp);
+			}
 			else upd_unlink_file(tmp);
 		}
 #endif
@@ -1772,28 +1861,47 @@ static int upd_run_program(const char *exe, int argc, char **argv, int *status)
 		had_hold = 1;
 	}
 	PROCESS_INFORMATION pi;
-	BOOL started = CreateProcessW(wexe, wcmd, NULL, NULL, pass, create_flags, NULL, NULL, &si.StartupInfo, &pi);
-	if (!started && (create_flags & EXTENDED_STARTUPINFO_PRESENT))
+	BOOL started = FALSE;
+	DWORD start_err = 0;
+	WCHAR wshort_clean[PATHN + 16];
+	int have_short = 0;
+	if (wcslen(wexe) >= MAX_PATH || strlen(exe) >= 248)
 	{
-		si.StartupInfo.cb = sizeof(STARTUPINFOW);
-		si.lpAttributeList = NULL;
-		started = CreateProcessW(wexe, wcmd, NULL, NULL, pass, 0, NULL, NULL, &si.StartupInfo, &pi);
-	}
-	if (!started && strlen(exe) >= 248)
-	{
-		WCHAR wext[PATHN + 16], wshort[PATHN + 16], wclean[PATHN + 16];
+		WCHAR wext[PATHN + 16], wshort[PATHN + 16];
 		if (ce_win_wide_path(exe, wext, sizeof wext / sizeof *wext, 1))
 		{
 			DWORD sn = GetShortPathNameW(wext, wshort, (DWORD)(sizeof wshort / sizeof *wshort));
 			if (sn > 0 && sn < (DWORD)(sizeof wshort / sizeof *wshort) &&
-				ce_win_strip_extended(wshort, wclean, sizeof wclean / sizeof *wclean))
-			{
-				si.StartupInfo.cb = sizeof(STARTUPINFOW);
-				si.lpAttributeList = NULL;
-				started = CreateProcessW(wclean, wcmd, NULL, NULL, pass, 0, NULL, NULL, &si.StartupInfo, &pi);
-			}
+				ce_win_strip_extended(wshort, wshort_clean, sizeof wshort_clean / sizeof *wshort_clean))
+				have_short = 1;
 		}
 	}
+	for (int attempt = 0; attempt < 10; ++attempt)
+	{
+		STARTUPINFOEXW cur_si = si;
+		DWORD cur_flags = create_flags;
+		started = CreateProcessW(wexe, wcmd, NULL, NULL, pass, cur_flags, NULL, NULL, &cur_si.StartupInfo, &pi);
+		if (!started) start_err = GetLastError();
+		if (!started && (cur_flags & EXTENDED_STARTUPINFO_PRESENT) && !upd_win_transient(start_err))
+		{
+			cur_si.StartupInfo.cb = sizeof(STARTUPINFOW);
+			cur_si.lpAttributeList = NULL;
+			started = CreateProcessW(wexe, wcmd, NULL, NULL, pass, 0, NULL, NULL, &cur_si.StartupInfo, &pi);
+			if (!started) start_err = GetLastError();
+		}
+		if (!started && have_short && !upd_win_transient(start_err))
+		{
+			cur_si.StartupInfo.cb = sizeof(STARTUPINFOW);
+			cur_si.lpAttributeList = NULL;
+			started = CreateProcessW(wshort_clean, wcmd, NULL, NULL, pass, 0, NULL, NULL, &cur_si.StartupInfo, &pi);
+			if (!started) start_err = GetLastError();
+		}
+		if (started) break;
+		if (!upd_win_transient(start_err)) break;
+		if (attempt + 1 < 10) Sleep(attempt < 4 ? 50 : 150);
+	}
+	if (!started && start_err)
+		fprintf(stderr, "onslaught-ce: CreateProcessW failed for updated launcher (error %lu)\n", (unsigned long)start_err);
 	if (attr_list) { DeleteProcThreadAttributeList(attr_list); free(attr_list); }
 	if (own_in != INVALID_HANDLE_VALUE) CloseHandle(own_in);
 	if (own_out != INVALID_HANDLE_VALUE) CloseHandle(own_out);
@@ -2155,6 +2263,15 @@ static int upd_install(const char *package, const UpdOffer *o, char *installed, 
 #endif
 				unpacked = 0;
 			}
+#ifdef _WIN32
+			else if (!upd_win_launchable_path(probe))
+			{
+				say("update: staged path for %s exceeds Windows' 260-character launch limit and no 8.3 short path is available; "
+					"move your Onslaught CE folder to a shorter path (for example C:\\Games\\OnslaughtCE) and try again",
+					probes[pi]);
+				unpacked = 0;
+			}
+#endif
 		}
 	}
 	if (!unpacked)
@@ -2320,7 +2437,7 @@ static int upd_check(int explicit_cmd)
 	}
 	upd_crash_point("package-downloaded");
 	uint8_t want[32], got[32];
-	if (pn != o.size || !hex_to(o.sha, want, 32) || !sha256_file(pkg, got) || memcmp(got, want, 32))
+	if (pn != o.size || !hex_to(o.sha, want, 32) || !upd_sha256_file(pkg, got) || memcmp(got, want, 32))
 	{
 		say("update: the downloaded package is not the one the signed feed lists (%" PRIu64 " bytes, expected %" PRIu64 "); discarded, nothing installed", pn, o.size);
 		upd_tell(explicit_cmd, CE_BOX_UPDATE_NOT_THE_RELEASE);

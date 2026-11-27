@@ -117,8 +117,8 @@ static inline int ce_box_wrap(const char *in, char *out, size_t n, unsigned cols
 #define CE_BOX_RECORD \
 	"Session recording is on.\n\n" \
 	"A recording keeps your keyboard and mouse input and copies of some files from your user folder, to help reproduce a problem. " \
-	"While recording, gamepads and flight sticks do not work, the game runs at 30 frames a second, " \
-	"and the Onslaught CE menu and cheats are hidden.\n\n" \
+	"While recording, Onslaught CE features stay on, gamepads and flight sticks do not work, and the game runs at 30 frames a second. " \
+	"Press F9 at any time for a video clip with audio.\n\n" \
 	"Record: record this session.\n" \
 	"Not this time: play without recording. You will be asked again next time.\n" \
 	"Turn recording off: play without recording, and do not ask again."

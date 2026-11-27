@@ -143,6 +143,15 @@ extern "C" int PortCeChatEvent(const SDL_Event *event) {
         if (!event->key.repeat) {
             last_result = CE_LockstepChatSubmit();
             if (last_result == CE_CHAT_OK) { StopText(); release_key = key; }
+            else if (last_result == CE_CHAT_INVALID) {
+                CE_ChatView view{}; CE_LockstepChatCopyView(&view);
+                bool blank = true;
+                for (uint32_t i = 0; i < view.draft_size && i < CE_CHAT_TEXT_BYTES; ++i) {
+                    if (view.draft[i] > 0x20u) { blank = false; break; }
+                }
+                Wipe(&view, sizeof(view));
+                if (blank) { CE_LockstepChatCancel(); StopText(); release_key = key; last_result = CE_CHAT_OK; }
+            }
         }
     } else if (key == SDL_SCANCODE_BACKSPACE) {
         last_result = CE_LockstepChatBackspace();

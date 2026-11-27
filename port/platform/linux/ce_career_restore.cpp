@@ -323,17 +323,42 @@ struct Member {
   struct stat identity{};
   Bytes bytes;
 };
+struct SkippedMember {
+  std::string name;
+  bool user;
+  struct stat identity{};
+};
 struct Snapshot {
   std::vector<Member> all;
   std::map<std::string, size_t> visible;
+  std::vector<SkippedMember> skipped;
 };
+bool hasCareers(const Snapshot &s) {
+  for (const auto &it : s.visible)
+    if (career(it.first))
+      return true;
+  return false;
+}
+void logSkippedSave(bool fromUser, const std::string &name,
+                    const char *reason) {
+  std::fprintf(
+      stderr,
+      "onslaught-ce: career storage skipped unreadable %s save \"%s\" (%s)\n",
+      fromUser ? "user" : "game", name.c_str(), reason);
+}
 bool equal(const Snapshot &a, const Snapshot &b) {
-  if (a.all.size() != b.all.size() || a.visible != b.visible)
+  if (a.all.size() != b.all.size() || a.visible != b.visible ||
+      a.skipped.size() != b.skipped.size())
     return false;
   for (size_t i = 0; i < a.all.size(); ++i)
     if (a.all[i].name != b.all[i].name || a.all[i].user != b.all[i].user ||
         !stamp(a.all[i].identity, b.all[i].identity) ||
         a.all[i].bytes != b.all[i].bytes)
+      return false;
+  for (size_t i = 0; i < a.skipped.size(); ++i)
+    if (a.skipped[i].name != b.skipped[i].name ||
+        a.skipped[i].user != b.skipped[i].user ||
+        !stamp(a.skipped[i].identity, b.skipped[i].identity))
       return false;
   return true;
 }
@@ -365,7 +390,7 @@ struct Session {
     if (flock(lock.n, LOCK_EX | LOCK_NB))
       throw Failure{errno == EWOULDBLOCK ? Status::Busy : Status::Refused};
     roots();
-    saved = snapshot();
+    saved = snapshot("", true);
   }
   void permission(bool includeCancel = true) const {
     require(r.permitted && r.permitted(r.owner));
@@ -418,7 +443,8 @@ struct Session {
     created.n = -1;
     slotsPresent = true;
   }
-  Snapshot snapshot(const std::string &exclude = "") const {
+  Snapshot snapshot(const std::string &exclude = "",
+                    bool logSkipped = false) const {
     Snapshot s;
     size_t total = 0;
     std::map<std::string, std::string> spelling;
@@ -447,18 +473,62 @@ struct Session {
       for (const std::string &name : names) {
         if (fromUser && name == exclude)
           continue;
-        require(portable(name));
+        Fd f(openat(parent, name.c_str(),
+                    O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+        require(f.n >= 0);
+        const struct stat obs = status(f.n);
+        require(S_ISREG(obs.st_mode) && obs.st_nlink == 1 && obs.st_size >= 0);
+        struct stat byName{};
+        require(fstatat(parent, name.c_str(), &byName, AT_SYMLINK_NOFOLLOW) ==
+                    0 &&
+                    stamp(obs, byName),
+                Status::Changed);
+        if (!portable(name)) {
+          if (logSkipped)
+            logSkippedSave(fromUser, name, "non-portable or overlong filename");
+          s.skipped.push_back(SkippedMember{name, fromUser, obs});
+          continue;
+        }
         const std::string key = lower(name);
         auto was = spelling.find(key);
         require(was == spelling.end() || (was->second == name && !fromUser));
         spelling[key] = name;
+        if (static_cast<unsigned long long>(obs.st_size) != CE_CAREER_SIZE) {
+          if (logSkipped)
+            logSkippedSave(fromUser, name,
+                           obs.st_size == 0 ? "empty 0-byte file"
+                                            : "wrong file size");
+          s.skipped.push_back(SkippedMember{name, fromUser, obs});
+          continue;
+        }
         Member m;
         m.name = name;
         m.user = fromUser;
-        m.bytes = read(parent, name, m.identity);
+        m.identity = obs;
+        m.bytes.resize(CE_CAREER_SIZE);
+        size_t done = 0;
+        while (done < m.bytes.size()) {
+          ssize_t n = ::read(f.n, m.bytes.data() + done, m.bytes.size() - done);
+          if (n < 0 && errno == EINTR)
+            continue;
+          require(n > 0);
+          done += size_t(n);
+        }
+        unsigned char tail;
+        require(::read(f.n, &tail, 1) == 0 && stamp(m.identity, status(f.n)),
+                Status::Changed);
+        require(fstatat(parent, name.c_str(), &byName, AT_SYMLINK_NOFOLLOW) ==
+                    0 &&
+                    stamp(m.identity, byName),
+                Status::Changed);
         SCeCareerView view{};
-        require(CeCareerViewBuild(m.bytes.data(), int(m.bytes.size()), &view) &&
-                CeCareerViewPlausible(view));
+        if (!CeCareerViewBuild(m.bytes.data(), int(m.bytes.size()), &view) ||
+            !CeCareerViewPlausible(view)) {
+          if (logSkipped)
+            logSkippedSave(fromUser, name, "corrupt or unreadable career data");
+          s.skipped.push_back(SkippedMember{name, fromUser, m.identity});
+          continue;
+        }
         total += m.bytes.size();
         require(s.all.size() < kCountLimit && total <= kSetLimit);
         if (!s.visible.count(name))
@@ -478,7 +548,6 @@ struct Session {
       s.all.push_back(std::move(m));
     } else
       require(errno == ENOENT);
-    require(!s.visible.empty());
     return s;
   }
   void check(const std::string &exclude = "", bool allowCancel = true) const {
@@ -568,11 +637,14 @@ std::set<std::string> names(const CeCareerRestoreRequest &r) {
     }
     require(errno == 0 && entries.size() <= kCountLimit);
     for (const std::string &entry : entries) {
-      require(portable(entry));
       struct stat st{};
       require(fstatat(folder, entry.c_str(), &st, AT_SYMLINK_NOFOLLOW) == 0 &&
               S_ISREG(st.st_mode) && st.st_nlink == 1);
       std::string key = lower(entry);
+      if (!portable(entry)) {
+        found.insert(key);
+        continue;
+      }
       auto was = spellings.find(key);
       require(was == spellings.end() ||
               (was->second == entry && !fromUser));
@@ -623,11 +695,20 @@ std::string proposal(const CopyStem &base, unsigned number) {
   if (number > 1)
     suffix += " " + std::to_string(number);
   require(suffix.size() < 31);
-  std::string stem = base.name.substr(0, 31 - suffix.size());
+  const size_t maxStem = 31 - suffix.size();
+  size_t cut = std::min(base.name.size(), maxStem);
+  if (cut < base.name.size()) {
+    while (cut > 0 &&
+           (static_cast<unsigned char>(base.name[cut]) & 0xc0u) == 0x80u)
+      --cut;
+  }
+  std::string stem = base.name.substr(0, cut);
   while (!stem.empty() && (stem.back() == ' ' || stem.back() == '.'))
     stem.pop_back();
   require(!stem.empty());
-  return stem + suffix + ".bes";
+  const std::string out = stem + suffix + ".bes";
+  require(portable(out));
+  return out;
 }
 Bytes selected(const CeCareerRestoreRequest &r) {
   require(!r.sourceStamp.empty() &&
@@ -861,11 +942,16 @@ CeCareerRestoreAsNew(const CeCareerRestoreRequest &request) {
     const std::string target = request.targetName;
     for (const Member &member : session.saved.all)
       require(lower(member.name) != lower(target), Status::Occupied);
+    for (const SkippedMember &member : session.saved.skipped)
+      require(lower(member.name) != lower(target), Status::Occupied);
     require(!exists(session.slots.n, target) &&
                 !exists(session.original.n, target),
             Status::Occupied);
-    backup(session, out, kRestoreReason);
-    checkedBackup(session, out);
+    const bool needBackup = hasCareers(session.saved);
+    if (needBackup) {
+      backup(session, out, kRestoreReason);
+      checkedBackup(session, out);
+    }
     require(selected(request) == payload, Status::Changed);
     session.permission();
     require(request.namePermitted(request.owner, request.sourceName, target));
@@ -880,7 +966,8 @@ CeCareerRestoreAsNew(const CeCareerRestoreRequest &request) {
                 !exists(session.original.n, target),
             Status::Occupied);
     session.check();
-    checkedBackup(session, out);
+    if (needBackup)
+      checkedBackup(session, out);
     require(selected(request) == payload, Status::Changed);
     session.permission();
     require(request.namePermitted(request.owner, request.sourceName, target));
@@ -897,7 +984,8 @@ CeCareerRestoreAsNew(const CeCareerRestoreRequest &request) {
                 status(final.n).st_nlink == 1,
             Status::Uncertain);
     identical(final.n, payload);
-    checkedBackup(session, out);
+    if (needBackup)
+      checkedBackup(session, out);
     require(selected(request) == payload, Status::Changed);
     session.check(target, false);
     require(request.namePermitted(request.owner, request.sourceName, target));

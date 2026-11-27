@@ -36,6 +36,7 @@ int PortCachedContentRoots(char *, size_t, char *, size_t);
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <io.h>
+#include "../platform/common/ce_win_reparse.h"
 #else
 #include "native_posix_stat.h"
 #include <unistd.h>
@@ -119,7 +120,11 @@ bool HandleStamp(HANDLE h, Stamp &out) {
     BY_HANDLE_FILE_INFORMATION info{};
     FILE_ID_INFO file_id{};
     if (h == INVALID_HANDLE_VALUE || GetFileType(h) != FILE_TYPE_DISK || !GetFileInformationByHandle(h, &info) ||
+#ifdef CE_WIN_REPARSE_H
+        (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || ce_win_handle_is_link(h, info.dwFileAttributes) ||
+#else
         (info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) ||
+#endif
         !GetFileInformationByHandleEx(h, FileIdInfo, &file_id, sizeof file_id)) return false;
     // Legacy FileIndex64 is not unique on every filesystem. Require the full supported identity;
     // an unavailable or unknown ID must refuse admission instead of falling back to the short form.
@@ -208,14 +213,14 @@ bool Scan(const fs::path &directory, const std::string &logical, unsigned depth,
         if (ec || fs::is_symlink(status)) return Refuse(error, size, "content links or unreadable entries are not admitted");
 #if defined(_WIN32)
         DWORD attributes = GetFileAttributesW(it->path().c_str());
-        if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_REPARSE_POINT))
+        if (attributes == INVALID_FILE_ATTRIBUTES || ce_win_path_is_link_w(it->path().c_str(), attributes))
             return Refuse(error, size, "content reparse entries are not admitted");
 #endif
         bool isdir = fs::is_directory(status);
         Stamp stamp{};
         if (!isdir && (!fs::is_regular_file(status) || !PathStamp(it->path(), stamp)))
 #if defined(_WIN32)
-            return Refuse(error, size, "content entry is not a readable regular file with a file identity (under Wine keep the game folder on drive C:)");
+            return Refuse(error, size, "content entry is not a readable regular file with a 128-bit file identity (requires NTFS/ReFS on Windows, or drive C: under Wine)");
 #else
             return Refuse(error, size, "content entry is not a readable regular file");
 #endif
@@ -251,7 +256,7 @@ bool RootEntries(const fs::path &root, fs::path &data, fs::path &autoexec, char 
         if (ec || fs::is_symlink(status)) return Refuse(error, size, "content entry links are not admitted");
 #if defined(_WIN32)
         DWORD attributes = GetFileAttributesW(it->path().c_str());
-        if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_REPARSE_POINT))
+        if (attributes == INVALID_FILE_ATTRIBUTES || ce_win_path_is_link_w(it->path().c_str(), attributes))
             return Refuse(error, size, "content reparse entries are not admitted");
 #endif
         if (name == "data" ? !fs::is_directory(status) : !fs::is_regular_file(status))

@@ -48,6 +48,7 @@ BUILT_ON_COMMANDER = (
     "0381-ce-perf-surf-museum-fixes.patch",
     "0385-ce-flagship-duel.patch",
     "0397-ce-audio-pause-museum-shader-fixes.patch",
+    "0398-ce-bugclip-frontend-overlay.patch",
 )
 POSITIONAL = ()    # none since patch 0189 carries context (port/tools/patch_control_body_tests.py refuses a hunk without any)
 # The CE hook points (patches 0300-0319, port/game/ce_hooks.h): each adds one call into an empty, ordered table, and their
@@ -55,7 +56,7 @@ POSITIONAL = ()    # none since patch 0189 carries context (port/tools/patch_con
 # They change nothing the commander's faithful comparison measures (no handler is registered); ce_hooks_tests.py checks them.
 HOOK_SITES = tuple(sorted(p.name for p in (Path(__file__).resolve().parents[1] / "patches").glob("03[0-9][0-9]-ce-hook-*.patch")))
 LEFT_OUT = (*POSITIONAL, *BUILT_ON_COMMANDER, *HOOK_SITES)
-OVERLAY_HOOK = r"(?:\tif \(!gMirrorPass\) ce_hook_draw_overlay\(\);[^\n]*\n)?"   # the optional CE hook point line (patch 0311)
+OVERLAY_HOOK = r"(?:\tif \(!gMirrorPass\) ce_hook_draw_overlay\(\);[^\n]*\n)?" + r"(?:#ifdef CE_VERSION\n\tif \(!gMirrorPass\) \{ extern void PortCeBugClipRender\(\); PortCeBugClipRender\(\); \}\n#endif\n)?"   # optional hook (0311) + bugclip overlay (0398)
 MODULE = ROOT / "port/game/ce_commander.cpp"
 MAP = ROOT / "port/game/ce_cmdmap.cpp"
 VIEW = ROOT / "port/game/ce_cmdview.cpp"

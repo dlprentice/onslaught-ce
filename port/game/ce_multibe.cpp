@@ -59,6 +59,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+extern "C" int PortCeRecordFeaturesAllowed(void) __attribute__((weak));
 #include <string.h>
 
 extern bool PortCeLayer();
@@ -90,6 +91,37 @@ extern "C" int PortCeOnlineMatchSlotTeam(int slot) __attribute__((weak));
 extern "C" const char *PortCeOnlineMatchSlotBeCfg(int slot) __attribute__((weak));
 extern "C" uint32_t PortCeOnlineMatchSeed(void) __attribute__((weak));
 #endif
+
+namespace CeMultiBePlayerAccess
+{
+
+// Standard C++ explicit-instantiation member accessor for private CPlayer::mBattleEngine so
+// PortCeMultiBeUnitDestroyed() can safely detach a dying auxiliary Battle Engine via SetReader(NULL)
+// without triggering CPlayer::AssignBattleEngine(NULL)'s unconditional mBattleEngine->SetPlayer() deref.
+template <typename Tag>
+struct Slot { static typename Tag::Ptr ptr; };
+template <typename Tag>
+typename Tag::Ptr Slot<Tag>::ptr = NULL;
+
+template <typename Tag, typename Tag::Ptr P>
+struct Bind
+{
+	struct Init { Init() { Slot<Tag>::ptr = P; } };
+	static Init sInit;
+};
+template <typename Tag, typename Tag::Ptr P>
+typename Bind<Tag, P>::Init Bind<Tag, P>::sInit;
+
+struct BattleEngineTag { typedef CActiveReader<CBattleEngine> CPlayer::*Ptr; };
+template struct Bind<BattleEngineTag, &CPlayer::mBattleEngine>;
+
+inline void ClearPlayerBattleEngine(CPlayer *p)
+{
+	if (p && Slot<BattleEngineTag>::ptr)
+		(p->*Slot<BattleEngineTag>::ptr).SetReader(NULL);
+}
+
+} // namespace CeMultiBePlayerAccess
 
 namespace
 {
@@ -144,7 +176,8 @@ bool PilotEnvPresent()
 
 bool MultiBeFenced()
 {
-	if (!PortCeLayer() || PortRecording() || NetworkOrLockstepActive())
+	const bool recordingFenced = PortRecording() && !(PortCeRecordFeaturesAllowed && PortCeRecordFeaturesAllowed());
+	if (!PortCeLayer() || recordingFenced || NetworkOrLockstepActive())
 		return true;
 	if (PLAYABLE_DEMO || CLIPARAMS.mAutoConfigTest || CLIPARAMS.mRecordDemo ||
 	    CLIPARAMS.mPlaybackDemo || CLIPARAMS.mStressTest || CLIPARAMS.mAttractMode)
@@ -1544,10 +1577,15 @@ extern "C" void PortCeMultiBeUnitDestroyed(CUnit *unit)
 	if (idx >= 0)
 	{
 		gEngines[idx] = NULL;
-		if (gIsAux[idx] && gAuxCameras[idx] && !gAuxDeathCam[idx])
+		if (gIsAux[idx])
 		{
-			delete gAuxCameras[idx];
-			gAuxCameras[idx] = NULL;
+			if (gAuxPlayers[idx])
+				CeMultiBePlayerAccess::ClearPlayerBattleEngine(gAuxPlayers[idx]);
+			if (gAuxCameras[idx] && !gAuxDeathCam[idx])
+			{
+				delete gAuxCameras[idx];
+				gAuxCameras[idx] = NULL;
+			}
 		}
 	}
 }
@@ -1927,7 +1965,7 @@ extern "C" int PortCeSoloControlsActive(void)
 
 extern "C" int PortCeBattleEngineIsLocalHuman(const void *be)
 {
-	const bool faithfulFence = !be || !PortCeLayer() || PortRecording() || PLAYABLE_DEMO ||
+	const bool faithfulFence = !be || !PortCeLayer() || (PortRecording() && !(PortCeRecordFeaturesAllowed && PortCeRecordFeaturesAllowed())) || PLAYABLE_DEMO ||
 	                           CLIPARAMS.mAutoConfigTest || CLIPARAMS.mRecordDemo ||
 	                           CLIPARAMS.mPlaybackDemo || CLIPARAMS.mStressTest || CLIPARAMS.mAttractMode;
 	if (faithfulFence)
@@ -1950,8 +1988,13 @@ extern "C" int PortCeBattleEngineIsLocalHuman(const void *be)
 		else if (localSlot < GAME.GetNPlayers() && localSlot < MAX_PLAYERS)
 			lp = GAME.GetPlayer(localSlot);
 	}
-	CBattleEngine *localOnlineBe = lp ? lp->GetBattleEngine()
-		: ((onlineActive && gActive && localSlot >= 0 && localSlot < gEngineCount) ? gEngines[localSlot] : NULL);
+	CBattleEngine *localOnlineBe = NULL;
+	if (onlineActive && gActive && localSlot >= 0 && localSlot < gEngineCount && gIsAux[localSlot])
+		localOnlineBe = gEngines[localSlot];
+	else if (lp)
+		localOnlineBe = lp->GetBattleEngine();
+	else if (onlineActive && gActive && localSlot >= 0 && localSlot < gEngineCount)
+		localOnlineBe = gEngines[localSlot];
 	const bool matchesLocalOnline = (localOnlineBe != NULL && be == localOnlineBe);
 #else
 	const bool onlineActive = false;

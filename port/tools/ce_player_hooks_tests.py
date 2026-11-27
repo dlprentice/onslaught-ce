@@ -38,6 +38,7 @@ DRIVER_CPP = r'''
 #include "ce_policy.h"
 #include "ce_player_hooks.h"
 #include "ce_playunit_slots.h"
+#include "ai/ce_ai_pilot_l1.h"
 #include "ai/ce_ai_tactical_l2.h"
 
 static uint32_t HashObsEntities(const CePlayerObs &obs) {
@@ -269,12 +270,113 @@ static int TestHeadless4SlotPossessionIsolation() {
     return 0;
 }
 
+static int TestNeutralAndHumanCommanderRespect() {
+    // 07-P1-1: Neutral units and independent Repair Pads must NEVER be targeted as hostiles.
+    CePlayerObs obs = {};
+    obs.simTick = 30u;
+    obs.slot = 2u;
+    obs.lifeRatio = 1.0f;
+    obs.pos[0] = 100.0f; obs.pos[1] = 100.0f; obs.pos[2] = -10.0f;
+    obs.activeToggles = CE_TOGGLE_AI_PILOTS | CE_TOGGLE_COMMANDER | CE_TOGGLE_PLAY_UNIT;
+    obs.entityCount = 2u;
+    // Entity 0: independent Repair Pad (closer)
+    obs.entities[0].isFriendly = 0u;
+    obs.entities[0].isNeutral = 1u;
+    obs.entities[0].isRepairPad = 1u;
+    obs.entities[0].distSqQuantized = 400u;
+    obs.entities[0].pos[0] = 120.0f; obs.entities[0].pos[1] = 110.0f;
+    // Entity 1: neutral non-hostile unit
+    obs.entities[1].isFriendly = 0u;
+    obs.entities[1].isNeutral = 1u;
+    obs.entities[1].isRepairPad = 0u;
+    obs.entities[1].distSqQuantized = 600u;
+    obs.entities[1].pos[0] = 130.0f; obs.entities[1].pos[1] = 120.0f;
+
+    if (CePlayerObsEntityIsHostile(obs.entities[0]) || CePlayerObsEntityIsHostile(obs.entities[1])) {
+        std::puts("FAIL neutral or independent repair pad flagged as hostile"); return 40;
+    }
+    if (!CePlayerObsEntityIsUsableRepairPad(obs.entities[0])) {
+        std::puts("FAIL independent repair pad not recognized as usable repair pad"); return 41;
+    }
+
+    // L1 feature extractor must see independent Repair Pad and 0 hostiles.
+    int16_t feat[kCeAiMlpInDim];
+    CeAiPilotExtractFeaturesQ12(obs, nullptr, feat);
+    if (feat[CE_AI_FEAT_HAS_HOSTILE] != 0) {
+        std::puts("FAIL L1 treated neutral/independent repair pad as hostile"); return 42;
+    }
+    if (feat[CE_AI_FEAT_REPAIR_PAD_DX] == 0 && feat[CE_AI_FEAT_REPAIR_PAD_DY] == 0) {
+        std::puts("FAIL L1 missed independent repair pad vector"); return 43;
+    }
+
+    // L2 must NOT issue attacks or take units when only neutral/repair pads exist.
+    obs.squadCount = 1u;
+    obs.squads[0].squadHandle = CeEntityHandlePack(3u, 1u);
+    obs.squads[0].friendly = 1u; obs.squads[0].commandable = 1u; obs.squads[0].members = 4; obs.squads[0].lifeRatio = 1.0f;
+    obs.takeableCount = 1u;
+    obs.takeable[0].unitHandle = CeEntityHandlePack(4u, 1u);
+    obs.takeable[0].spawnSeq = 1u; obs.takeable[0].lifeRatio = 1.0f;
+    CeAiTacticalL2State st;
+    CeAiTacticalL2Reset(&st);
+    CeCommanderIntent cmd = {};
+    CePossessIntent pos = {};
+    obs.simTick = 24u; // (24 + 2*3) % 15 == 0
+    CeAiTacticalL2Decide(&st, obs, nullptr, &cmd, &pos);
+    if (cmd.valid != 0u || pos.valid != 0u) {
+        std::puts("FAIL L2 assaulted neutral unit or independent repair pad"); return 44;
+    }
+
+    // Adding a real hostile further away must make L2 target the hostile, NOT the closer repair pad!
+    obs.entityCount = 3u;
+    obs.entities[2].isFriendly = 0u;
+    obs.entities[2].isNeutral = 0u;
+    obs.entities[2].isRepairPad = 0u;
+    obs.entities[2].distSqQuantized = 2500u;
+    obs.entities[2].pos[0] = 310.0f; obs.entities[2].pos[1] = 320.0f;
+    CeAiTacticalL2Decide(&st, obs, nullptr, &cmd, &pos);
+    if (cmd.valid == 0u || cmd.goalX != 310.0f || cmd.goalY != 320.0f) {
+        std::puts("FAIL L2 did not target real hostile over closer repair pad"); return 45;
+    }
+
+    // 07-P1-2: Allied AI sharing a team with a human Commander (obs.teamHasHuman=1) must NEVER
+    // overwrite human squad orders (not on HP < 30%, artillery deploy, or L3 DEFEND/REPAIR)
+    // and must release/avoid hijacking units when Commander mode is enabled.
+    CeAiTacticalL2Reset(&st);
+    st.possessedUnit = obs.takeable[0].unitHandle;
+    obs.teamHasHuman = 1u;
+    obs.squadCount = 3u;
+    obs.squads[0].lifeRatio = 0.20f; obs.squads[0].verb = 3; // low HP human-commanded HOLD
+    obs.squads[1] = obs.squads[0];
+    obs.squads[1].squadHandle = CeEntityHandlePack(5u, 1u);
+    obs.squads[1].deploys = 1u; obs.squads[1].lifeRatio = 1.0f; obs.squads[1].verb = 2; // artillery
+    obs.squads[2] = obs.squads[0];
+    obs.squads[2].squadHandle = CeEntityHandlePack(6u, 1u);
+    obs.squads[2].lifeRatio = 1.0f; obs.squads[2].verb = 0; // idle
+    CeStrategicPrior defPrior = {};
+    defPrior.posture = CE_STRAT_DEFEND;
+    obs.simTick = 39u; // (39 + 2*3) % 15 == 0
+    CeAiTacticalL2Decide(&st, obs, &defPrior, &cmd, &pos);
+    if (cmd.valid != 0u) {
+        std::puts("FAIL Allied AI overwrote human Commander team orders"); return 46;
+    }
+    if (pos.valid == 0u || pos.release != 1u) {
+        std::puts("FAIL Allied AI did not release possessed unit on human Commander team"); return 47;
+    }
+    obs.simTick = 69u; // (69 + 2*3) % 15 == 0
+    CeAiTacticalL2Decide(&st, obs, &defPrior, &cmd, &pos);
+    if (cmd.valid != 0u || pos.valid != 0u) {
+        std::puts("FAIL Allied AI hijacked unit or issued order on human Commander team"); return 48;
+    }
+    return 0;
+}
+
 int main() {
     int rc = 0;
     if ((rc = TestCrossLevelSpawnSeqSortInvariance()) != 0) return rc;
     if ((rc = TestFogOfWarParity()) != 0) return rc;
     if ((rc = TestToggleOffRefusalsAndL2Dormancy()) != 0) return rc;
     if ((rc = TestHeadless4SlotPossessionIsolation()) != 0) return rc;
+    if ((rc = TestNeutralAndHumanCommanderRespect()) != 0) return rc;
     std::puts("PLAYER_HOOKS_OK");
     return 0;
 }
@@ -287,7 +389,7 @@ class PlayerHooksTests(unittest.TestCase):
         inc_dir = workdir / "inc"
         (inc_dir / "ai").mkdir(parents=True, exist_ok=True)
         for rel in ("ce_entity_handles.h", "ce_policy.h", "ce_modes.h", "ce_player_hooks.h",
-                    "ce_playunit_rules.h", "ce_playunit_slots.h", "ai/ce_ai_tactical_l2.h"):
+                    "ce_playunit_rules.h", "ce_playunit_slots.h", "ai/ce_ai_pilot_l1.h", "ai/ce_ai_tactical_l2.h"):
             content = (GAME / rel).read_text(encoding="utf-8")
             if header_overrides and rel in header_overrides:
                 content = header_overrides[rel]
@@ -390,12 +492,16 @@ class PlayerHooksTests(unittest.TestCase):
         self.assertIn("obs.weaponMaxRange", pcpp)
         self.assertIn("BeStoreOverheatTag", pcpp)
         self.assertIn("e.isBaseBuilding = (u->IsA(THING_TYPE_BUILDING) != FALSE) ? 1u : 0u;", pcpp)
+        self.assertIn("CePlayerObsEntityIsHostile(", pcpp)
+        self.assertIn("CePlayUnitSlotRelease(", pcpp)
         self.assertIn("gTacticalState[slot].possessedUnit = (toggles & CE_TOGGLE_PLAY_UNIT)", pcpp)
 
-        # Headless PlayUnit slots use per-unit PortCePlayUnitIsDriven and AI_ONF (armed).
+        # Headless PlayUnit slots use per-unit PortCePlayUnitIsDriven, AI_ONF (armed), and ground-only driving.
         pus_cpp = strip_comments((GAME / "ce_playunit_slots.cpp").read_text(encoding="utf-8"))
         self.assertIn("PortCePlayUnitIsDriven", pus_cpp)
         self.assertIn("AI_ONF", pus_cpp)
+        self.assertIn("IsEligibleGroundDriveClass(", pus_cpp)
+        self.assertIn("IsEligibleGroundDriveUnit(", pus_cpp)
         self.assertNotIn("CePlayUnitOwnsPilot(", pus_cpp)
 
         # R5: 0396-ce-hook-player-act MUST gate on mGameState == GAME_STATE_PLAYING.

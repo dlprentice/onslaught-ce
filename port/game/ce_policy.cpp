@@ -7,6 +7,7 @@
 #include "world.h"
 #include "ce_policy.h"
 #include "ce_modes.h"
+extern "C" int PortCeRecordFeaturesAllowed(void) __attribute__((weak));
 
 extern bool PortCeLayer();
 extern bool PortRecording();
@@ -106,7 +107,8 @@ uint32_t CePolicyActiveToggles()
 		mask |= CE_TOGGLE_AI_PILOTS;
 	// Commander & Play-Any-Unit are disallowed under Editor, Museum Visit, recordings, and Online Match v1,
 	// and stay strictly gated on their actual feature enablement (0 overhead when OFF).
-	const bool allowTactical = PortCeMenus() && !PortRecording() && !online &&
+	const bool recordingFenced = PortRecording() && !(PortCeRecordFeaturesAllowed && PortCeRecordFeaturesAllowed());
+	const bool allowTactical = PortCeMenus() && !recordingFenced && !online &&
 	                           !CeModeActive(CE_MODE_EDITOR) && !(PortCeEditorActive && PortCeEditorActive()) &&
 	                           !CeModeActive(CE_MODE_MUSEUM_VISIT) && !(PortCeMuseumVisitActive && PortCeMuseumVisitActive());
 	if (allowTactical)
@@ -304,7 +306,7 @@ bool CePolicyUseEnhancedMorphAnims()
 	return false;
 #else
 	// Deterministic in CE_MODE_ONLINE_MATCH: never reads local ce.ini preferences.
-	return PortCeLayer() && !PortRecording();
+	return PortCeLayer() && (!PortRecording() || (PortCeRecordFeaturesAllowed && PortCeRecordFeaturesAllowed()));
 #endif
 }
 

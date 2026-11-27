@@ -60,6 +60,7 @@ static int UnlockFileEx(HANDLE h,DWORD z,DWORD lo,DWORD hi,OVERLAPPED *o)
 static int _open_osfhandle(intptr_t h,int f) {(void)h;(void)f;osfd++;return 4;}
 static FILE *_fdopen(int f,const char *m) {(void)f;(void)m;last=777;return NULL;}
 static int _close(int fd) {(void)fd;return 0;}
+static int ce_win_handle_is_link(HANDLE h,DWORD attrs) {(void)h;return (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0;}
 enum LogOpen { LOG_INSPECT,LOG_APPEND,LOG_CREATE };
 #include LOG_WINDOWS_FUNCTIONS
 int main(void)

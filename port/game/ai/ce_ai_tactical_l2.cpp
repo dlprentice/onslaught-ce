@@ -36,7 +36,7 @@ void CeAiTacticalL2Decide(CeAiTacticalL2State *state,
 	for (uint32_t i = 0u; i < obs.entityCount; ++i)
 	{
 		const CePlayerEntityObs &e = obs.entities[i];
-		if (e.isFriendly) continue;
+		if (!CePlayerObsEntityIsHostile(e)) continue;
 		uint32_t key = e.distSqQuantized;
 		if (e.isBaseBuilding || e.isBattleEngine)
 			key = key / 2u;
@@ -57,8 +57,12 @@ void CeAiTacticalL2Decide(CeAiTacticalL2State *state,
 		hasTarget = true;
 	}
 
+	// Respect human Commander authority: when a human teammate is on the same team and Commander
+	// mode is active, Allied AI never overwrites human orders or hijacks friendly squads/units.
+	const bool humanCommanderOnTeam = (obs.teamHasHuman != 0u) && cmdOn;
+
 	// ---- Commander Squad Orders (1.3 Hz cadence, staggered per slot) ----
-	if (cmdOn && outCmd && obs.squadCount > 0u &&
+	if (cmdOn && !humanCommanderOnTeam && outCmd && obs.squadCount > 0u &&
 	    (obs.simTick >= state->lastCmdTick + 15u) && ((obs.simTick + obs.slot * 3u) % 15u == 0u))
 	{
 		const bool defendPosture = (prior && (prior->posture == CE_STRAT_DEFEND || prior->posture == CE_STRAT_REPAIR));
@@ -108,7 +112,18 @@ void CeAiTacticalL2Decide(CeAiTacticalL2State *state,
 	}
 
 	// ---- Headless Unit Possession (1 Hz cadence, only when Battle Engine is safe/healthy) ----
-	if (possessOn && outPossess && (obs.simTick >= state->lastPossessTick + 20u))
+	if (possessOn && outPossess && humanCommanderOnTeam)
+	{
+		if (state->possessedUnit != kCeEntityHandleInvalid)
+		{
+			outPossess->valid = 1u;
+			outPossess->release = 1u;
+			outPossess->unitHandle = state->possessedUnit;
+			state->possessedUnit = kCeEntityHandleInvalid;
+			state->lastPossessTick = obs.simTick;
+		}
+	}
+	else if (possessOn && outPossess && (obs.simTick >= state->lastPossessTick + 20u))
 	{
 		if (state->possessedUnit != kCeEntityHandleInvalid)
 		{

@@ -7,7 +7,12 @@
 
 #include <stdint.h>
 #include "ce_player_hooks.h"
+#ifdef CE_AI_PILOT_TRAINED_WEIGHTS
 #include "ai/ce_ai_pilot_weights.h"
+#else
+static constexpr int kCeAiMlpInDim  = 32;
+static constexpr int kCeAiMlpOutDim = 8;
+#endif
 
 class CBattleEngine;
 class CCamera;
@@ -110,19 +115,21 @@ inline void CeAiPilotExtractFeaturesQ12(const CePlayerObs &obs, const CeStrategi
 	for (uint32_t i = 0u; i < obs.entityCount && i < static_cast<uint32_t>(CE_PLAYER_OBS_MAX_ENTITIES); ++i)
 	{
 		const CePlayerEntityObs &e = obs.entities[i];
+		if (CePlayerObsEntityIsUsableRepairPad(e) && !foundRepairPad)
+		{
+			foundRepairPad = true;
+			const float rdx = (e.pos[0] - obs.pos[0]) * (1.0f / 256.0f);
+			const float rdy = (e.pos[1] - obs.pos[1]) * (1.0f / 256.0f);
+			out[CE_AI_FEAT_REPAIR_PAD_DX] = CeAiQuantizeQ12(rdx);
+			out[CE_AI_FEAT_REPAIR_PAD_DY] = CeAiQuantizeQ12(rdy);
+		}
 		if (e.isFriendly)
 		{
 			++friendlyCount;
-			if (e.isRepairPad && !foundRepairPad)
-			{
-				foundRepairPad = true;
-				const float rdx = (e.pos[0] - obs.pos[0]) * (1.0f / 256.0f);
-				const float rdy = (e.pos[1] - obs.pos[1]) * (1.0f / 256.0f);
-				out[CE_AI_FEAT_REPAIR_PAD_DX] = CeAiQuantizeQ12(rdx);
-				out[CE_AI_FEAT_REPAIR_PAD_DY] = CeAiQuantizeQ12(rdy);
-			}
 			continue;
 		}
+		if (!CePlayerObsEntityIsHostile(e))
+			continue;
 		++hostileCount;
 		if (!foundHostile)
 		{

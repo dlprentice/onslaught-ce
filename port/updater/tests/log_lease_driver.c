@@ -155,7 +155,7 @@ int main(int argc,char **argv)
             for(unsigned i=0;i<80;++i)log_file(block,sizeof block);
         }
         else if(!strcmp(command,"LEASE_PROBE")) {unsigned long error=0;if(log_acquire_lease(0,&error)!=1)return 7;}
-        else if(!strcmp(command,"METADATA")) {char path[4096];snprintf(path,sizeof path,"%s/../%s.metadata.json",sUser,argv[2]);FILE *f=fopen(path,"wb");if(!f)return 6;int first=1;size_t total=0;fputc('{',f);json_start_files(f,sUser,"",&first,&total);fputs("}\n",f);fclose(f);}
+        else if(!strcmp(command,"METADATA")) {char path[4096];snprintf(path,sizeof path,"%s/../%s.metadata.json",sUser,argv[2]);FILE *f=fopen(path,"wb");if(!f)return 6;int first=1;size_t total=0;fputc('{',f);json_start_files(f,sUser,"",&first,&total,0);fputs("}\n",f);fclose(f);}
         else if(!strcmp(command,"REPORT")) {char url[32768];ce_report_url("fixture","log-lease",sUser,url,sizeof url);fprintf(stderr,"report_url=%s\n",url);}
         else if(!strcmp(command,"FAIL_FLUSH")) {fault_file=sLog;fail_flush=1;game_output("fixture_flush_failure\n",22);}
         else if(strcmp(command,"STATE"))

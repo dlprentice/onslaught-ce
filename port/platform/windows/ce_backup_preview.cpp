@@ -1,6 +1,7 @@
 // Read one explicitly chosen local backup. Every open below is read-only.
-#include "../common/ce_backup_verify.h"
 #include "ce_backup_paths.h"
+#include "../common/ce_backup_verify.h"
+#include "../common/ce_win_reparse.h"
 #include <set>
 
 namespace {
@@ -16,8 +17,9 @@ bool stamp(HANDLE h, const Wide &leaf, Stamp &s) {
   if (GetFileType(h) != FILE_TYPE_DISK ||
       !GetFileInformationByHandleEx(h, FileBasicInfo, &basic, sizeof basic) ||
       (basic.FileAttributes &
-       (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY |
-        FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)) ||
+       (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_HIDDEN |
+        FILE_ATTRIBUTE_SYSTEM)) ||
+      ce_win_handle_is_link(h, basic.FileAttributes) ||
       !GetFileInformationByHandleEx(h, FileStandardInfo, &standard,
                                     sizeof standard) ||
       standard.Directory || standard.DeletePending ||
@@ -189,8 +191,7 @@ bool CePreviewList(const std::string &root, const std::string &user,
   if (!entries(dirs.selected.h(),
                [&](const Wide &leaf, DWORD attr) {
                  if (!(attr & FILE_ATTRIBUTE_DIRECTORY) ||
-                     (attr & (FILE_ATTRIBUTE_REPARSE_POINT |
-                              FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)) ||
+                     (attr & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)) ||
                      leaf.compare(0, sizeof("onslaught-backup-") - 1,
                                   L"onslaught-backup-") != 0 ||
                      !component(leaf))

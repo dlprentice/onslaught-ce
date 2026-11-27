@@ -758,21 +758,21 @@ class WindowsCareerCustodyTests(unittest.TestCase):
         self.assertEqual(rc, 0, raw)
         self.assertEqual(int(kv["STATUS"]), REFUSED, raw)
 
-        # Corrupt career member -> Refused.
+        # Corrupt career member -> isolated/left untouched while valid careers still back up cleanly (05-P0-2).
         d5, w5 = self.new_profile("corrupt-career")
         (d5 / "user/savegames/Bad.bes").write_bytes(b"not a valid career")
         rc, kv, raw = self.call(w5, "backup")
         self.assertEqual(rc, 0, raw)
-        self.assertEqual(int(kv["STATUS"]), REFUSED, raw)
+        self.assertEqual(int(kv["STATUS"]), COMPLETE, raw)
+        self.assertEqual((d5 / "user/savegames/Bad.bes").read_bytes(), b"not a valid career")
 
-        # Too many members (> 32 manifest limit checked before staging) -> Refused without staging.
-        d6, w6 = self.new_profile("too-many-members")
+        # 30+ careers now fit cleanly under the raised 513-file manifest cap (05-P1-1).
+        d6, w6 = self.new_profile("many-members")
         for i in range(30):
             (d6 / f"user/savegames/Extra{i:02d}.bes").write_bytes(self.present)
         rc, kv, raw = self.call(w6, "backup")
         self.assertEqual(rc, 0, raw)
-        self.assertEqual(int(kv["STATUS"]), REFUSED, raw)
-        self.assertFalse(list((d6 / "external").iterdir()))
+        self.assertEqual(int(kv["STATUS"]), COMPLETE, raw)
 
         # Directory entry cap (> 2048 entries) -> Refused.
         d7, w7 = self.new_profile("dir-entry-cap")
@@ -1156,15 +1156,14 @@ class WindowsCareerCustodyTests(unittest.TestCase):
         self.assertEqual(int(kv_ok["STATUS"]), COMPLETE, raw_ok)
         self.assertEqual((d2 / "user/savegames/Amber restored.bes").read_bytes(), self.previous)
 
-        # 3. Both user\savegames and game\savegames absent (zero existing files): mandatory backup fails closed
-        #    and leaves user\savegames absent.
+        # 3. Both user\savegames and game\savegames absent (zero existing files): 0-career restore succeeds cleanly (05-P0-1).
         d3, w3 = self.new_profile("both-savegames-absent", with_options=False)
         shutil.rmtree(d3 / "user/savegames")
         shutil.rmtree(d3 / "game/savegames")
         rc_r3, kv_r3, raw_r3 = self.call(w3, "restore", "target=Amber.bes")
         self.assertEqual(rc_r3, 0, raw_r3)
-        self.assertEqual(int(kv_r3["STATUS"]), REFUSED, raw_r3)
-        self.assertFalse((d3 / "user/savegames").exists())
+        self.assertEqual(int(kv_r3["STATUS"]), COMPLETE, raw_r3)
+        self.assertEqual((d3 / "user/savegames/Amber.bes").read_bytes(), self.previous)
 
         # 4. Regular file at user\savegames is refused.
         d4, w4 = self.new_profile("file-at-savegames")

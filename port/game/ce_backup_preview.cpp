@@ -11,6 +11,7 @@
 #include "ce_name_text.h"
 #include "../platform/common/ce_backup_preview_ui.h"
 #include "../platform/common/ce_career_restore_ui.h"
+#include "../platform/common/ce_record_mode.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -88,8 +89,8 @@ bool workRows = false; // the Working rows were drawn in this frame
 int earlier = 0;       // this visit: 1 a career was created, 2 one may exist
 bool permit() {
   const char *r = getenv("BEA_PORT_RECORD"), *t = getenv("BEA_PORT_TAPE");
-  return PortCeMenus() && PortCeProjectCareerAllowed() && (!r || !*r) &&
-         (!t || !*t);
+  return PortCeMenus() && PortCeProjectCareerAllowed() &&
+         (ce_record_ce_allowed() || ((!r || !*r) && (!t || !*t)));
 }
 const CeRestoreAuthority kAuthority = {permit, PortCeRestoreNamesCompatible};
 int baseRows(){return view.careers?11:4;}

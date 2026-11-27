@@ -546,11 +546,13 @@ void	Hint(int index, WCHAR *help, WCHAR *extra, int n)
 int		sPaneRow = -1;			// the row whose picture is open
 int		sWaitRow = -1;			// the row the cursor rests on, and since when
 float	sWaitSince;
+bool	sPaneReload = false;	// true after device reset so the active texture reloads immediately
 
 void	PaneClose()
 {
 	PortCeCataloguePreviewClose();
 	sPaneRow = sWaitRow = -1;
+	sPaneReload = false;
 	sSizeRow = -1;
 	sSizeOk = false;
 }
@@ -577,6 +579,7 @@ void	PaneOpen(int row)
 {
 	PortCeCataloguePreviewClose();
 	sPaneRow = row;
+	sPaneReload = false;
 	if (IsItem(row))
 	{
 		const unsigned slot = Slot(unsigned(At(row)));
@@ -589,7 +592,8 @@ void	TexturePane(int row, float left, float top, float right, float bottom)
 {
 	if (row != sPaneRow)
 	{
-		if (row != sWaitRow) { sWaitRow = row; sWaitSince = PortCeCatalogueNow(); }
+		if (sPaneReload && IsItem(row)) { sPaneReload = false; PaneOpen(row); }
+		else if (row != sWaitRow) { sWaitRow = row; sWaitSince = PortCeCatalogueNow(); }
 		else if (PortCeCatalogueNow() - sWaitSince >= kSettle) PaneOpen(row);
 	}
 	// Reserve 72 px (up to 4 wrapped caption lines at 18 px pitch) so captions end cleanly above bottom (401)
@@ -785,6 +789,14 @@ int		PortCeCatalogueListRowOf(int match)
 const SCeListPage	*PortCeCatalogueListPage()
 {
 	return &sPage;
+}
+
+extern "C" void	PortCeCatalogueListInvalidatePreview(void)
+{
+	if (sPaneRow >= 0)
+		sPaneReload = true;
+	sPaneRow = -1;
+	sWaitRow = -1;
 }
 
 #endif

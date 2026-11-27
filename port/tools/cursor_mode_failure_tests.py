@@ -113,6 +113,10 @@ ResetFn gReset=fakeReset;
 CreateDeviceFn gCreateDevice=fakeCreate;
 PresentFn gPresent;
 void Present() {}
+using DeviceReleaseFn = void (*)();
+DeviceReleaseFn gDeviceRelease;
+void DeviceRelease() {}
+void ReleaseBugClipSurfaces() {}
 #define DEFINE_HOOK(name) using name##Fn = void (*)(); name##Fn g##name; void name() {}
 DEFINE_HOOK(SetRS) DEFINE_HOOK(SetTex) DEFINE_HOOK(SetTSS) DEFINE_HOOK(SetSampler)
 DEFINE_HOOK(Draw) DEFINE_HOOK(DrawIdx) DEFINE_HOOK(SetVS) DEFINE_HOOK(SetVSC)

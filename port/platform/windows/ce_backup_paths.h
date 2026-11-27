@@ -10,6 +10,7 @@
 #include <windows.h>
 #include <winternl.h>
 #include "../common/ce_backup_name.h"
+#include "../common/ce_win_reparse.h"
 #include <algorithm>
 #include <cstddef>
 #include <cstdio>
@@ -79,7 +80,7 @@ Handle child(HANDLE parent,const Wide &name,bool dir,bool create,NTSTATUS *statu
 bool dirInfo(HANDLE h,FILE_ID_INFO &id) {
     FILE_ATTRIBUTE_TAG_INFO tag{};
     return GetFileType(h)==FILE_TYPE_DISK && GetFileInformationByHandleEx(h,FileAttributeTagInfo,&tag,sizeof(tag))
-        && (tag.FileAttributes&FILE_ATTRIBUTE_DIRECTORY) && !(tag.FileAttributes&FILE_ATTRIBUTE_REPARSE_POINT)
+        && (tag.FileAttributes&FILE_ATTRIBUTE_DIRECTORY) && !ce_win_tag_is_link(tag.FileAttributes,tag.ReparseTag)
         && GetFileInformationByHandleEx(h,FileIdInfo,&id,sizeof(id));
 }
 bool sameId(const FILE_ID_INFO &a,const FILE_ID_INFO &b) {

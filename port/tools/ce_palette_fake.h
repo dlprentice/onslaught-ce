@@ -96,7 +96,14 @@ struct FakeGame {
 };
 #define GAME_STATE_PLAYING 3
 extern FakeGame GAME;
-struct FakeFrontend { bool running = false; bool IsRunning() { return running; } };
+#define SA_TOP_LEFT 0
+struct FakeFrontend {
+    bool running = false;
+    bool IsRunning() { return running; }
+    void EnableModulateAlpha() {}
+    void DrawPanel(float, float, float, float, float, DWORD) {}
+    void DrawBox(float, float, float, float, DWORD, float, float) {}
+};
 extern FakeFrontend FRONTEND;
 struct FakeInterface { bool menu = false, mShowJoypad = false; bool IsMenuUp() { return menu; } };
 extern FakeInterface GAMEINTERFACE;
@@ -115,6 +122,10 @@ struct CDXBitmapFont {
         for (WCHAR *c = s; *c; ++c) if (!CanDisplay(*c)) { std::fprintf(stderr, "FAIL: undrawable character %x\n", unsigned(*c)); std::exit(2); }
         draws.push_back({x, y, sx, sy, colour, s});
     }
+    void DrawTextDynamic(float x, float y, float, float sx, float sy, DWORD colour, WCHAR *s, float, int, int) {
+        for (WCHAR *c = s; *c; ++c) if (!CanDisplay(*c)) { std::fprintf(stderr, "FAIL: undrawable character %x\n", unsigned(*c)); std::exit(2); }
+        draws.push_back({x, y, sx, sy, colour, s});
+    }
 };
 struct FakePlatform { int w = 640, h = 480; bool present = true; CDXBitmapFont font; CDXBitmapFont *Font(int) { return present ? &font : nullptr; } int GetWindowWidth() { return w; } int GetWindowHeight() { return h; } };
 extern FakePlatform PLATFORM;
@@ -123,7 +134,7 @@ extern FakeRenderInfo RENDERINFO;
 struct FakeRect { float x = 0, y = 0, w = 0, h = 0; DWORD colour = 0; };
 extern std::vector<FakeRect> sprites;
 struct CSPRITERENDERER {
-    static void DrawColouredSprite(float x, float y, float, CDXTexture *t, DWORD colour, float sx, float sy) { sprites.push_back({x, y, sx * t->width, sy * t->height, colour}); }
+    static void DrawColouredSprite(float x, float y, float, CDXTexture *t, DWORD colour, float sx, float sy, int = 0) { sprites.push_back({x, y, sx * t->width, sy * t->height, colour}); }
 };
 struct FakeConsole { std::vector<std::pair<unsigned, int>> binds; void HandleBind(unsigned key, int event) { binds.emplace_back(key, event); } };
 extern FakeConsole CONSOLE;

@@ -199,7 +199,7 @@ class Parser {
 public:
   explicit Parser(const std::string &src) : s(src) {}
   bool parse(Manifest &m) {
-    if (s.empty() || s.size() > 65536 || !at('{'))
+    if (s.empty() || s.size() > 524288 || !at('{'))
       return false;
     std::set<std::string> seen, names;
     std::string dummy;
@@ -233,11 +233,11 @@ public:
           return false;
         do {
           Entry f;
-          if (m.files.size() >= 32 || !file(f) ||
+          if (m.files.size() >= 513 || !file(f) ||
               !names.insert(fold(f.name)).second)
             return false;
           total += f.size;
-          if (total > 2 * 1024 * 1024)
+          if (total > 64u * 1024u * 1024u)
             return false;
           m.files.push_back(f);
         } while (at(','));

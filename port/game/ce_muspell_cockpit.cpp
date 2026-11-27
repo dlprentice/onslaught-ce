@@ -35,6 +35,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+extern "C" int PortCeRecordFeaturesAllowed(void) __attribute__((weak));
 #include <string.h>
 
 extern bool PortCeLayer();
@@ -290,7 +291,7 @@ bool ShouldSwapForEngine(CBattleEngine *be)
 		return false;
 	CeMuspellCockpitFenceInput in = {};
 	in.ceLayer = PortCeLayer();
-	in.recording = PortRecording();
+	in.recording = PortRecording() && !(PortCeRecordFeaturesAllowed && PortCeRecordFeaturesAllowed());
 	in.playableDemo = (PLAYABLE_DEMO != 0);
 	in.autoConfigTest = (CLIPARAMS.mAutoConfigTest != 0);
 	in.recordDemo = (CLIPARAMS.mRecordDemo != 0);

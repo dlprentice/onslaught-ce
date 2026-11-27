@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "model_quality.h"
+extern "C" int PortCeRecordFeaturesAllowed(void) __attribute__((weak));
 #include "portlog.h"
 #include <SDL3/SDL_timer.h>
 #include <limits.h>
@@ -26,12 +27,14 @@ bool Allowed()
     admitted = 0;
 #ifdef CE_VERSION
     // A forced CE menu is never permission to alter faithful reference input.
-    const char *const fences[] = {
-        "BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_PROBES", "BEA_PORT_RECORD"
-    };
-    for (const char *name : fences) {
-        const char *value = getenv(name);
-        if (value && *value) return false;
+    if (!(PortCeRecordFeaturesAllowed && PortCeRecordFeaturesAllowed())) {
+        const char *const fences[] = {
+            "BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_PROBES", "BEA_PORT_RECORD"
+        };
+        for (const char *name : fences) {
+            const char *value = getenv(name);
+            if (value && *value) return false;
+        }
     }
     if (!PortCeLayer()) return false;
     admitted = 1;

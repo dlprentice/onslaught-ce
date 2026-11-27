@@ -57,6 +57,9 @@
 
 bool	PortCeMenus();
 bool	PortModHas(const char *game_path);	// port/platform/common/mods.h: an active mod supplies this game path
+extern int gControlPreset __attribute__((weak));
+void	ApplyControlPreset(int preset) __attribute__((weak));
+bool	AllControlBindingsSet(int index) __attribute__((weak));
 extern "C" void	PortCeCarrierClashCancel(void) __attribute__((weak));
 extern "C" void	PortCeLivingSandboxCancel(void) __attribute__((weak));
 extern "C" void	PortCeFlagshipDuelCancel(void) __attribute__((weak));
@@ -106,6 +109,15 @@ static bool Start(int level, bool mod)
 	sFlagshipDuel2P = false;
 	if (!PortCeMenus() || (level != kBonusLevel && !IsCoop(level) && !IsRace(level)))
 		return false;
+	// 2P split-screen bonus levels (Building Defence & mod 2P maps): promote default 1P preset
+	// to 2P split-keyboard preset when Player 2 is unbound (matching FEPMultiplayer patch 0382).
+	if (level != kBonusLevel && !IsRace(level) && AllControlBindingsSet && !AllControlBindingsSet(1))
+	{
+		if (&gControlPreset && gControlPreset == 1 && ApplyControlPreset)
+			ApplyControlPreset(2);
+		if (!AllControlBindingsSet(1))
+			return false;
+	}
 	if (!EnsureSnapshot())
 		return false;
 	if (!CeModeActive(CE_MODE_BONUS_LEVEL) && CeModeBegin(CE_MODE_BONUS_LEVEL) != CE_MODE_BEGUN)

@@ -1,27 +1,82 @@
 --- a/pcsoundmanager.cpp
 +++ b/pcsoundmanager.cpp
-@@ -228,7 +228,13 @@
+@@ -22,6 +22,7 @@
+ extern "C" void PortCeSoundBeforeReinit(void) __attribute__((weak));
+ extern "C" void PortCeFrontEndVideoBeforeSoundReinit(void) __attribute__((weak));
+ extern "C" void PortCeFrontEndVideoAfterSoundReinit(void) __attribute__((weak));
++extern "C" int PortCeRecordFeaturesAllowed(void) __attribute__((weak));
+ #endif
+ 
+ // pcsoundmanager.cpp: Stuart's DirectSound device, as the retail PC build grew it (005167b0..005180a8). His release
+@@ -228,7 +229,14 @@
  
  		SETUP_HISTORY.AddMessage("Sound using %d voices", mNumChannels);
  
 +#ifdef CE_VERSION
 +		extern bool PortCeLayer();
 +		extern bool PortRecording();
-+		sPitchVarianceEnabled = (PortCeLayer() && !PortRecording()) ? true : (CLIPARAMS.mHWSound != 0);
++		const bool ceAudioActive = PortCeLayer() && (!PortRecording() || (PortCeRecordFeaturesAllowed && PortCeRecordFeaturesAllowed()));
++		sPitchVarianceEnabled = ceAudioActive ? true : (CLIPARAMS.mHWSound != 0);
 +#else
  		sPitchVarianceEnabled = (CLIPARAMS.mHWSound != 0);
 +#endif
  	}
  
      // Create the primary buffer
-@@ -847,6 +853,12 @@
+@@ -646,12 +654,45 @@
+ 	CPCSample *s	= (CPCSample *) event->mSample;
+ 	int		channel = event->mChannel;
+ 
++#ifdef CE_VERSION
++	extern bool PortCeLayer();
++	extern bool PortRecording();
++	const bool ceAudio = PortCeLayer() && (!PortRecording() || (PortCeRecordFeaturesAllowed && PortCeRecordFeaturesAllowed()));
++	const int bytesPerSample = ceAudio ? (GetSampleBits() / 8) : 2;
++	const int bufBytes = ceAudio
++		? (CLIPARAMS.mSoundRate == 1 ? ((s->mWavSize + 1) / 2) : (CLIPARAMS.mSoundRate == 2 ? ((s->mWavSize + 7) / 8) : s->mWavSize))
++		: s->mWavSize;
++	int		fromsample = ((int) ((event->mStartPoint+event->mTime) * GetSampleRate())) * bytesPerSample;
++	if (ceAudio && fromsample < 0)
++		fromsample = 0;
++	int		tosample;
++	if (event->mEndPoint!=-1.0f)
++		tosample = ((int) (GetSampleRate() * event->mEndPoint)) * bytesPerSample;
++	else
++		tosample = bufBytes;
++	if (ceAudio && event->mLooping && event->mEndPoint == -1.0f && bufBytes > 0 && bytesPerSample > 0)
++	{
++		int totalSamples = bufBytes / bytesPerSample;
++		if (sPitchVarianceEnabled && event->mStartPoint == 0.0f && event->mTime == 0.0f &&
++			event->mTrack != ST_NOTRACKING && !event->mIgnoreOwnerPos && totalSamples > 1)
++		{
++			static unsigned sLoopPhaseCounter = 0x9e3779b9u;
++			sLoopPhaseCounter = sLoopPhaseCounter * 1664525u + 1013904223u;
++			fromsample = (int)((sLoopPhaseCounter >> 8) % (unsigned)totalSamples) * bytesPerSample;
++		}
++		else if (fromsample >= tosample && totalSamples > 0)
++		{
++			fromsample = ((fromsample / bytesPerSample) % totalSamples) * bytesPerSample;
++		}
++	}
++#else
+ 	int		fromsample = ((int) ((event->mStartPoint+event->mTime) * GetSampleRate())) * 2;
+ 	int		tosample;
+ 	if (event->mEndPoint!=-1.0f)
+ 		tosample = ((int) (GetSampleRate() * event->mEndPoint)) * 2;
+ 	else
+ 		tosample = s->mWavSize;
++#endif
+ 
+ 	if (fromsample>=tosample) // Nothing to do!
+ 		return;
+@@ -847,6 +888,12 @@
  
  float CPCSoundManager::GetSampleLength(CSample *sample)	// FUNCTION: 0x00517c60
  {
 +#ifdef CE_VERSION
 +	extern bool PortCeLayer();
 +	extern bool PortRecording();
-+	if (PortCeLayer() && !PortRecording())
++	if (PortCeLayer() && (!PortRecording() || (PortCeRecordFeaturesAllowed && PortCeRecordFeaturesAllowed())))
 +		return(((float) ((CPCSample *) sample)->mWavSize)/(44100.0f*2.0f));
 +#endif
  	return(((float) ((CPCSample *) sample)->mWavSize)/(GetSampleRate()*2.0f));
@@ -38,7 +93,7 @@
  		EXTRA_GEFORCE_FX_FEATURES.mValue && ENGINE.GetLandscape() &&
  		ENGINE.GetLandscape()->mMirrorTexture && ENGINE.GetLandscape()->mDepthSurface && !gMirrorPass)
  	{
-@@ -2661,6 +2661,25 @@
+@@ -2661,6 +2661,21 @@
  #endif
  
  
@@ -46,11 +101,7 @@
 +		extern bool PortCeLayer();
 +		extern bool PortRecording();
 +		if (num_renders > 0 && mPause && !mFreeCameraOn[0] && mQuit == QT_NONE &&
-+			PortCeLayer() && !PortRecording()
-+#ifndef CE_NETWORK_OFF
-+			&& !CE_LockstepActive()
-+#endif
-+			)
++			PortCeLayer() && !PortRecording() && CePolicyAllowPause())
 +		{
 +			ResetMouseTransientState();
 +			EQuitType ceQt = PLATFORM.Process();
@@ -285,3 +336,208 @@
  		!ceF1Kill && ((mName[26] == 'L') || (mName[26] == 'A')) &&
  		(!strcmp(mName, "Mech Pulse Bolt Explosion Large") || !strcmp(mName, "Mech Pulse Bolt Explosion Aug")))
  		fx = true;
+--- a/SoundManager.cpp
++++ b/SoundManager.cpp
+@@ -1215,6 +1215,9 @@
+ }
+ 
+ bool language_dependent;
++#ifdef CE_VERSION
++extern "C" int PortCeRecordFeaturesAllowed(void) __attribute__((weak));
++#endif
+ 
+ void CSoundManager::PlayEffect(CEffect *effect, IAudibleThing *thing, float volume, ESoundTrackingType track, bool once, float fade,float frompoint,float topoint,bool repeat,float pitch,ESoundType sound_type,BOOL ignore_owner_pos)	// FUNCTION: 0x004e1940
+ {
+@@ -1268,9 +1271,28 @@
+ 		
+ 		pitch=pitch+rpitch;
+ 		
++#ifdef CE_VERSION
++		extern bool PortCeLayer();
++		extern bool PortRecording();
++		if (PortCeLayer() && (!PortRecording() || (PortCeRecordFeaturesAllowed && PortCeRecordFeaturesAllowed())))
++		{
++			static unsigned sCePitchFine = 0x517cc1b7u;
++			sCePitchFine = sCePitchFine * 1664525u + 1013904223u;
++			float fine = ((float)((sCePitchFine >> 8) & 0xFFFFu) / 65535.0f) - 0.5f;
++			if (current->mLooping)
++			{
++				float span = (float)current->mPitchVariance * 0.015f;
++				if (span > 0.30f)
++					span = 0.30f;
++				pitch = (pitch - rpitch) + fine * span;
++			}
++			else
++				pitch += fine * 0.01f;
++		}
++#endif
+ 		if (pitch<0.1f)
+ 			pitch=0.1f;
+ 	}
+ 
+ 	language_dependent = current->mLanguageDependent;
+ 	PlayNamedSample(current->mSample,thing,volume,track,once,fade,frompoint,topoint,repeat,pitch,FALSE, ignore_owner_pos, sound_type);
+--- a/OggFileRead.cpp
++++ b/OggFileRead.cpp
+@@ -66,19 +66,31 @@
+ 	if (ogg_stream_pagein(&mStream, &mPage) < 0)
+ 	{
+ 		TRACE("Error reading first page of Ogg bitstream data.\n");
++#ifdef CE_VERSION
++		goto header_fail;
++#else
+ 		return -1;
++#endif
+ 	}
+ 
+ 	if (ogg_stream_packetout(&mStream, &mPacket) != 1)
+ 	{
+ 		TRACE("Error reading initial header packet.\n");
++#ifdef CE_VERSION
++		goto header_fail;
++#else
+ 		return -1;
++#endif
+ 	}
+ 
+ 	if (vorbis_synthesis_headerin(&mInfo, &mComment, &mPacket) < 0)
+ 	{
+ 		TRACE("This Ogg bitstream does not contain Vorbis audio data.\n");
++#ifdef CE_VERSION
++		goto header_fail;
++#else
+ 		return -1;
++#endif
+ 	}
+ 
+ 	mHeader = 0;
+@@ -100,38 +112,74 @@
+ 					if (mResult < 0)
+ 					{
+ 						TRACE("Corrupt secondary header.  Exiting.\n");
++#ifdef CE_VERSION
++						goto header_fail;
++#else
+ 						return -1;
++#endif
+ 					}
++#ifdef CE_VERSION
++					if (vorbis_synthesis_headerin(&mInfo, &mComment, &mPacket) < 0)
++					{
++						TRACE("Corrupt secondary header.  Exiting.\n");
++						goto header_fail;
++					}
++#else
+ 					vorbis_synthesis_headerin(&mInfo, &mComment, &mPacket);
++#endif
+ 					mHeader++;
+ 				}
+ 			}
+ 		}
+ 		bytes = ReadData();
+ 		if (bytes == 0 && mHeader < 2)
+ 		{
+ 			TRACE("End of file before finding all Vorbis headers!\n");
++#ifdef CE_VERSION
++			goto header_fail;
++#else
+ 			return -1;
++#endif
+ 		}
+ 	}
+ 
+ 	{
+ 		char **ptr = mComment.user_comments;
++#ifdef CE_VERSION
++		while (ptr && *ptr)
++#else
+ 		while (*ptr)
++#endif
+ 		{
+ 			TRACE("%s\n", *ptr);
+ 			++ptr;
+ 		}
+ 		TRACE("\nBitstream is %d channel, %ldHz\n", mInfo.channels, mInfo.rate);
+ 		TRACE("Encoded by: %s\n\n", mComment.vendor);
+ 	}
+ 
++#ifdef CE_VERSION
++	if (mInfo.channels <= 0)
++		goto header_fail;
++#endif
+ 	mConvSize = 4096 / mInfo.channels;
+ 
++#ifdef CE_VERSION
++	if (vorbis_synthesis_init(&mDSP, &mInfo) != 0)
++		goto header_fail;
++#else
+ 	vorbis_synthesis_init(&mDSP, &mInfo);
++#endif
+ 	vorbis_block_init(&mDSP, &mBlock);
+ 	return 0;
++#ifdef CE_VERSION
++header_fail:
++	ogg_stream_clear(&mStream);
++	vorbis_comment_clear(&mComment);
++	vorbis_info_clear(&mInfo);
++	return -1;
++#endif
+ }
+ 
+ //******************************************************************************************
+ int	COggFileRead::Decode(BYTE *dest, UINT size)	// FUNCTION: 0x00524180
+--- a/PCMusicStream.cpp
++++ b/PCMusicStream.cpp
+@@ -206,6 +206,7 @@
+ {
+ #ifdef CE_VERSION
+ 	CPortMusicStreamGuard guard;
++	static unsigned sCeConsecutiveOpenFailures = 0;
+ 	if (sCeStreamLockReady)
+ 	{
+ 		if (result == 0)
+@@ -262,8 +263,14 @@
+ 				{
+ #ifdef CE_VERSION
+ 					PortSessionAsset(PORT_SESSION_MUSIC, "empty initial read", sTrackName);
+-#endif
++					++sCeConsecutiveOpenFailures;
++					if (sCeConsecutiveOpenFailures <= 16u)
++						SetMusicStreamFinished(true);
++					else
++						PortSessionLog(PORT_SESSION_MUSIC, true, "stopping after %u consecutive music open failures", sCeConsecutiveOpenFailures);
++#else
+ 					SetMusicStreamFinished(true);
++#endif
+ 					StopMusicStream();
+ 					sBuffer->Unlock(data1, size1, data2, size2);
+ 					break;
+@@ -288,12 +295,20 @@
+ 				}
+ #endif
+ 				sBytesStreamed += size1;
++#ifdef CE_VERSION
++				sCeConsecutiveOpenFailures = 0;
++#endif
+ 			}
+ 			else
+ 			{
+ #ifdef CE_VERSION
+ 				PortSessionAsset(PORT_SESSION_MUSIC, "missing or unsupported format", sTrackName, -1);
++				++sCeConsecutiveOpenFailures;
++				if (sCeConsecutiveOpenFailures <= 16u)
++					SetMusicStreamFinished(true);
++				else
++					PortSessionLog(PORT_SESSION_MUSIC, true, "stopping after %u consecutive music open failures", sCeConsecutiveOpenFailures);
+ #endif
+ 				StopMusicStream();
+ 			}
+ 			break;
+@@ -385,6 +400,7 @@
+ 		case 3:		// shut down
+ #ifdef CE_VERSION
+ 			PortRefillForget(); // quit also retires the guarded observation
++			sCeConsecutiveOpenFailures = 0;
+ #endif
+ 			sThreadAwake = FALSE;
+ 			return 1;

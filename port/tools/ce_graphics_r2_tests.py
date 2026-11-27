@@ -165,7 +165,8 @@ CTweakSLONG MY_READABLE_Z_BUFFER(0), OTHER_ZBUFFER_AS_TEXTURE(0);
 static bool gPolicyRequested = true;
 static int gPolicyOutcome = -1;
 bool PortCeGraphicsRequested() { return gPolicyRequested; }
-enum { CE_GRAPHICS_LANDSCAPE = 2 };
+bool CePolicyFullDetailShading() { return true; }
+enum { CE_GRAPHICS_LANDSCAPE = 2, CE_GRAPHICS_LANDSCAPE_VERTEX = 3 };
 void PortCeGraphicsResourceOutcome(unsigned, bool ready) { gPolicyOutcome = ready ? 1 : 0; }
 
 using HRESULT = int;
@@ -235,6 +236,7 @@ struct TestDevice {
 
 struct CDXLandscape {
     Pixel *mPixelShader = nullptr;
+    void *mVertexShader = nullptr;
     Texture *mMirrorTexture = nullptr, *mUnknown08 = nullptr, *mDepthTexture = nullptr;
     Surface *mDepthSurface = nullptr;
     HRESULT InitDeviceObjects();
@@ -244,9 +246,11 @@ struct CDXLandscape {
         if (mMirrorTexture) { mMirrorTexture->Release(); mMirrorTexture = nullptr; }
         if (mUnknown08) { mUnknown08->Release(); mUnknown08 = nullptr; }
         mPixelShader = nullptr;
+        mVertexShader = nullptr;
         CeWaterReflectionResetAllocated();
     }
 };
+static void CeEnsureLandscapeVertexShader(CDXLandscape *) {}
 #include "landscape_init_actual.inc"
 
 static int gFailures = 0;
@@ -313,6 +317,9 @@ LANDSCAPE_RESTORE_DRIVER = r"""
 #include "portlog.h"
 
 bool PortCeLayer() { return true; }
+bool CePolicyFullDetailShading() { return true; }
+enum { CE_GRAPHICS_LANDSCAPE = 2, CE_GRAPHICS_LANDSCAPE_VERTEX = 3 };
+void PortCeGraphicsResourceOutcome(unsigned, bool) {}
 void PortSessionLog(PortSessionCategory, bool, const char *, ...) {}
 extern "C" uint64_t SDL_GetTicks() { return 1000; }
 extern "C" bool SDL_OpenURL(const char *) { return false; }
@@ -356,6 +363,13 @@ struct IDirect3DTexture9 {
     }
 };
 struct Pixel {} gPixel;
+struct CVertexShader {
+    int mShader = 1;
+    static CVertexShader *Create(const char *, DWORD *, int, void *, int, int) {
+        static CVertexShader sVs;
+        return &sVs;
+    }
+};
 struct DeviceObject { virtual ~DeviceObject() = default; };
 const char *DXGetErrorString9(HRESULT) { return "fault"; }
 struct TestGame { bool IsMultiplayer() const { return false; } } GAME;
@@ -395,6 +409,7 @@ struct TestDevice {
 
 struct CDXLandscape {
     Pixel *mPixelShader = &gPixel;
+    CVertexShader *mVertexShader = nullptr;
     IDirect3DTexture9 *mMirrorTexture = nullptr, *mUnknown08 = nullptr, *mDepthTexture = nullptr;
     IDirect3DSurface9 *mDepthSurface = nullptr;
     HRESULT InitDeviceObjects() { ++gInitDeviceCalls; return S_OK; }
@@ -478,6 +493,9 @@ SHADOW_LIFECYCLE_DRIVER = r"""
 #include "portlog.h"
 
 bool PortCeLayer() { return true; }
+bool CePolicyFullDetailShading() { return true; }
+enum { CE_GRAPHICS_LANDSCAPE = 2, CE_GRAPHICS_LANDSCAPE_VERTEX = 3 };
+void PortCeGraphicsResourceOutcome(unsigned, bool) {}
 void PortSessionLog(PortSessionCategory, bool, const char *, ...) {}
 extern "C" uint64_t SDL_GetTicks() { return 1000; }
 extern "C" bool SDL_OpenURL(const char *) { return false; }
@@ -984,7 +1002,7 @@ class GraphicsR2Tests(unittest.TestCase):
             self.assertIn("->mTexture", fn, pat)
 
     def test_patches_0367_and_0368_leave_faithful_build_unchanged(self):
-        hook_sites = tuple(sorted(p.name for p in (ROOT / "port/patches").glob("03[01][0-9]-ce-hook-*.patch")))
+        hook_sites = tuple(sorted(p.name for p in (ROOT / "port/patches").glob("03[0-9][0-9]-ce-hook-*.patch")))
         post_380 = tuple(sorted(p.name for p in (ROOT / "port/patches").glob("03[89][0-9]-*.patch")))
         later = (*post_380, *hook_sites)
         with tempfile.TemporaryDirectory(prefix="r2-patch-") as td:

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // A CE preference for the next process, not a live SDL/D3D mode switch. Original and recorded runs ignore it.
 #include <stdlib.h>
+extern "C" int PortCeRecordFeaturesAllowed(void) __attribute__((weak));
 bool PortCeLayer();
 extern "C" int CE_SettingGetBool(const char *,int);
 extern "C" int CE_SettingSet(const char *,int);
@@ -12,10 +13,12 @@ namespace { int saved = -1; bool preference_start = false; }
 extern "C" int CE_DisplayModeAvailable()
 {
 #ifdef CE_VERSION
-    const char *names[] = {"BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_PROBES", "BEA_PORT_RECORD"};
-    for (const char *name : names) {
-        const char *value = getenv(name);
-        if (value && *value) return 0;
+    if (!(PortCeRecordFeaturesAllowed && PortCeRecordFeaturesAllowed())) {
+        const char *names[] = {"BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_PROBES", "BEA_PORT_RECORD"};
+        for (const char *name : names) {
+            const char *value = getenv(name);
+            if (value && *value) return 0;
+        }
     }
     return PortCeLayer() ? 1 : 0;
 #else

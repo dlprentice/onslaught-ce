@@ -323,17 +323,18 @@
  	if (mSelected <= 0)
 --- a/FEMessBox.cpp
 +++ b/FEMessBox.cpp
-@@ -8,6 +8,9 @@
+@@ -8,6 +8,10 @@
  #include	"mouse.h"
  
  CFEMessBox	FEMESSBOX;						// 00675688
++bool	PortTapeCursor(POINT *p);
 +#ifdef CE_VERSION
 +bool	PortCeMenus();
 +#endif
  
  //*********************************************************************************
  void	CFEMessBox::Init()	// FUNCTION: 0x0044d320
-@@ -124,7 +127,11 @@
+@@ -124,7 +128,11 @@
  			break;
  
  		case 2:
@@ -345,7 +346,7 @@
  			if (mFadeCount >= mFadeTime)
  			{
  				mFadeState = 0;
-@@ -190,7 +197,11 @@
+@@ -190,7 +198,11 @@
  
  		if ((mOption == FEMB_OPTION_OK) || (mOption == FEMB_OPTION_A_CONTINUE) || (mOption == 4))
  		{
@@ -357,16 +358,18 @@
  				ButtonPressed(BUTTON_FRONTEND_MENU_SELECT, 1.f);
  		}
  
-@@ -241,9 +252,18 @@
+@@ -241,9 +253,19 @@
  				if (MouseOverRect(left, y, right, y + s.cy))
  				{
  					mCursor = c0;
 +#ifdef CE_VERSION
-+					if (!PortCeMenus())
++					if (!PortCeMenus() && !PortTapeCursor(NULL))
 +						break;
 +#else
- 					break;
++					if (!PortTapeCursor(NULL))
++						break;
 +#endif
+-					break;
  				}
 +#ifdef CE_VERSION
 +				if ((!PortCeMenus() || (mFadeState == 1)) && MouseClickedInRect(left, y, right, y + s.cy))
@@ -376,7 +379,7 @@
  				{
  					FRONTEND.PlaySound(FES_SELECT);
  					mCursor = c0;
-@@ -273,7 +293,11 @@
+@@ -273,7 +295,11 @@
  		{
  		case FEMB_OPTION_A_CONTINUE:
  		case 4:
@@ -388,7 +391,7 @@
  			{
  				FRONTEND.PlaySound(FES_SELECT);
  				if (mOnDismissPage != FEP_NONE)
-@@ -287,7 +311,11 @@
+@@ -287,7 +313,11 @@
  			break;
  
  		case FEMB_OPTION_OK:

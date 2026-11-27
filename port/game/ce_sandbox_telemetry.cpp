@@ -5,6 +5,7 @@
 // Zero src/ edits, zero game-heap allocations, zero faithful-replay side effects.
 
 #include "ce_sandbox_telemetry.h"
+extern "C" int PortCeRecordFeaturesAllowed(void) __attribute__((weak));
 
 #include <cstring>
 
@@ -93,6 +94,7 @@ bool EnvPresent(const char* name) {
 }
 
 bool FaithfulEnvFenceActive() {
+    if ((PortCeRecordFeaturesAllowed && PortCeRecordFeaturesAllowed())) return false;
     return EnvPresent("BEA_PORT_CLOCK") ||
            EnvPresent("BEA_PORT_TAPE") ||
            EnvPresent("BEA_PORT_PROBES") ||
@@ -127,7 +129,7 @@ CeSandboxProfileGate ReadProfileGate(bool forStartup) {
     const bool livingSandbox = (PortCeLivingSandboxActive && PortCeLivingSandboxActive());
     g.sandboxOptIn = gSandboxOptIn || (!forStartup && livingSandbox);
     g.ceLayer = PortCeLayer();
-    g.recording = PortRecording();
+    g.recording = PortRecording() && !(PortCeRecordFeaturesAllowed && PortCeRecordFeaturesAllowed());
     g.fencedEnv = FaithfulEnvFenceActive();
     g.networkOrLockstep = NetworkOrLockstepFenceActive() ||
                           (!forStartup && ((GAME.IsMultiplayer() != FALSE) ||

@@ -1,19 +1,39 @@
 --- a/console.cpp
 +++ b/console.cpp
-@@ -390,6 +390,28 @@
+@@ -390,6 +390,48 @@
  	Print("\n");
  }
  
 +#ifdef CE_VERSION
 +// CE player input uses the full virtual-key byte; the faithful path below keeps retail's signed index. Like the CE
-+// command palette, the full byte never applies to a tape, recording, probe, virtual-clock, pilot or network run, even
-+// when BEA_PORT_CE_LAYER forces the CE layer on for screenshots.
++// command palette, the full byte never applies to a faithful tape, recording, probe, virtual-clock, pilot or network
++// run, even when BEA_PORT_CE_LAYER forces the CE layer on for screenshots; opt-in CE bug recordings admit it.
 +bool PortCeLayer();
 +bool PortRecording();
 +static bool PortCeConsoleBindKeys()
 +{
 +	const char *blocked[] = {"BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_PROBES", "BEA_PORT_RECORD",
 +		"BEA_PORT_PILOT", "BEA_PORT_AUTOPILOT", "BEA_NET_HOST", "BEA_NET_JOIN"};
++	if (PortCeLayer())
++	{
++		const char *ceRec = getenv("BEA_PORT_RECORD_CE");
++		const char *rec = getenv("BEA_PORT_RECORD");
++		const char *tape = getenv("BEA_PORT_TAPE");
++		if (ceRec && ceRec[0] == '1' && ceRec[1] == '\0' && ((rec && *rec) || (tape && *tape)))
++		{
++			const char *hard[] = {"BEA_PORT_PILOT", "BEA_PORT_AUTOPILOT",
++				"BEA_NET_HOST", "BEA_NET_JOIN", "BEA_LOCKSTEP_HOST", "BEA_LOCKSTEP_JOIN"};
++			bool hardBlocked = false;
++			for (const char *name : hard)
++			{
++				const char *v = getenv(name);
++				if (v && *v)
++					hardBlocked = true;
++			}
++			if (!hardBlocked)
++				return true;
++		}
++	}
 +	if (!PortCeLayer() || PortRecording())
 +		return false;
 +	for (const char *name : blocked)
@@ -29,7 +49,7 @@
  // FUNCTION: 0x0042a4f0
  void CConsole::HandleBind(int key, int event)
  {
-@@ -399,7 +421,16 @@
+@@ -399,7 +441,16 @@
  	else if (event == KEY_EVENT_UP)
  		n = 1;
  

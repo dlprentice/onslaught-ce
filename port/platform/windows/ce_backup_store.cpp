@@ -1,6 +1,7 @@
 // Selected ordinary Windows careers: read the verified CE entry and publish a new Companion set.
 #include "ce_backup_paths.h"
 #include "../common/ce_career_backup.h"
+#include "../common/ce_win_reparse.h"
 #include "../common/save_names.h"
 namespace digest {
 #include "../../updater/sha256.c"
@@ -12,7 +13,8 @@ constexpr NTSTATUS collision = static_cast<NTSTATUS>(0xc0000035u);
 bool fileStamp(HANDLE h,const Wide &leaf,CeBackupOrigin &stamp) {
     FILE_BASIC_INFO basic{}; FILE_STANDARD_INFO info{}; FILE_ID_INFO id{};
     if (GetFileType(h)!=FILE_TYPE_DISK || !GetFileInformationByHandleEx(h,FileBasicInfo,&basic,sizeof(basic))
-        || (basic.FileAttributes&(FILE_ATTRIBUTE_REPARSE_POINT|FILE_ATTRIBUTE_DIRECTORY|FILE_ATTRIBUTE_HIDDEN|FILE_ATTRIBUTE_SYSTEM))
+        || (basic.FileAttributes&(FILE_ATTRIBUTE_DIRECTORY|FILE_ATTRIBUTE_HIDDEN|FILE_ATTRIBUTE_SYSTEM))
+        || ce_win_handle_is_link(h,basic.FileAttributes)
         || !GetFileInformationByHandleEx(h,FileStandardInfo,&info,sizeof(info)) || info.Directory || info.DeletePending
         || info.NumberOfLinks!=1 || info.EndOfFile.QuadPart!=careerBytes
         || !GetFileInformationByHandleEx(h,FileIdInfo,&id,sizeof(id)) || !physicalLeaf(h,leaf)) return false;

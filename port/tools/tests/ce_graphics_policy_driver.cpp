@@ -141,6 +141,8 @@ struct CnVidia : CBOOLMenuItem
     int GetValue();
     void SetValue(int);
 };
+inline bool CePolicyFullDetailShading() { return !GAME.IsMultiplayer(); }
+inline void CeEnsureLandscapeVertexShader(void *) {}
 #include "ce_graphics_actual.inc"
 
 int main(int argc, char **argv)

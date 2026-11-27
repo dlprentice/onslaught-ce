@@ -6,6 +6,7 @@
 #include "../common/ce_backup_preview.h"
 #include "../common/ce_career_publish.h"
 #include "../common/ce_career_restore.h"
+#include "../common/ce_win_reparse.h"
 #include "../../game/ce_career_view.h"
 
 #include <SDL3/SDL.h>
@@ -276,11 +277,12 @@ bool	readFileStamp(HANDLE h, const Wide &leaf, FileStamp &s, bool allowHidden = 
 {
 	FILE_BASIC_INFO basic{};
 	FILE_STANDARD_INFO standard{};
-	const DWORD forbidden = FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY |
-							FILE_ATTRIBUTE_SYSTEM | (allowHidden ? 0u : FILE_ATTRIBUTE_HIDDEN);
+	const DWORD forbidden = FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_SYSTEM |
+							(allowHidden ? 0u : FILE_ATTRIBUTE_HIDDEN);
 	if (GetFileType(h) != FILE_TYPE_DISK ||
 		!GetFileInformationByHandleEx(h, FileBasicInfo, &basic, sizeof(basic)) ||
 		(basic.FileAttributes & forbidden) ||
+		ce_win_handle_is_link(h, basic.FileAttributes) ||
 		!GetFileInformationByHandleEx(h, FileStandardInfo, &standard, sizeof(standard)) ||
 		standard.Directory || standard.DeletePending ||
 		standard.NumberOfLinks != 1 || standard.EndOfFile.QuadPart < 0 ||
@@ -301,7 +303,7 @@ bool	readDirStamp(HANDLE h, DirStamp &s)
 	if (!dirInfo(h, s.id) ||
 		!GetFileInformationByHandleEx(h, FileBasicInfo, &basic, sizeof(basic)) ||
 		!(basic.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) ||
-		(basic.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ||
+		ce_win_handle_is_link(h, basic.FileAttributes) ||
 		!GetFileInformationByHandleEx(h, FileStandardInfo, &standard, sizeof(standard)) ||
 		!standard.Directory || standard.DeletePending)
 		return false;
@@ -415,8 +417,7 @@ bool	collectSlotNames(HANDLE dir, bool allowMissing, WideNames &out)
 			return true;
 		if (++careers > kCareerLimit)
 			return false;
-		if (attrs & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY |
-					 FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM))
+		if (attrs & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM))
 			return false;
 		std::string utfName;
 		if (!utf8(leaf, utfName))
@@ -435,6 +436,123 @@ bool	collectSlotNames(HANDLE dir, bool allowMissing, WideNames &out)
 	});
 	DirStamp after{};
 	return ok && readDirStamp(folder.h, after) && sameDirStamp(before, after);
+}
+
+bool	portableUtf8Career(const std::string &s)
+{
+	if (!hasBesExt(s) || s.size() >= 256 || s.front() == ' ' ||
+		s[s.size() - 5] == ' ' || s[s.size() - 5] == '.' ||
+		CeBackupFileHasDirectionMark(s.data(), s.size()))
+		return false;
+	const size_t stemLen = s.size() - 4;
+	size_t units = 0;
+	std::vector<unsigned> codepoints;
+	for (size_t i = 0; i < stemLen;)
+	{
+		unsigned char b0 = static_cast<unsigned char>(s[i++]);
+		unsigned cp = 0;
+		if (b0 < 0x80)
+		{
+			cp = b0;
+			if (cp < 32 || cp == 127 || std::strchr("<>:\"/\\|?*", char(cp)))
+				return false;
+		}
+		else
+		{
+			unsigned extra = 0, minCp = 0;
+			if (b0 >= 0xc2 && b0 <= 0xdf) { cp = b0 & 0x1fu; extra = 1; minCp = 0x80; }
+			else if (b0 >= 0xe0 && b0 <= 0xef) { cp = b0 & 0x0fu; extra = 2; minCp = 0x800; }
+			else if (b0 >= 0xf0 && b0 <= 0xf4) { cp = b0 & 0x07u; extra = 3; minCp = 0x10000; }
+			else return false;
+			if (extra > stemLen - i)
+				return false;
+			while (extra--)
+			{
+				unsigned char bx = static_cast<unsigned char>(s[i++]);
+				if ((bx & 0xc0u) != 0x80u)
+					return false;
+				cp = (cp << 6) | (bx & 0x3fu);
+			}
+			if (cp < minCp || cp > 0x10ffffu || (cp >= 0xd800u && cp <= 0xdfffu) ||
+				(cp >= 0x80u && cp <= 0x9fu) || CeBackupDirectionMark(cp))
+				return false;
+		}
+		units += cp >= 0x10000u ? 2u : 1u;
+		if (units > 31u)
+			return false;
+		codepoints.push_back(cp);
+	}
+	if (codepoints.empty())
+		return false;
+	size_t headEnd = 0;
+	while (headEnd < codepoints.size() && codepoints[headEnd] != '.')
+		++headEnd;
+	while (headEnd > 0 && codepoints[headEnd - 1] == ' ')
+		--headEnd;
+	std::string head;
+	for (size_t i = 0; i < headEnd; ++i)
+	{
+		unsigned cp = codepoints[i];
+		if (cp >= 'A' && cp <= 'Z') head.push_back(char(cp + ('a' - 'A')));
+		else if (cp < 0x80u) head.push_back(char(cp));
+		else head.push_back('!');
+	}
+	if (head == "con" || head == "prn" || head == "aux" || head == "nul" ||
+		head == "conin$" || head == "conout$")
+		return false;
+	if (headEnd == 4 && (head.compare(0, 3, "com") == 0 || head.compare(0, 3, "lpt") == 0))
+	{
+		unsigned d = codepoints[3];
+		if ((d >= '0' && d <= '9') || d == 0xb9u || d == 0xb2u || d == 0xb3u)
+			return false;
+	}
+	return true;
+}
+
+bool	hasBackupableCareerInDir(HANDLE dir)
+{
+	NTSTATUS st = 0;
+	Handle folder = child(dir, L"savegames", true, false, &st);
+	if (!folder)
+	{
+		require((st == kStatusNotFound || st == kStatusPathNotFound) && savegamesStillAbsent(dir));
+		return false;
+	}
+	bool found = false;
+	const bool ok = scanEntries(folder.h, [&](const Wide &leaf, DWORD attrs)
+	{
+		if (found || !wideHasBesExt(leaf))
+			return true;
+		if (attrs & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM))
+			return true;
+		std::string utfName;
+		if (!utf8(leaf, utfName) || !portableUtf8Career(utfName))
+			return true;
+		Handle entry = child(folder.h, leaf, false, false);
+		FileStamp fs{};
+		if (!entry || !readFileStamp(entry.h, leaf, fs) || fs.size != CE_CAREER_SIZE)
+			return true;
+		unsigned char buf[CE_CAREER_SIZE];
+		size_t done = 0;
+		while (done < CE_CAREER_SIZE)
+		{
+			DWORD got = 0;
+			if (!ReadFile(entry.h, buf + done, static_cast<DWORD>(CE_CAREER_SIZE - done), &got, nullptr) || got == 0)
+				return true;
+			done += got;
+		}
+		SCeCareerView view{};
+		if (CeCareerViewBuild(buf, CE_CAREER_SIZE, &view) && CeCareerViewPlausible(view))
+			found = true;
+		return true;
+	});
+	require(ok);
+	return found;
+}
+
+bool	hasBackupableCareer(HANDLE userDir, HANDLE gameDir)
+{
+	return hasBackupableCareerInDir(userDir) || hasBackupableCareerInDir(gameDir);
 }
 
 struct LockGuard
@@ -949,6 +1067,7 @@ CeCareerPublishResult	CeCareerPublishNew(const CeCareerPublishRequest *request)
 
 		// Pre-flight validation BEFORE CeCareerTakeFullSet: refuse non-local/non-NTFS storage,
 		// overlapping/protected roots, unsafe savegames entries, or occupied names without writing a backup.
+		bool needBackup = false;
 		{
 			Directory user, game, package, backupRoot;
 			require(user.open(userPath.c_str()) && game.open(gamePath.c_str()) &&
@@ -967,29 +1086,36 @@ CeCareerPublishResult	CeCareerPublishNew(const CeCareerPublishRequest *request)
 			require(taken.count(targetWide) == 0 &&
 						!existsEntry(saves.h, targetWide) && !existsEntry(orig.h, targetWide),
 					CE_PUBLISH_OCCUPIED);
+			needBackup = hasBackupableCareer(user.h(), game.h());
 		}
 
-		// Mandatory verified full-set backup FIRST. If CeCareerTakeFullSet does not return Complete,
-		// refuse cleanly with zero career files written.
-		CeCareerStorageRequest storageReq;
-		storageReq.user = userPath;
-		storageReq.game = gamePath;
-		storageReq.package = pkgPath;
-		storageReq.backupRoot = rootPath;
-		storageReq.permitted = request->permitted;
-		storageReq.cancelled = request->cancelled;
-		storageReq.owner = request->owner;
-		const CeCareerStorageResult backupRes = CeCareerTakeFullSet(storageReq);
-		if (!backupRes.backupSet.empty())
-			copyText(out.backupSet, sizeof(out.backupSet), backupRes.backupSet.c_str());
-		if (backupRes.status != CeCareerStorageStatus::Complete)
+		// Verified full-set backup FIRST whenever any valid existing career exists.
+		// When 0 valid careers exist (fresh install / post-wipe recovery), skip creating an empty backup.
+		CeCareerStorageResult backupRes{};
+		bool tookBackup = false;
+		if (needBackup)
 		{
-			out.status = mapStorageStatus(backupRes.status);
-			return out;
+			CeCareerStorageRequest storageReq;
+			storageReq.user = userPath;
+			storageReq.game = gamePath;
+			storageReq.package = pkgPath;
+			storageReq.backupRoot = rootPath;
+			storageReq.permitted = request->permitted;
+			storageReq.cancelled = request->cancelled;
+			storageReq.owner = request->owner;
+			backupRes = CeCareerTakeFullSet(storageReq);
+			if (!backupRes.backupSet.empty())
+				copyText(out.backupSet, sizeof(out.backupSet), backupRes.backupSet.c_str());
+			if (backupRes.status != CeCareerStorageStatus::Complete)
+			{
+				out.status = mapStorageStatus(backupRes.status);
+				return out;
+			}
+			require(!backupRes.backupSet.empty() && !backupRes.backupIdentity.empty() &&
+						!backupRes.backupStamp.empty(),
+					CE_PUBLISH_UNCERTAIN);
+			tookBackup = true;
 		}
-		require(!backupRes.backupSet.empty() && !backupRes.backupIdentity.empty() &&
-					!backupRes.backupStamp.empty(),
-				CE_PUBLISH_UNCERTAIN);
 
 		// Re-open all roots and acquire the exclusive custody lock for non-replacing publication.
 		Directory user, game, package, backupRoot;
@@ -1042,6 +1168,12 @@ CeCareerPublishResult	CeCareerPublishNew(const CeCareerPublishRequest *request)
 
 		auto verifyBackup = [&](CeCareerPublishStatus failStatus, bool allowCancel)
 		{
+			if (!tookBackup)
+			{
+				if (!published)
+					require(!hasBackupableCareer(user.h(), game.h()), failStatus);
+				return;
+			}
 			CeCareerRestoreRequest stampReq;
 			stampReq.user = userPath;
 			stampReq.game = gamePath;

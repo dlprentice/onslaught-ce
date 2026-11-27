@@ -6,6 +6,7 @@
 #include "ce_name_text.h"
 #include "../platform/common/ce_career_backup.h"
 #include "../platform/common/ce_backup_name.h"
+#include "../platform/common/ce_record_mode.h"
 #include "../platform/common/save_names.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,7 +25,8 @@ WCHAR selectedDisplay[256];
 bool hiddenDirection, unavailable;
 bool permitted() {
     const char *record=getenv("BEA_PORT_RECORD"), *tape=getenv("BEA_PORT_TAPE");
-    return PortCeMenus() && PortCeProjectCareerAllowed() && (!record||!*record) && (!tape||!*tape);
+    return PortCeMenus() && PortCeProjectCareerAllowed() &&
+        (ce_record_ce_allowed() || ((!record||!*record) && (!tape||!*tape)));
 }
 void openPage() {
     char folder[4096]={}; selectedFile[0]=0;selectedDisplay[0]=0;

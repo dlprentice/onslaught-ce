@@ -21,6 +21,7 @@
 #if defined(_WIN32)
 #include <io.h>
 #include <fcntl.h>
+#include "ce_win_reparse.h"
 #define strncasecmp _strnicmp
 #endif
 
@@ -84,7 +85,7 @@ FILE *RegOpenRead(bool *missing)
 	}
 	BY_HANDLE_FILE_INFORMATION info;
 	if (GetFileType(h) != FILE_TYPE_DISK || !GetFileInformationByHandle(h, &info) ||
-		(info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)))
+		(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || ce_win_handle_is_link(h, info.dwFileAttributes))
 	{
 		CloseHandle(h);
 		return NULL;
@@ -108,7 +109,8 @@ bool RegWriteAtomic(const char *data, size_t size)
 		return false;
 	std::wstring dst = dir + L"\\registry.ini";
 	DWORD dstAttr = GetFileAttributesW(dst.c_str());
-	if (dstAttr != INVALID_FILE_ATTRIBUTES && (dstAttr & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)))
+	if (dstAttr != INVALID_FILE_ATTRIBUTES &&
+		((dstAttr & FILE_ATTRIBUTE_DIRECTORY) || ce_win_path_is_link_w(dst.c_str(), dstAttr)))
 		return false;
 	static unsigned long serial = 0;
 	HANDLE h = INVALID_HANDLE_VALUE;

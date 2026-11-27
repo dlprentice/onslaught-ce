@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Screen-anchored HUD presentation. No world or gameplay coordinates are changed.
 #include "hud_scale.h"
+extern "C" int PortCeRecordFeaturesAllowed(void) __attribute__((weak));
 #include <stdlib.h>
 #include <math.h>
 
@@ -18,13 +19,16 @@ bool Enabled()
 {
 	if (!PortCeLayer())
 		return false;
-	// Even a forced CE menu must not alter a tape, recording, probe or virtual clock.
-	const char *const faithful[] = {"BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_PROBES", "BEA_PORT_RECORD"};
-	for (const char *name : faithful)
+	if (!(PortCeRecordFeaturesAllowed && PortCeRecordFeaturesAllowed()))
 	{
-		const char *value = getenv(name);
-		if (value && *value)
-			return false;
+		// Even a forced CE menu must not alter a tape, recording, probe or virtual clock.
+		const char *const faithful[] = {"BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_PROBES", "BEA_PORT_RECORD"};
+		for (const char *name : faithful)
+		{
+			const char *value = getenv(name);
+			if (value && *value)
+				return false;
+		}
 	}
 	const char *off = getenv("BEA_PORT_HUD_SCALE");
 	return !(off && *off == '0') && PortWideModes();

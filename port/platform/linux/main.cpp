@@ -28,6 +28,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
 // Weak: only a test-only diagnostic build defines it (kernel.cpp: ExitProcess); in every other build it is null.
 extern "C" void PortExitHook(int status) __attribute__((weak));
+#ifdef CE_VERSION
+extern "C" void PortCeBugClipShutdown(void) __attribute__((weak));
+#endif
 
 int main(int argc, char **argv)
 {
@@ -113,6 +116,9 @@ int main(int argc, char **argv)
 	if (PortCeProjectRequested()) rc = PortCeProjectExitStatus();
 #endif
 	PortSessionSummary();
+#ifdef CE_VERSION
+	if (PortCeBugClipShutdown) PortCeBugClipShutdown();
+#endif
 	SDL_Quit();
 	// The process ends as on Windows, where ExitProcess stops every other thread before a DLL's detach code runs:
 	// glibc's exit() runs each shared library's destructors with its threads still running. The game creates vertex

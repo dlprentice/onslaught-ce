@@ -26,6 +26,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+extern "C" int PortCeRecordFeaturesAllowed(void) __attribute__((weak));
 #include <string.h>
 
 // The optional network composite supplies this latched boot-intent owner. A weak reference is resolved at link time,
@@ -48,7 +49,7 @@ extern WORD gCharScanCode;
 using namespace CeConsoleGame;
 
 namespace {
-const unsigned kInputLimit = 63;		// characters a command line may hold; longer input is refused, never cut
+const unsigned kInputLimit = 255;		// characters a command line may hold; longer input is refused, never cut
 const unsigned kHistory = 8;
 const unsigned kArgs = 4;				// a command and up to three arguments
 const int kCheatLevels = 1;				// TURKEY: Unlock all levels
@@ -74,7 +75,11 @@ int devStats = -1;						// devstats this level: 1 on, 0 off, -1 as ce.ini's dev_
 int devStatsIni = -1;					// dev_stats from ce.ini, read once
 const char *rawLine = "";				// the line being run: music adddir takes the rest of it, spaces and all
 
-void Trap(WORD key, KeyEventType event);
+bool Trap(WORD key, KeyEventType event);
+pKeyTrapper PaletteTrap()
+{
+	return (pKeyTrapper)(void (*)(void))&Trap;
+}
 
 // Replays, recordings, probes, the virtual clocks, test pilots and network games.
 const char *const kFenced[] = {"BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_PROBES", "BEA_PORT_RECORD",
@@ -89,8 +94,12 @@ bool Present(const char *name)
 bool Allowed()
 {
 	// The usual CE switch has a deliberate screenshot override. Never honor that override for interactive commands.
-	if (!PortCeLayer() || PortRecording()) return false;
-	for (const char *name : kFenced) if (Present(name)) return false;
+	if (!(PortCeRecordFeaturesAllowed && PortCeRecordFeaturesAllowed()))
+	{
+		if (!PortCeLayer() || PortRecording()) return false;
+		for (const char *name : kFenced) if (Present(name)) return false;
+	}
+	else if (!PortCeLayer()) return false;
 	if (CE_BootRequested && CE_BootRequested()) return false;
 	if (CE_SessionActive && CE_SessionActive()) return false;
 	if (PLAYABLE_DEMO || CLIPARAMS.mAutoConfigTest || CLIPARAMS.mRecordDemo || CLIPARAMS.mPlaybackDemo ||
@@ -115,8 +124,11 @@ bool DevStatsAllowed()
 	const bool proof = Present("BEA_PORT_DEVSTATS_PROOF") && Present("BEA_PORT_CE_LAYER");
 	if (!proof)
 	{
-		if (PortRecording()) return false;
-		for (const char *name : kFenced) if (Present(name)) return false;
+		if (!(PortCeRecordFeaturesAllowed && PortCeRecordFeaturesAllowed()))
+		{
+			if (PortRecording()) return false;
+			for (const char *name : kFenced) if (Present(name)) return false;
+		}
 	}
 	if (CE_BootRequested && CE_BootRequested()) return false;
 	if (CE_SessionActive && CE_SessionActive()) return false;
@@ -127,7 +139,7 @@ bool DevStatsAllowed()
 
 void Out(const char *fmt, ...)
 {
-	char line[96];
+	char line[kInputLimit + 64];
 	va_list args;
 	va_start(args, fmt);
 	vsnprintf(line, sizeof(line), fmt, args);
@@ -138,7 +150,7 @@ void Out(const char *fmt, ...)
 void Close()
 {
 	// A remap, menu or other owner may have replaced our trap; never clear its trap.
-	if (LT.GetKeytrap() == Trap) LT.SetKeytrap(NULL);
+	if (LT.GetKeytrap() == PaletteTrap()) LT.SetKeytrap(NULL);
 	paletteOpen = false;
 	length = 0;
 	input[0] = 0;
@@ -311,7 +323,7 @@ void CmdStatus(int, Arg *)
 
 void CmdShowVars(int, Arg *)
 {
-	Out("Variables (set <name> <value>; put back when the level ends):");
+	Out("Variables (set <name> <value>, put back when the level ends):");
 	for (const VarRule &r : kVars)
 	{
 		void *data = Data(&r);
@@ -424,8 +436,8 @@ void CmdMap(int argc, Arg *argv)
 	JumpToLevel(level);
 }
 
-void CmdWin(int, Arg *) { if (MuseumRefuses("level to win")) return; Out("Level won."); Close(); Win(); }
-void CmdLose(int, Arg *) { if (MuseumRefuses("level to lose")) return; Out("Level lost (the original's lose command gives no reason)."); Close(); Lose(); }
+void CmdWin(int, Arg *) { if (MuseumRefuses("level to win") || EditorRefuses("level to win")) return; Out("Level won."); Close(); Win(); }
+void CmdLose(int, Arg *) { if (MuseumRefuses("level to lose") || EditorRefuses("level to lose")) return; Out("Level lost (the original's lose command gives no reason)."); Close(); Lose(); }
 
 void CmdGamma(int argc, Arg *argv)
 {
@@ -444,13 +456,13 @@ void CmdFilm(int argc, Arg *argv)
 	if (argc != 2 || !Film(argv[1], file, sizeof(file), &localise))
 	{
 		Out("Films: a cutscene number 1-33, GILL_M_on_a_fork, UsTheMovie, ltlogo, openingfmv.");
-		Out("  The Goodies screen plays the cutscenes and the two extras; the boot films play at start.");
+		Out("  The Goodies screen plays the cutscenes and the two extras. The boot films play at start.");
 		return;
 	}
 	// Not during a battle: whether the battle catches up on the time a film took has not been measured, and the
 	// console only opens in a battle. The Goodies screen plays the cutscenes and the two extras; the boot films play at start.
 	(void)localise;
-	Out("Films are not played during a battle; fmv_play alone lists them.");
+	Out("Films are not played during a battle. fmv_play alone lists them.");
 }
 
 void CmdSound(int argc, Arg *argv)
@@ -515,7 +527,7 @@ void CmdMusic(int argc, Arg *argv)
 		int skipped = 0, truncated = 0;
 		const int added = CeMusic::AddFolder(dir, &skipped, &truncated);
 		if (added < 0) { Out("Cannot read the folder %s. Give its full path.", dir); return; }
-		Out("Added %d track%s; %d .ogg file%s left out.", added, added == 1 ? "" : "s", skipped, skipped == 1 ? "" : "s");
+		Out("Added %d track%s, %d .ogg file%s left out.", added, added == 1 ? "" : "s", skipped, skipped == 1 ? "" : "s");
 		if (skipped) Out("  Tracks must be Ogg Vorbis, stereo, 44100 Hz, with a path of 255 bytes at most.");
 		if (truncated) Out("  Only the first 4096 names in that folder were read.");
 		if (CeMusic::Tracks() >= 256) Out("  The playlist holds 256 tracks at most.");
@@ -556,7 +568,7 @@ void CmdPhoto(int argc, Arg *argv)
 	bool on = !PortCePhotoOn();
 	if (argc > 2 || (argc == 2 && !ParseBool(argv[1], &on))) { Out("Usage: photo (on/off)."); return; }
 	if (!PortCePhotoSet(on)) { Out("Photo Mode is unavailable here."); return; }
-	Out(on ? "Photo Mode on: HUD hidden. F11 or photo ends it; F12 saves a screenshot." : "Photo Mode off.");
+	Out(on ? "Photo Mode on: HUD hidden. F11 or photo ends it, F12 saves a screenshot." : "Photo Mode off.");
 	if (on) Close();
 }
 
@@ -570,7 +582,7 @@ void CmdDevStats(int argc, Arg *argv)
 }
 
 const Command kCommands[] = {
-	{"help", "[command]", "Lists the commands, or says what one does.", -1, CmdHelp},
+	{"help", "(command)", "Lists the commands, or says what one does.", -1, CmdHelp},
 	{"version", "", "Shows the Onslaught CE version.", -1, CmdVersion},
 	{"status", "", "Shows the level, the camera and whether the battle is paused.", -1, CmdStatus},
 	{"showvars", "", "Lists the variables set can change, with their values.", -1, CmdShowVars},
@@ -580,10 +592,10 @@ const Command kCommands[] = {
 	{"listatmospherics", "", "Lists the weather effects.", -1, CmdAtmospherics},
 	{"navmapon", "", "Shows the navigation map on the landscape, until the level ends.", -1, CmdNavMapOn},
 	{"navmapoff", "", "Hides the navigation map.", -1, CmdNavMapOff},
-	{"setgammabias", "<0 to 0.005>", "Darkens the gamma ramp (full screen only); reset when the level ends.", -1, CmdGamma},
+	{"setgammabias", "<0 to 0.005>", "Darkens the gamma ramp (full screen only), reset when the level ends.", -1, CmdGamma},
 	{"fmv_play", "<film>", "Lists the game's films (none plays during a battle).", -1, CmdFilm},
 	{"playsound", "<name>", "Plays a sound this level has loaded.", -1, CmdSound},
-	{"music", "(adddir/playtype/next/clear)", "Your own .ogg folder in place of the level music; music alone says more.", -1, CmdMusic},
+	{"music", "(adddir/playtype/next/clear)", "Your own .ogg folder in place of the level music. music alone says more.", -1, CmdMusic},
 	{"photo", "(on/off)", "Hides the HUD for pictures (F11). F12 saves a screenshot in your screenshots folder.", -1, CmdPhoto},
 	{"devstats", "(on/off)", "The original developers' text: level, time, events, FPS, health.", -1, CmdDevStats},
 	{"splitscreen", "horizontal/vertical", "Sets how the next two-player game splits the screen.", -1, CmdSplit},
@@ -719,11 +731,11 @@ void Complete()
 	if (found && strlen(found->name) + 1 <= kInputLimit) { Load(found->name); input[length++] = ' '; input[length] = 0; }
 }
 
-void Trap(WORD key, KeyEventType event)
+bool Trap(WORD key, KeyEventType event)
 {
-	if (!paletteOpen || LT.GetKeytrap() != Trap) return;
+	if (!paletteOpen || LT.GetKeytrap() != PaletteTrap()) return false;
 	if (event == KEY_EVENT_DOWN) {
-		if (key >= 256) return;
+		if (key >= 256) return true;
 		const bool wasDown = consumed[key];
 		consumed[key] = true;
 		if ((key == DIK_GRAVE && !wasDown) || key == DIK_ESCAPE) Close();
@@ -742,6 +754,7 @@ void Trap(WORD key, KeyEventType event)
 			input[length] = 0;
 		} else overflow = true; // never execute truncated or unsupported input
 	}
+	return true;
 }
 
 // ---- drawing ----------------------------------------------------------------------------------------------------------
@@ -767,10 +780,10 @@ Look Colours()
 void DrawLine(CDXBitmapFont *font, CDXTexture *white, float left, float y, float width, float scale, DWORD colour,
 			  const char *text)
 {
-	WCHAR visible[100];
-	bool bar[100];
+	WCHAR visible[kInputLimit + 48];
+	bool bar[kInputLimit + 48];
 	unsigned n = 0;
-	for (unsigned i = 0, spaces = 0; text[i] && n < 99; ++i)
+	for (unsigned i = 0, spaces = 0; text[i] && n < kInputLimit + 47; ++i)
 	{
 		unsigned char c = (unsigned char)text[i];
 		spaces = c == ' ' ? spaces + 1 : 0;
@@ -792,7 +805,7 @@ void DrawLine(CDXBitmapFont *font, CDXTexture *white, float left, float y, float
 	for (unsigned i = 0; i < n; ++i)
 	{
 		if (!bar[i]) continue;
-		WCHAR prefix[100];
+		WCHAR prefix[kInputLimit + 48];
 		memcpy(prefix, visible, i * sizeof(WCHAR));
 		prefix[i] = 0;
 		SIZE before, space;
@@ -809,7 +822,7 @@ void DrawLine(CDXBitmapFont *font, CDXTexture *white, float left, float y, float
 
 void PortCePaletteCheck()
 {
-	if (paletteOpen && (LT.GetKeytrap() != Trap || !Allowed())) Close();
+	if (paletteOpen && (LT.GetKeytrap() != PaletteTrap() || !Allowed())) Close();
 }
 
 bool PortCePaletteOpen(unsigned key, bool repeat)
@@ -823,14 +836,14 @@ bool PortCePaletteOpen(unsigned key, bool repeat)
 	scroll = 0;
 	green = CE_SettingIs("console_theme", "green") != 0;
 	consumed[key] = true;
-	LT.SetKeytrap(Trap);
+	LT.SetKeytrap(PaletteTrap());
 	return true;
 }
 
 bool PortCePaletteSuppressDown(unsigned key)
 {
 	// A repeat after close/replacement belongs to the old owner until the physical release.
-	return key < 256 && consumed[key] && LT.GetKeytrap() != Trap;
+	return key < 256 && consumed[key] && LT.GetKeytrap() != PaletteTrap();
 }
 
 bool PortCePaletteRelease(unsigned key)
@@ -842,7 +855,7 @@ bool PortCePaletteRelease(unsigned key)
 
 bool PortCePaletteSuppressChar(unsigned key)
 {
-	return key < 256 && consumed[key] && LT.GetKeytrap() != Trap;
+	return key < 256 && consumed[key] && LT.GetKeytrap() != PaletteTrap();
 }
 
 void PortCePaletteClose() { Close(); }
@@ -953,7 +966,7 @@ void PortCePaletteRender()
 	CSPRITERENDERER::DrawColouredSprite(0.f, panel - scale, 0.001f, white, look.hint, w / white->GetRealWidth(),
 									   scale / white->GetRealHeight());
 	// The retail scrollback, oldest at the top; line 0 is the one being written, shown only while it has text.
-	char text[0x80];
+	char text[kInputLimit + 64];
 	int newest = (ConsoleLine(0, text, sizeof(text)) && text[0]) ? 0 : 1;
 	int stored = 0;
 	for (int i = ConsoleLines() - 1; i >= newest; --i)

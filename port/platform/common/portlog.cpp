@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Ordinary CE diagnostics, independent of the game/virtual clocks. Integer-only formatting and read-only observers
 // cannot consume game RNG or change simulation clock reads. Never called to format from the audio callback.
+#include "ce_record_mode.h"
 #include "portlog.h"
 #include <SDL3/SDL.h>
 #include <stdio.h>
@@ -102,6 +103,31 @@ bool PortSessionEnabled()
 		const char *value = getenv(name);
 		if (value && *value) enabled = 0;
 	}
+	// CE bug recording (BEA_PORT_RECORD_CE=1 without replay tape/probes) keeps session diagnostics active so the
+	// player's onslaught-ce.log captures the same telemetry as ordinary CE play.
+	const char *rec = getenv("BEA_PORT_RECORD");
+	const char *tape = getenv("BEA_PORT_TAPE");
+	const char *probes = getenv("BEA_PORT_PROBES");
+#ifdef PORT_CE_RECORD_MODE_H
+	const bool recCeAllowed = ce_record_ce_allowed() != 0;
+#else
+	bool recCeAllowed = false;
+	const char *recCe = getenv("BEA_PORT_RECORD_CE");
+	if (recCe && recCe[0] == '1' && recCe[1] == '\0' && ((rec && *rec) || (tape && *tape)))
+	{
+		const char *const hard[] = {"BEA_PORT_PILOT", "BEA_PORT_AUTOPILOT",
+									"BEA_NET_HOST", "BEA_NET_JOIN", "BEA_LOCKSTEP_HOST", "BEA_LOCKSTEP_JOIN"};
+		recCeAllowed = true;
+		for (const char *h : hard)
+		{
+			const char *v = getenv(h);
+			if (v && *v)
+				recCeAllowed = false;
+		}
+	}
+#endif
+	if (recCeAllowed && rec && *rec && !(tape && *tape) && !(probes && *probes))
+		enabled = PortCeLayer() ? 1 : 0;
 	__atomic_store_n(&gEnabled, enabled, __ATOMIC_RELEASE);
 	return enabled == 1;
 #else

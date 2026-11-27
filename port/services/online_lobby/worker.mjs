@@ -24,6 +24,10 @@ const DEFAULT_MAX_ACTIVE_ROOMS = 128;
 const DEFAULT_AUTH_IP_LIMIT = 20;
 const DEFAULT_AUTH_PUBKEY_LIMIT = 10;
 const AUTH_RATE_WINDOW_SECONDS = 60;
+const DEFAULT_RESOLVE_IP_LIMIT = 30;
+const DEFAULT_JOIN_IP_LIMIT = 30;
+const RESOLVE_JOIN_RATE_WINDOW_SECONDS = 60;
+const DEFAULT_HEALTH_CACHE_MS = 10000;
 const ROOM_CREATE_LIMIT_PER_MIN = 10;
 const CHAT_RING_LIMIT = 32;
 const CHAT_MAX_BYTES = 160;
@@ -37,7 +41,9 @@ const SIGNAL_PAGE_MAX_MESSAGES = 16;
 const SIGNAL_PAGE_MAX_BYTES = 48 * 1024;
 const JOIN_PW_RATE_MAX = 5;
 const JOIN_PW_RATE_WINDOW_MS = 60000;
-const ROOM_PW_PBKDF2_ITERS = 100000;
+const JOIN_PW_RATE_MAX_ENTRIES = 256;
+const ROOM_PW_PBKDF2_ITERS = 20000;
+const ROOM_PW_PBKDF2_MAX_VERIFY_ITERS = 100000;
 const MAX_TURN_PER_PAIR_PER_MATCH = 4;
 
 const MAP_MODES = new Map([
@@ -591,7 +597,7 @@ async function verifyRoomPassword(saltHex, expectedHashHex, candidatePassword) {
     const parts = expectedHashHex.split("$");
     if (parts.length !== 3) return false;
     const iters = Number(parts[1]);
-    if (!Number.isSafeInteger(iters) || iters < 1000 || iters > ROOM_PW_PBKDF2_ITERS) return false;
+    if (!Number.isSafeInteger(iters) || iters < 1000 || iters > ROOM_PW_PBKDF2_MAX_VERIFY_ITERS) return false;
     const keyMaterial = await crypto.subtle.importKey(
       "raw",
       encoder.encode(candidatePassword),
@@ -847,11 +853,63 @@ function roomStub(env, roomId) {
   return env.GAME_ROOM.get(env.GAME_ROOM.idFromName(roomId));
 }
 
+let healthCache = { expiresAtMs: 0, activeRooms: 0 };
+
+async function getCachedHealth(env, url, ctx) {
+  const cacheMs = envPositiveInt(env.CE_HEALTH_CACHE_MS, DEFAULT_HEALTH_CACHE_MS, 0, 60000);
+  const nowMs = Date.now();
+  if (cacheMs > 0 && nowMs < healthCache.expiresAtMs) {
+    return { active_rooms: healthCache.activeRooms };
+  }
+  const cacheKey = cacheMs >= 1000
+    ? new Request(`https://${url.host}${PREFIX}health?_ce_internal_cache=1`, { method: "GET" })
+    : null;
+  if (cacheKey && typeof caches !== "undefined" && caches.default) {
+    try {
+      const hit = await caches.default.match(cacheKey);
+      if (hit) {
+        const cached = await hit.json();
+        if (cached && Number.isSafeInteger(cached.active_rooms) && cached.active_rooms >= 0) {
+          healthCache = { expiresAtMs: nowMs + cacheMs, activeRooms: cached.active_rooms };
+          return { active_rooms: cached.active_rooms };
+        }
+      }
+    } catch {
+      // Ignore Cache API errors (e.g., local workerd without edge cache).
+    }
+  }
+  const info = await directoryStub(env).getHealth();
+  if (cacheMs > 0) {
+    healthCache = { expiresAtMs: Date.now() + cacheMs, activeRooms: info.active_rooms };
+    if (cacheKey && typeof caches !== "undefined" && caches.default) {
+      try {
+        const ttlSec = Math.max(1, Math.floor(cacheMs / 1000));
+        const cacheResp = new Response(JSON.stringify({ active_rooms: info.active_rooms }), {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+            "Cache-Control": `public, max-age=${ttlSec}`,
+          },
+        });
+        const putPromise = caches.default.put(cacheKey, cacheResp).catch(() => {});
+        if (ctx && typeof ctx.waitUntil === "function") {
+          ctx.waitUntil(putPromise);
+        } else {
+          await putPromise;
+        }
+      } catch {
+        // Ignore Cache API put errors.
+      }
+    }
+  }
+  return info;
+}
+
 // ---------------------------------------------------------------------------
 // Public Worker fetch handler
 // ---------------------------------------------------------------------------
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     try {
       const url = parseValidatedUrl(request, env);
       const subPath = url.pathname.slice(PREFIX.length);
@@ -874,10 +932,10 @@ export default {
         return errorResponse(503, "service_unavailable", "Online lobby service is disabled.");
       }
 
-      // Public unauthenticated health endpoint.
+      // Public unauthenticated health endpoint (read-only, cached, zero DO writes).
       if (subPath === "health") {
         requireCond(request.method === "GET", 400, "method_not_allowed", "GET required for health.");
-        const info = await directoryStub(env).getHealth();
+        const info = await getCachedHealth(env, url, ctx);
         return jsonResponse({
           ok: true,
           enabled: true,
@@ -1117,7 +1175,8 @@ export default {
         requireCond(typeof body.code === "string", 400, "invalid_code", "Room code must be a string.");
         const code = body.code.trim().toUpperCase();
         requireCond(/^[A-Z0-9]{6}$/.test(code), 400, "invalid_code", "Room code must be 6 alphanumeric characters.");
-        const resolved = await directoryStub(env).resolveCode(code);
+        const ipHash = await hashClientIp(request, env);
+        const resolved = await directoryStub(env).resolveCode(code, ipHash);
         if (!resolved.ok) {
           throw new ApiError(resolved.httpStatus, resolved.errorCode, resolved.message);
         }
@@ -1158,6 +1217,9 @@ export default {
             content_id: body.content_id !== undefined ? sanitizeContentId(body.content_id) : session.content_id,
             be_cfg: sanitizeBeCfg(body.be_cfg),
           };
+          const ipHash = await hashClientIp(request, env);
+          const rate = await directoryStub(env).checkJoinRate(ipHash);
+          if (!rate.ok) throw new ApiError(rate.httpStatus, rate.errorCode, rate.message);
           const res = await stub.joinRoom(session, payload);
           if (!res.ok) throw new ApiError(res.httpStatus, res.errorCode, res.message);
           return jsonResponse(res.state, 200);
@@ -1445,14 +1507,22 @@ export class LobbyDirectory extends DurableObject {
   }
 
   getHealth() {
+    // Strictly read-only: never delete/write on unauthenticated health hits so bots cannot exhaust DO write quotas.
     const nowMs = Date.now();
-    return this.ctx.storage.transactionSync(() => {
-      this.pruneStaleRooms(nowMs);
-      const rows = this.ctx.storage.sql.exec(
-        "SELECT COUNT(*) AS cnt FROM rooms WHERE state NOT IN ('closed', 'initializing', 'expired')"
-      ).toArray();
-      return { active_rooms: rows.length ? Number(rows[0].cnt) : 0 };
-    });
+    const lobbyCutoff = nowMs - this.heartbeatTimeoutMs();
+    const startingCutoff = nowMs - this.startingTimeoutMs();
+    const matchCutoff = nowMs - this.matchTimeoutMs();
+    const rows = this.ctx.storage.sql.exec(
+      `SELECT COUNT(*) AS cnt FROM rooms
+       WHERE state NOT IN ('closed', 'initializing', 'expired')
+         AND ((state = 'starting' AND last_heartbeat_ms >= ?)
+           OR (state = 'in_match' AND last_heartbeat_ms >= ?)
+           OR (state NOT IN ('starting', 'in_match') AND last_heartbeat_ms >= ?))`,
+      startingCutoff,
+      matchCutoff,
+      lobbyCutoff
+    ).toArray();
+    return { active_rooms: rows.length ? Number(rows[0].cnt) : 0 };
   }
 
   createChallenge(ipHash, pubkey, callsign) {
@@ -1738,9 +1808,22 @@ export class LobbyDirectory extends DurableObject {
     });
   }
 
-  resolveCode(code) {
+  resolveCode(code, ipHash = "") {
     const nowMs = Date.now();
+    const now = Math.floor(nowMs / 1000);
+    const ipLimit = envPositiveInt(this.env.CE_RESOLVE_IP_LIMIT, DEFAULT_RESOLVE_IP_LIMIT, 1, 1000);
     return this.ctx.storage.transactionSync(() => {
+      if (ipHash) {
+        this.pruneRateLimits(now);
+        if (!this.checkAndBumpRate(`resolve_ip:${ipHash}`, now, RESOLVE_JOIN_RATE_WINDOW_SECONDS, ipLimit)) {
+          return {
+            ok: false,
+            httpStatus: 429,
+            errorCode: "rate_limited",
+            message: "Too many room code lookup requests. Please wait.",
+          };
+        }
+      }
       this.pruneStaleRooms(nowMs);
       const rows = this.ctx.storage.sql.exec(
         "SELECT room_id, has_password, state FROM rooms WHERE code = ? AND state NOT IN ('closed', 'initializing', 'expired')",
@@ -1755,6 +1838,23 @@ export class LobbyDirectory extends DurableObject {
         has_password: Boolean(rows[0].has_password),
         state: rows[0].state,
       };
+    });
+  }
+
+  checkJoinRate(ipHash) {
+    const now = nowSeconds();
+    const ipLimit = envPositiveInt(this.env.CE_JOIN_IP_LIMIT, DEFAULT_JOIN_IP_LIMIT, 1, 1000);
+    return this.ctx.storage.transactionSync(() => {
+      this.pruneRateLimits(now);
+      if (!this.checkAndBumpRate(`join_ip:${ipHash}`, now, RESOLVE_JOIN_RATE_WINDOW_SECONDS, ipLimit)) {
+        return {
+          ok: false,
+          httpStatus: 429,
+          errorCode: "rate_limited",
+          message: "Too many room join requests. Please wait.",
+        };
+      }
+      return { ok: true };
     });
   }
 
@@ -1892,6 +1992,34 @@ export class GameRoom extends DurableObject {
       }
     });
     return { ok: true, target };
+  }
+
+  pruneJoinPwRates(room, nowMs) {
+    if (!room.join_pw_rates || typeof room.join_pw_rates !== "object") {
+      room.join_pw_rates = {};
+      return;
+    }
+    const active = [];
+    for (const [pid, hist] of Object.entries(room.join_pw_rates)) {
+      if (!Array.isArray(hist)) {
+        delete room.join_pw_rates[pid];
+        continue;
+      }
+      const fresh = hist.filter(ts => Number.isFinite(ts) && nowMs - ts < JOIN_PW_RATE_WINDOW_MS);
+      if (fresh.length === 0) {
+        delete room.join_pw_rates[pid];
+      } else {
+        room.join_pw_rates[pid] = fresh;
+        active.push([pid, fresh[fresh.length - 1]]);
+      }
+    }
+    if (active.length > JOIN_PW_RATE_MAX_ENTRIES) {
+      active.sort((a, b) => a[1] - b[1]);
+      const dropCount = active.length - JOIN_PW_RATE_MAX_ENTRIES;
+      for (let i = 0; i < dropCount; i++) {
+        delete room.join_pw_rates[active[i][0]];
+      }
+    }
   }
 
   async evictDirectoryForExpired(roomId, code) {
@@ -2209,6 +2337,7 @@ export class GameRoom extends DurableObject {
             .filter(ts => failMs - ts < JOIN_PW_RATE_WINDOW_MS);
           hist.push(failMs);
           room.join_pw_rates[session.player_id] = hist;
+          this.pruneJoinPwRates(room, failMs);
           this.writeRoom(room);
         });
         return { ok: false, httpStatus: 403, errorCode: "wrong_password", message: "Incorrect room password." };
@@ -2277,6 +2406,7 @@ export class GameRoom extends DurableObject {
       } else {
         target.team = 0;
       }
+      this.pruneJoinPwRates(room, commitMs);
       rebalanceRoomTeams(room);
       room.rev++;
       room.updated_at = nowSeconds();

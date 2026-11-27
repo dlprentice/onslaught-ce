@@ -55,6 +55,7 @@ ALLOWED_PUBLIC_BEA: dict[str, str] = {
     "BEA_PORT_PROBE_EVERY": "replay probe cadence",
     "BEA_PORT_PROBE_OBJECTS": "extended replay object probes",
     "BEA_PORT_RECORD": "record input tape path (disables CE layer)",
+    "BEA_PORT_RECORD_CE": "opt-in CE features during session tape recording/replay",
     "BEA_PORT_RECORD_FPS": "record presentation pace",
     "BEA_PORT_REPLAY_CHEAT": "replay-only retail harness cheat for cheat-recorded tapes (refused in network sessions; writes no saves)",
     "BEA_PORT_REPLAY_MAX": "stop replay after frame N",

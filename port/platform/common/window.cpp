@@ -33,8 +33,10 @@ extern "C" int PortCeNetRingEvent(const union SDL_Event *event) __attribute__((w
 #include "input_activity.h"
 #endif
 extern "C" unsigned PortPresentCount(void);	// d3d9hooks.cpp
-#if !defined(_WIN32)
 extern "C" void PortAudioSetFocused(int focused) __attribute__((weak));	// dsound.cpp
+#ifdef CE_VERSION
+extern "C" int PortCeBugClipToggle(void) __attribute__((weak));			// ce_bugclip.cpp
+extern "C" int PortCeKeytrapActive(void) __attribute__((weak));			// ce_notice.cpp
 #endif
 #if defined(CE_VERSION) && defined(BEA_PUBLIC_GRAPHICS_HOST)
 extern "C" void PortCeRetryDisplayInput();	// repair a refused menu capture release on the normal input pump
@@ -487,6 +489,9 @@ struct HeldMouseButton
 };
 HeldMouseButton gMouseHeld[3];	// 0: left, 1: right, 2: middle (matches PortRecordButton)
 int gHeldMouse;
+#ifdef CE_VERSION
+bool sBugClipF9Held;
+#endif
 
 WPARAM HeldMouseMask(int excludeBit = -1)
 {
@@ -565,6 +570,9 @@ void SyntheticMouseUp(int bit, const char *why)
 
 void ReleaseAll(const char *why)
 {
+#ifdef CE_VERSION
+	sBugClipF9Held = false;
+#endif
 	for (unsigned s = 1; s < 0x200 && gHeld > 0; s++)
 		if (gKeys[s].down)
 		{
@@ -1150,9 +1158,7 @@ void Pump()
 		case SDL_EVENT_WINDOW_FOCUS_GAINED:
 			PortSessionLog(PORT_SESSION_WINDOW, false, "focus gained");
 			if (InputLog()) fprintf(stderr, PORT_LOG_PREFIX "input: focus gained\n");
-#if !defined(_WIN32)
 			if (PortAudioSetFocused) PortAudioSetFocused(1);
-#endif
 			Post(h, WM_ACTIVATEAPP, TRUE, 0);
 			Post(h, WM_ACTIVATE, 1, 0);
 			break;
@@ -1162,9 +1168,7 @@ void Pump()
 			ReleaseAll("focus lost");
 			if (PortRecording())
 				break;	// a tape has no focus changes
-#if !defined(_WIN32)
 			if (PortAudioSetFocused) PortAudioSetFocused(0);
-#endif
 			Post(h, WM_ACTIVATEAPP, FALSE, 0);
 			Post(h, WM_ACTIVATE, 0, 0);
 			break;
@@ -1181,6 +1185,7 @@ void Pump()
 		case SDL_EVENT_WINDOW_MINIMIZED:
 			// Minimize can precede focus loss; end held keys at either boundary.
 			ReleaseAll("minimize");
+			if (!PortRecording() && PortAudioSetFocused) PortAudioSetFocused(0);
 			PortSessionLog(PORT_SESSION_WINDOW, false, "minimized");
 			Post(h, WM_SIZE, SIZE_MINIMIZED, 0);
 			break;
@@ -1193,6 +1198,8 @@ void Pump()
 			const bool wide = PortWideModes();
 			if (SDL_Window *w = Sdl(h))
 			{
+				if ((SDL_GetWindowFlags(w) & SDL_WINDOW_INPUT_FOCUS) && PortAudioSetFocused)
+					PortAudioSetFocused(1);
 				if (wide)
 					SDL_GetWindowSizeInPixels(w, &width, &height);
 				else
@@ -1207,6 +1214,29 @@ void Pump()
 		}
 		case SDL_EVENT_KEY_DOWN:
 		case SDL_EVENT_KEY_UP:
+#ifdef CE_VERSION
+			{
+				if (e.key.scancode == SDL_SCANCODE_F9)
+				{
+					if (e.type == SDL_EVENT_KEY_DOWN)
+					{
+						if (sBugClipF9Held && e.key.repeat)
+							break;
+						if (!e.key.repeat && !(PortCeKeytrapActive && PortCeKeytrapActive()) &&
+						    PortCeBugClipToggle && PortCeBugClipToggle())
+						{
+							sBugClipF9Held = true;
+							break;
+						}
+					}
+					else if (sBugClipF9Held)
+					{
+						sBugClipF9Held = false;
+						break;
+					}
+				}
+			}
+#endif
 			KeyEvent(e.key, h);
 			break;
 		case SDL_EVENT_MOUSE_MOTION:

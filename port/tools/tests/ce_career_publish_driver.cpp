@@ -375,15 +375,20 @@ int	main(int argc, char **argv)
 		const CeCareerPublishResult res = CeCareerPublishNew(&req);
 		if (mode == "no_backup_folder")
 			EXPECT(res.status == CE_PUBLISH_NO_FOLDER);
-		else if (mode == "backup_inside_user" || mode == "backup_no_existing_careers")
+		else if (mode == "backup_inside_user")
 			EXPECT(res.status == CE_PUBLISH_REFUSED);
+		else if (mode == "backup_no_existing_careers")
+			EXPECT(res.status == CE_PUBLISH_COMPLETE);
 		else if (mode == "backup_busy")
 			EXPECT(res.status == CE_PUBLISH_BUSY);
 		else if (mode == "authority_refused")
 			EXPECT(res.status == CE_PUBLISH_AUTHORITY);
 		else if (mode == "name_refused")
 			EXPECT(res.status == CE_PUBLISH_BAD_NAME);
-		EXPECT(res.possible == 0 && res.newFile[0] == 0);
+		if (mode == "backup_no_existing_careers")
+			EXPECT(res.possible == 1 && !std::strcmp(res.newFile, "Fresh.bes") && res.backupSet[0] == 0);
+		else
+			EXPECT(res.possible == 0 && res.newFile[0] == 0);
 		if (lockFd >= 0)
 			close(lockFd);
 	}
@@ -560,14 +565,14 @@ int	main(int argc, char **argv)
 		EXPECT(res2.status == CE_PUBLISH_COMPLETE);
 		EXPECT(lstat((u2 + "/savegames/Hero.bes").c_str(), &st) == 0 && S_ISREG(st.st_mode));
 
-		// 3) Both user/savegames and game/savegames absent (zero existing files): backup gate refuses and leaves user/savegames absent.
+		// 3) Both user/savegames and game/savegames absent (zero existing files): 0-career import succeeds cleanly (05-P0-1).
 		const std::string g3 = gBase + "/both_absent/game";
 		const std::string u3 = gBase + "/both_absent/user";
 		const std::string p3 = gBase + "/both_absent/package";
 		const std::string b3 = gBase + "/both_absent/backup";
 		CeCareerPublishRequest req3 = makeReq(u3, g3, p3, b3);
-		EXPECT(CeCareerPublishNew(&req3).status == CE_PUBLISH_REFUSED);
-		EXPECT(lstat((u3 + "/savegames").c_str(), &st) != 0 && errno == ENOENT);
+		EXPECT(CeCareerPublishNew(&req3).status == CE_PUBLISH_COMPLETE);
+		EXPECT(lstat((u3 + "/savegames/Hero.bes").c_str(), &st) == 0 && S_ISREG(st.st_mode));
 
 		// 4) Non-directory (regular file or symlink) at savegames is strictly refused.
 		const std::string g4 = gBase + "/file_at_saves/game";

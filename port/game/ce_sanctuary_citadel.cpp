@@ -1700,6 +1700,13 @@ static void ReleaseFactionEmblemTextures() {
     gCitadel->emblemsAttempted = false;
 }
 
+static void DeleteDeviceObjects() {
+    ReleaseGpuBuffers();
+    ReleaseFactionEmblemTextures();
+    if (gCitadel)
+        gCitadel->texturesLoaded = false;
+}
+
 static void EnsureFactionEmblemTextures(IDirect3DDevice9 *dev) {
     if (!gCitadel || !dev) return;
     const uint64_t gen = CurrentCitadelDeviceGen();
@@ -2216,7 +2223,8 @@ void RuntimeDrawWorld() {
     IDirect3DDevice9 *dev = LT.GetDevice();
     if (!dev) return;
 
-    if (!gCitadel->texturesLoaded) {
+    const uint64_t devGen = CurrentCitadelDeviceGen();
+    if (!gCitadel->texturesLoaded || gCitadel->gpuDevice != dev || gCitadel->gpuDeviceGen != devGen) {
         CeMuseumTextures::LoadAll(dev);
         gCitadel->texturesLoaded = true;
     }
@@ -2831,8 +2839,7 @@ extern "C" void PortCeSanctuaryRenderCinemaPlayer(int viewpoint) {
 
 extern "C" {
 void PortCeSanctuaryCitadelDeleteDeviceObjects(void) {
-    CeSanctuaryCitadel::ReleaseGpuBuffers();
-    CeSanctuaryCitadel::ReleaseFactionEmblemTextures();
+    CeSanctuaryCitadel::DeleteDeviceObjects();
 }
 }
 #else

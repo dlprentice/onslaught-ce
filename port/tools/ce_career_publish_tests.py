@@ -212,7 +212,6 @@ class CareerPublishTests(unittest.TestCase):
             ("no_backup_folder", False),
             ("backup_inside_user", False),
             ("backup_busy", False),
-            ("backup_no_existing_careers", True),
             ("authority_refused", False),
             ("name_refused", False),
         ):
@@ -223,6 +222,12 @@ class CareerPublishTests(unittest.TestCase):
                 self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
                 self.assertEqual(snapshot_tree(base), before)
                 self.assertEqual(list((base / "backup").iterdir()), [])
+        # 0-career import succeeds cleanly without creating an empty backup set (05-P0-1).
+        base_empty = self.make_profile("backup_no_existing_careers", empty_saves=True)
+        res_empty = self.run_case(self.driver, base_empty, "backup_no_existing_careers")
+        self.assertEqual(res_empty.returncode, 0, res_empty.stdout + res_empty.stderr)
+        self.assertEqual(sha((base_empty / "user/savegames/Fresh.bes").read_bytes()), sha(self.hero))
+        self.assertEqual(list((base_empty / "backup").iterdir()), [])
 
     def _populate_read_refusal_files(self, base):
         ext = base / "external"
@@ -268,7 +273,7 @@ class CareerPublishTests(unittest.TestCase):
         res = self.run_case(self.driver, base, "absent_savegames_dirs")
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
         self.assertFalse((base / "no_game_saves/game/savegames").exists())
-        self.assertFalse((base / "both_absent/user/savegames").exists())
+        self.assertEqual(sha((base / "both_absent/user/savegames/Hero.bes").read_bytes()), sha(self.hero))
         self.assertEqual(sha((base / "no_user_saves/user/savegames/Hero.bes").read_bytes()), sha(self.hero))
 
     def test_uncertain_post_link_preserves_new_file_and_backup(self):
@@ -288,9 +293,9 @@ class CareerPublishTests(unittest.TestCase):
     def test_causal_mutants_are_caught(self):
         source = (PLATFORM / "linux/ce_career_publish.cpp").read_text()
         mutants = (
-            ("if (backupRes.status != CeCareerStorageStatus::Complete)\n\t\t{\n\t\t\tout.status = mapStorageStatus(backupRes.status);\n\t\t\treturn out;\n\t\t}",
+            ("if (backupRes.status != CeCareerStorageStatus::Complete)\n\t\t\t{\n\t\t\t\tout.status = mapStorageStatus(backupRes.status);\n\t\t\t\treturn out;\n\t\t\t}",
              "// mutant: continue even when full backup fails",
-             "backup_no_existing_careers", True, "publish must refuse when CeCareerTakeFullSet fails"),
+             "backup_busy", False, "publish must refuse when CeCareerTakeFullSet fails"),
             ("O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK",
              "O_RDONLY | O_CLOEXEC | O_NONBLOCK",
              "read_refusals", False, "import reader must refuse symlinks"),

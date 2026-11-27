@@ -72,7 +72,7 @@
  
  		if (sFindHandle != -1)
  		{
-@@ -111,6 +140,37 @@
+@@ -111,6 +140,39 @@
  
  int CPCMemoryCard::CreateSave(int card,WCHAR *name,int *save,BOOL allowed_overwrite)	// FUNCTION: 0x00514be0
  {
@@ -90,7 +90,9 @@
 +		return allowed_overwrite ? MCE_SUCCESS : MCE_FILEEXISTS;
 +	}
 +	_mkdir(SAVE_DIRECTORY);
++	struct PortSaveReserveGuard { const char *p; bool reserved; DWORD *err; int *idx; ~PortSaveReserveGuard() { if (reserved && (*err || *idx == -1)) { DWORD saved = GetLastError(); DeleteFile(p); SetLastError(saved); } } } reserveGuard = { path, false, &error, &index };
 +	error = PortSaveReserveUtf8(path); // CREATE_NEW: a file appearing after lookup is never overwritten here.
++	reserveGuard.reserved = (error == 0);
 +	if (error)
 +	{
 +		if (error == 80 || error == 183) // ERROR_FILE_EXISTS / ERROR_ALREADY_EXISTS
@@ -110,7 +112,7 @@
  	char	buffer[256];
  	char	path[MAX_PATH];
  	FILE	*f;
-@@ -165,15 +225,24 @@
+@@ -165,15 +227,24 @@
  		}
  	}
  	return 1;
@@ -136,7 +138,7 @@
  	return DeleteFile(path) ? MCE_SUCCESS : 1;
  }
  
-@@ -181,9 +250,16 @@
+@@ -181,9 +252,16 @@
  {
  	char	path[MAX_PATH];
  
@@ -153,7 +155,7 @@
  	FILE *f = fopen(path, "wb");
  	if (f)
  	{
-@@ -201,9 +277,16 @@
+@@ -201,9 +279,16 @@
  {
  	char	path[MAX_PATH];
  

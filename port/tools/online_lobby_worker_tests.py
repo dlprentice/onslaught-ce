@@ -190,6 +190,9 @@ class WorkerdHarness:
         auth_ip_limit: int = 200,
         auth_pubkey_limit: int = 100,
         room_create_limit: int = 100,
+        resolve_ip_limit: int | None = None,
+        join_ip_limit: int | None = None,
+        health_cache_ms: int | None = None,
     ):
         self.workerd_bin = workerd_bin
         self.workdir = workdir
@@ -214,6 +217,9 @@ class WorkerdHarness:
         self.auth_ip_limit = auth_ip_limit
         self.auth_pubkey_limit = auth_pubkey_limit
         self.room_create_limit = room_create_limit
+        self.resolve_ip_limit = resolve_ip_limit
+        self.join_ip_limit = join_ip_limit
+        self.health_cache_ms = health_cache_ms
         self.proc: subprocess.Popen | None = None
         self.log_path = self.workdir / "workerd.log"
 
@@ -246,6 +252,12 @@ class WorkerdHarness:
         }
         if self.starting_timeout_ms is not None:
             public_vars["CE_STARTING_TIMEOUT_MS"] = str(self.starting_timeout_ms)
+        if self.resolve_ip_limit is not None:
+            public_vars["CE_RESOLVE_IP_LIMIT"] = str(self.resolve_ip_limit)
+        if self.join_ip_limit is not None:
+            public_vars["CE_JOIN_IP_LIMIT"] = str(self.join_ip_limit)
+        if self.health_cache_ms is not None:
+            public_vars["CE_HEALTH_CACHE_MS"] = str(self.health_cache_ms)
         issuer_vars = {
             "CE_ENABLED": enabled_str,
             "CE_ISSUER_PERMIT_KEY": PERMIT_KEY,
@@ -1978,7 +1990,7 @@ class WorkerdIntegrationTests(unittest.TestCase):
         srv.stop()
         room_docs = srv.read_room_sqlite()
         self.assertEqual(1, len(room_docs))
-        self.assertTrue(room_docs[0]["password_hash"].startswith("pbkdf2$100000$"))
+        self.assertTrue(room_docs[0]["password_hash"].startswith("pbkdf2$20000$"))
 
         # Inject 20 x 3.8 KiB signals addressed to seat 1 into room_kv SQLite to exercise byte & count pagination directly.
         room_root = srv.state_dir / "ce-online-lobby-room-test-v1"
@@ -2070,6 +2082,173 @@ class WorkerdIntegrationTests(unittest.TestCase):
                 srv2.api("POST", f"/ce-lobby/v1/rooms/{rid2}/turn", token=g2["session_token"],
                          body={"match_id": mid2, "guest_seat": 1})
         self.assertTrue(expired, "Room MUST expire when host goes silent even while guest polls /signal and requests /turn")
+
+    def test_health_zero_write_caching_rate_limits_and_pbkdf2_compat(self):
+        # 1. GET /ce-lobby/v1/health must be strictly read-only (zero DO SQLite writes) and obey short TTL caching.
+        srv_h = self.make_server(heartbeat_timeout_ms=600, health_cache_ms=350)
+        code, _, h0 = srv_h.api("GET", "/ce-lobby/v1/health")
+        self.assertEqual(200, code)
+        self.assertEqual(0, h0["active_rooms"])
+
+        _, host_h = srv_h.auth_player("HealthHost")
+        code, _, r_h = srv_h.api(
+            "POST", "/ce-lobby/v1/lobbies", token=host_h["session_token"],
+            body={"name": "HealthZeroWrite", "mode": "coop_defence", "map": 856, "max_seats": 2},
+        )
+        self.assertEqual(200, code)
+        rid_h = r_h["room_id"]
+
+        # Within the 350 ms cache window, /v1/health serves the cached active_rooms=0 without hitting LobbyDirectory.
+        code, _, h_cached = srv_h.api("GET", "/ce-lobby/v1/health")
+        self.assertEqual(200, code)
+        self.assertEqual(0, h_cached["active_rooms"])
+
+        # After cache expires (before 600 ms heartbeat TTL), /v1/health refreshes to active_rooms=1.
+        time.sleep(0.42)
+        code, _, h_live = srv_h.api("GET", "/ce-lobby/v1/health")
+        self.assertEqual(200, code)
+        self.assertEqual(1, h_live["active_rooms"])
+
+        # After the room goes stale (> 600 ms) AND cache expires (> 350 ms), /v1/health reports active_rooms=0
+        # WITHOUT deleting the stale row from LobbyDirectory SQLite (zero DO write amplification).
+        time.sleep(0.70)
+        code, _, h_stale = srv_h.api("GET", "/ce-lobby/v1/health")
+        self.assertEqual(200, code)
+        self.assertEqual(0, h_stale["active_rooms"])
+        srv_h.stop()
+
+        dir_root = srv_h.state_dir / "ce-online-lobby-dir-test-v1"
+        stale_rows = []
+        for db_path in sorted(dir_root.glob("*.sqlite")):
+            if db_path.name == "metadata.sqlite":
+                continue
+            with sqlite3.connect(str(db_path)) as conn:
+                tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                if "rooms" in tables:
+                    stale_rows.extend(conn.execute("SELECT room_id FROM rooms WHERE room_id = ?", (rid_h,)).fetchall())
+        self.assertEqual([(rid_h,)], stale_rows, "/v1/health must not DELETE stale rows from LobbyDirectory SQLite")
+
+        # 2. Per-IP rate limiting on /lobbies/resolve and /rooms/:id/join.
+        srv_rl = self.make_server(resolve_ip_limit=3, join_ip_limit=3)
+        _, rl_host = srv_rl.auth_player("RLHost", ip="198.51.100.1")
+        _, rl_guest = srv_rl.auth_player("RLGuest", ip="198.51.100.2")
+        _, rl_other = srv_rl.auth_player("RLOther", ip="198.51.100.3")
+        r_rl = srv_rl.api(
+            "POST", "/ce-lobby/v1/lobbies", token=rl_host["session_token"],
+            body={"name": "RateLimited", "mode": "coop_defence", "map": 856, "max_seats": 4, "password": "secret"},
+            extra_headers={"X-Forwarded-For": "198.51.100.1"},
+        )[2]
+        rl_rid = r_rl["room_id"]
+        rl_code = r_rl["code"]
+
+        for _ in range(3):
+            c, _, _ = srv_rl.api(
+                "POST", "/ce-lobby/v1/lobbies/resolve", token=rl_guest["session_token"],
+                body={"code": rl_code}, extra_headers={"X-Forwarded-For": "198.51.100.2"},
+            )
+            self.assertEqual(200, c)
+        c, _, err = srv_rl.api(
+            "POST", "/ce-lobby/v1/lobbies/resolve", token=rl_guest["session_token"],
+            body={"code": rl_code}, extra_headers={"X-Forwarded-For": "198.51.100.2"},
+        )
+        self.assertEqual(429, c)
+        self.assertEqual("rate_limited", err["error"])
+        # Distinct IP is unaffected.
+        c, _, _ = srv_rl.api(
+            "POST", "/ce-lobby/v1/lobbies/resolve", token=rl_other["session_token"],
+            body={"code": rl_code}, extra_headers={"X-Forwarded-For": "198.51.100.3"},
+        )
+        self.assertEqual(200, c)
+
+        for _ in range(3):
+            c, _, _ = srv_rl.api(
+                "POST", f"/ce-lobby/v1/rooms/{rl_rid}/join", token=rl_guest["session_token"],
+                body={"password": "wrong"}, extra_headers={"X-Forwarded-For": "198.51.100.2"},
+            )
+            self.assertEqual(403, c)
+        c, _, err = srv_rl.api(
+            "POST", f"/ce-lobby/v1/rooms/{rl_rid}/join", token=rl_guest["session_token"],
+            body={"password": "secret"}, extra_headers={"X-Forwarded-For": "198.51.100.2"},
+        )
+        self.assertEqual(429, c)
+        self.assertEqual("rate_limited", err["error"])
+        # Distinct IP can still join cleanly.
+        c, _, _ = srv_rl.api(
+            "POST", f"/ce-lobby/v1/rooms/{rl_rid}/join", token=rl_other["session_token"],
+            body={"password": "secret"}, extra_headers={"X-Forwarded-For": "198.51.100.3"},
+        )
+        self.assertEqual(200, c)
+        srv_rl.stop()
+
+        # 3. join_pw_rates expired-entry pruning + 256-entry cap, AND PBKDF2 20k creation + 100k legacy compat.
+        srv_pw = self.make_server()
+        _, pw_host = srv_pw.auth_player("PwHost")
+        _, pw_guest = srv_pw.auth_player("PwGuest")
+        _, pw_legacy = srv_pw.auth_player("PwLegacy")
+        r_pw = srv_pw.api(
+            "POST", "/ce-lobby/v1/lobbies", token=pw_host["session_token"],
+            body={"name": "PwHardening", "mode": "coop_defence", "map": 856, "max_seats": 4, "password": "NewPass20k"},
+        )[2]
+        pw_rid = r_pw["room_id"]
+        # Verify 20k password works right out of the box.
+        c, _, _ = srv_pw.api("POST", f"/ce-lobby/v1/rooms/{pw_rid}/join", token=pw_guest["session_token"],
+                             body={"password": "wrong"})
+        self.assertEqual(403, c)
+        c, _, _ = srv_pw.api("POST", f"/ce-lobby/v1/rooms/{pw_rid}/join", token=pw_guest["session_token"],
+                             body={"password": "NewPass20k"})
+        self.assertEqual(200, c)
+        srv_pw.stop()
+
+        # Inspect stored 20k hash, then inject 300 active + 50 expired join_pw_rates entries AND a legacy 100k PBKDF2 hash.
+        room_root = srv_pw.state_dir / "ce-online-lobby-room-test-v1"
+        now_ms = int(time.time() * 1000)
+        legacy_pw = "LegacyPass100k"
+        for db_path in sorted(room_root.glob("*.sqlite")):
+            if db_path.name == "metadata.sqlite":
+                continue
+            with sqlite3.connect(str(db_path)) as conn:
+                rows = conn.execute("SELECT value FROM room_kv WHERE name = 'room'").fetchall()
+                for (val,) in rows:
+                    doc = json.loads(val)
+                    if doc["room_id"] == pw_rid:
+                        self.assertTrue(doc["password_hash"].startswith("pbkdf2$20000$"))
+                        salt_hex = doc["password_salt"]
+                        legacy_dk = hashlib.pbkdf2_hmac(
+                            "sha256",
+                            legacy_pw.encode("utf-8"),
+                            f"onslaught-ce-room-pw-v2\0{salt_hex}".encode("utf-8"),
+                            100000,
+                            dklen=32,
+                        )
+                        doc["password_hash"] = f"pbkdf2$100000${legacy_dk.hex()}"
+                        doc["last_heartbeat_ms"] = now_ms + 10000
+                        rates = {}
+                        for i in range(50):
+                            rates[f"expired_{i:03d}"] = [now_ms - 120000]
+                        for i in range(300):
+                            rates[f"active_{i:03d}"] = [now_ms - 5000 + i]
+                        doc["join_pw_rates"] = rates
+                        conn.execute("UPDATE room_kv SET value = ? WHERE name = 'room'", (json.dumps(doc),))
+                        conn.commit()
+        srv_pw.start()
+
+        # Legacy 100k hash rejects wrong password (and triggers pruning + 256 cap!), then accepts correct password!
+        c, _, err = srv_pw.api("POST", f"/ce-lobby/v1/rooms/{pw_rid}/join", token=pw_legacy["session_token"],
+                               body={"password": "NewPass20k"})
+        self.assertEqual(403, c)
+        self.assertEqual("wrong_password", err["error"])
+        c, _, _ = srv_pw.api("POST", f"/ce-lobby/v1/rooms/{pw_rid}/join", token=pw_legacy["session_token"],
+                             body={"password": legacy_pw})
+        self.assertEqual(200, c)
+        srv_pw.stop()
+
+        docs_after = srv_pw.read_room_sqlite()
+        self.assertEqual(1, len(docs_after))
+        rates_after = docs_after[0]["join_pw_rates"]
+        self.assertLessEqual(len(rates_after), 256)
+        self.assertTrue(all(not k.startswith("expired_") for k in rates_after))
+        self.assertIn(pw_legacy["player_id"], rates_after)
+        self.assertNotIn("active_000", rates_after)
 
 
 def main() -> int:

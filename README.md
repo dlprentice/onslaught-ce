@@ -90,10 +90,10 @@ several places, folders you are unsure of): follow the
 - **Main Menu > Onslaught CE (this source branch):** a page with **Bonus Levels**, **Extras**, **Mods**, **Catalogue**,
   **CE Settings**, **Cheats**, **Experimental Features**, **Help & Info**, **Report a Problem** and **Grand Museum**. Each row has a hint under the list.
   Optional rows are enabled by default and can be toggled in **Experimental Features** or `ce.ini`. The Options page is the original's.
-- **Bonus Levels:** Aquila Prototype, Building Defence, Carrier Clash, Living Sandbox and Race Challenge 1 to 5 (each below). None of them
+- **Bonus Levels:** Aquila Prototype, Building Defence, Carrier Clash, Flagship Duel (1P and 2P), Living Sandbox (including Sanctuary Citadel) and Race Challenge 1 to 5 (each below). None of them
   advances career progress. A bonus level started here comes back to this list with its row highlighted.
-- **CE Settings:** a list of choices, each written to `ce.ini` in your user folder when you make it. The page is not on
-  the menu while a session is recorded.
+- **CE Settings:** a list of choices, each written to `ce.ini` in your user folder when you make it. The page stays available
+  in ordinary CE session recordings (`--record`) and is hidden in faithful recordings (`--record-faithful`) and faithful replays.
   - Rows: **HUD Size** and **HUD Layout** (the HUD on a wide screen, see
     [Screen modes and widescreen](#screen-modes-and-widescreen)), **Sharper Text** (experimental), **End-of-Level Stats**,
     **Controller Rumble**, **Dodge Button** (see [Dodging](#dodging)), **Developer Information**, **Your Music** (shows the
@@ -152,7 +152,7 @@ several places, folders you are unsure of): follow the
 - **Alt-Tab and minimizing:** CE holds the game clock while it waits for a minimized window, helping avoid a fast-forward when you return (the original can do that on a fast PC;
   `BEA_PORT_MINIMIZED_CLOCK=run` brings that back for comparison). This adjustment is off during recordings and replays.
 - **A quiet console:** the developers' messages are hidden unless `BEA_PORT_VERBOSE=1` is set.
-- **A log file** for reports in your user folder, and **session recording** (both below).
+- **A log file** for reports in your user folder, **F9 bug clips** and **session recording** (all below).
 
 ### Dodging
 
@@ -174,7 +174,7 @@ way. For the next dodge, let go and press again, or
 change direction with the button still held; a press made early in a dodge (it lasts about three quarters of a second) is
 dropped, one made in its last 0.35 seconds follows it at once. A key or button you have bound to a control of your own is not
 used, and flight sticks have no Dodge Button. It is on by default (**Dodge Button: On** on CE Settings, `dodge_button=0` in
-`ce.ini` turns it off, from the next level), and it is off in session recordings and replays and in demos. The
+`ce.ini` turns it off, from the next level), and it is off in faithful recordings (`--record-faithful`), faithful replays and in demos. The
 double tap below works as before, with it on or off.
 
 Try releasing the first key before pressing the other. Aim for about 0.15 game seconds between presses: with the
@@ -183,7 +183,7 @@ too slow will not trigger a dodge. If you changed the bindings or use a differen
 left and right movement inputs in **Controller Options** and use those instead.
 
 In eligible ordinary single-player levels, the English tutorial can show a contextual dodge cue when the radio message starts.
-The cue is off during session recording and replay; use this guide while recording. The same keyboard sequence and
+The cue is off during faithful recordings (`--record-faithful`) and faithful replays; use this guide while recording faithfully. The same keyboard sequence and
 timing apply.
 
 ### Zooming
@@ -191,14 +191,14 @@ timing apply.
 With the default mouse binding, scroll the wheel down to zoom in and up to zoom out. With the default gamepad
 bindings in eligible ordinary play, the right bumper zooms in and the left bumper zooms out. You can change the
 bindings in **Controller Options**. Manual zoom only works with weapons that support it; some weapons zoom while
-charging instead. The English tutorial can show a zoom cue in eligible ordinary single-player levels, but not in recordings
-or replays.
+charging instead. The English tutorial can show a zoom cue in eligible ordinary single-player levels, but not in faithful recordings
+(`--record-faithful`) or faithful replays.
 
 ### Cheats
 
 Onslaught CE > Cheats, in the Main Menu, turns the original game's cheats on and off. They are kept in `ce.ini` in your user folder and apply
 to every career. Typing a code into a career's name works too, as in the original. The Cheats page's switches are off
-while a session is being recorded and in replays; a code typed into a career's name still works then, as in the
+in faithful recordings (`--record-faithful`) and faithful replays; a code typed into a career's name still works then, as in the
 original.
 
 | Cheat | Original code | What it does |
@@ -270,11 +270,11 @@ the original's command interpreter: it has its own list of commands, and never r
   remote camera.
 - **Not available:** `exec`, `bind`, `memstats`, `dumpmem`, `dumptextures` and the original's other developer
   commands that write files or run scripts; `quit` points you at the Pause Menu. The console is closed in multiplayer,
-  in demos, and while a session is recorded or replayed.
+  in demos, and in faithful recordings (`--record-faithful`) and faithful replays.
 - **Console Text: Green** on CE Settings (`console_theme=green` in `ce.ini`) draws the text in green, from the next time the console
   opens (the console reads the line each time it opens). This is an Onslaught CE choice: nothing shows that the original's console was green.
 
-### Photo Mode and screenshots
+### Photo Mode, screenshots and F9 bug clips
 
 - **F11** (or the console's `photo`, `photo on`/`off`) hides the HUD for pictures: the cockpit, the HUD and its radio
   messages, the battle line and the developer information. Menus, the Pause Menu, the message log and the end-of-level
@@ -285,19 +285,25 @@ the original's command interpreter: it has its own list of commands, and never r
   (`onslaught-ce-20261029-153012.png`, then `-2`, `-3` ... in the same second). It never replaces a file. A note at the
   bottom of the screen says it was saved; the note is never in the picture. The folder holds up to 2000 files: move
   some out when it says it is full.
+- **F9 (Bug-Clip Recorder):** press **F9** in ordinary CE play (front end, gameplay, or Map Editor) to capture up to
+  60 seconds (or 64 MiB) of 20 FPS MJPEG video and 44.1 kHz stereo game audio together with a scrubbed diagnostic `.txt`
+  report (`ce.ini` and recent `onslaught-ce.log` tail with account names and home paths scrubbed). Press **F9** again to
+  stop early. Both files are automatically packaged into a single GitHub-ready `.zip` in `<user folder>/clips/`
+  (`onslaught-ce-clip-YYYYMMDD-HHMMSS.zip`) that you can drag straight into a GitHub issue. Off during faithful
+  recordings (`--record-faithful`) and replays.
 - **Photo Mode in the Pause Menu:** in a single-player level the Pause Menu has a **Photo Mode** row, between the
   options rows and Retry, so a gamepad can reach it. Choosing it closes the menu, resumes the battle and turns photo
   mode on, as F11 does, and writes nothing (not a career, not your settings). While Photo Mode is on the row reads
   **End Photo Mode**: open the Pause Menu again and choose it to bring everything back. In multiplayer, a demo, a
-  recording or a replay the row is not drawn and cannot be chosen.
-- F11 and F12 work in single-player levels, but not while a session is recorded or replayed, in multiplayer
+  faithful recording (`--record-faithful`) or a faithful replay the row is not drawn and cannot be chosen.
+- F11 and F12 work in single-player levels, but not in faithful recordings (`--record-faithful`), faithful replays, multiplayer
   or a demo. A key-capturing menu or the console can take these keys first. Photo Mode is tested on Linux;
   Windows testing of it is limited (see the release notes).
 
 ### Your own music, end-of-level statistics and rumble
 
 Three things the original team built that the PC release left switched off. Each is an Onslaught CE option, a row of CE Settings or
-a line in `ce.ini` in your user folder, and none of them is ever on while a session is recorded or replayed or in a
+a line in `ce.ini` in your user folder, and none of them is ever on in faithful recordings (`--record-faithful`), faithful replays or in a
 demo.
 
 - **Your own music** (`music_dir`, `music_playtype`): `music_dir=` the full path of a folder of `.ogg` tracks plays
@@ -355,7 +361,7 @@ nothing. If the game or the computer stops in the middle of a save, a hidden tem
 delete it. From 0.1.11, two of the game's automatic saves say so when they fail: after the Pause Menu's Continue the game's own save error
 message ("An error occurred during saving." in English, and in the language you chose) appears for a few seconds at the bottom of
 the screen, and after a language change in the front end it appears in the usual message box. The career you had is unchanged. Its other automatic saves of
-settings (leaving the Options page, after loading a career, a display reset) stay quiet. Recordings and replays show neither.
+settings (leaving the Options page, after loading a career, a display reset) stay quiet. Faithful recordings (`--record-faithful`) and faithful replays show neither.
 
 On Linux, a career filename whose in-game name exceeds 31 16-bit units is omitted from the list because it cannot fit
 the game's name field. The game emits a name-free diagnostic once, normally captured in a launcher log; it does not
@@ -563,7 +569,7 @@ original's fixed-size HUD, from the next level on (a `hud_scale` line written in
 first level starts: restart the game after changing it); or set `BEA_PORT_HUD_SCALE=0`, which also keeps the corner groups
 below in the 4:3 columns. A `BEA_PORT_HUD_SCALE` that is set and not empty decides the size instead of `ce.ini`: a value that
 starts with 0 (`0`, `00`, `05` ...) gives the original's, with the corner groups in the 4:3 columns, and any other value the
-larger HUD; the HUD Size row still shows what `ce.ini` says. Scaling is off in recordings and replays, in split-screen
+larger HUD; the HUD Size row still shows what `ce.ini` says. Scaling is off in faithful recordings (`--record-faithful`), faithful replays, in split-screen
 multiplayer, and when `BEA_PORT_WIDESCREEN=0`. The developer text (`devstats`) is not part of
 this: it grows with the window, as the CE console does, whatever `hud_scale` or `BEA_PORT_HUD_SCALE` says.
 
@@ -578,14 +584,14 @@ drawn at least twice its original size horizontally or vertically (for example, 
 sharper copy of the game's letters, so it can look crisp instead of soft; the letters keep their shapes, sizes and
 places. The text is then deliberately sharper than the original's soft pixels and looks brighter. A font's sharper copy
 is made the first time it is used, which can pause the game for a moment (about a tenth of a second). In ordinary use
-it does not apply in recordings and replays, on 4:3 screens or when `BEA_PORT_WIDESCREEN=0`.
+it does not apply in faithful recordings (`--record-faithful`), faithful replays, on 4:3 screens or when `BEA_PORT_WIDESCREEN=0`.
 
 For testers: to try a screen size your monitor does not offer, set `BEA_PORT_WIDE_TEST=WIDTHxHEIGHT` and start with
 the same size, for example `BEA_PORT_WIDE_TEST=2560x1440 onslaught-ce -- -res 2560 1440`. The game then treats it as
 an available widescreen mode. A valid test switch forces widescreen modes on even during recording or replay and when
 `BEA_PORT_WIDESCREEN=0`; unset it before making a faithful reference tape.
 
-In ordinary use, replays and recordings use the original 4:3 behaviour. The original game shares one random number source
+Faithful recordings (`--record-faithful`) and faithful replays use the original 4:3 behaviour, while CE session recordings (`--record`) keep widescreen enabled. The original game shares one random number source
 between visual effects and play, so a wider view can change the details of a fight; that is expected.
 
 ### Video Options: new-profile defaults, Window mode and Extended terrain
@@ -602,7 +608,7 @@ profile that has no options of its own, and every row can be changed afterwards.
 **Windowed or Fullscreen without a restart.** In Video Options, including from a paused game, choose a **Window mode** and press **Apply**.
 This switches the running game and saves your choice for the next start. **Screen mode** selects the resolution; **Video adapter** selects the graphics device.
 If Window mode says **not changed**, the game kept its previous mode. **Not saved** means the switch worked for this session only.
-If the row says **restart the game**, restart to recover the display or input. Window mode is off in session recordings and replays.
+If the row says **restart the game**, restart to recover the display or input. Window mode is off in faithful recordings (`--record-faithful`) and faithful replays.
 Live switching has been tested on Linux. The Windows build includes the same control. A 0.1.14 candidate switched both ways in a
 software-rendered Windows VM; the switch in this version has not been verified on Windows or on a physical monitor.
 
@@ -735,9 +741,11 @@ the size has been tested), but its unpacked file must stay under 5 MiB, the game
    events have their own limits.
    Home paths and account-name path components are shortened; look the file over before sharing it. It needs no
    administrator access, records no microphone audio and is never uploaded automatically. You can also share the
-   file directly with someone helping you. Replays and session recordings omit the detailed ordinary-play events.
-4. If you recorded the session (below), mention that a recording is available. Do not attach the raw tape or metadata
-   to a public issue: they can contain typed text, careers and other user files. Say in your issue that a recording
+   file directly with someone helping you. Faithful recordings (`--record-faithful`) and replays omit the detailed ordinary-play events; CE session recordings (`--record`) keep session diagnostics active.
+4. If you captured a bug clip with **F9**, drag its single `.zip` from `<user folder>/clips/` straight into the GitHub
+   issue box (it bundles the `.avi` video and scrubbed `.txt` report).
+5. If you recorded the session (below), mention that a recording is available. Do not attach the raw `.tape` or `.tape.json`
+   to a public issue: they can contain typed text and careers. Say in your issue that a recording
    exists and attach nothing; a maintainer will agree an evidence route with you there.
 
 If you set `BEA_USER_DIR` to a folder, look for the log in that folder instead. Logs can include local paths,
@@ -746,23 +754,23 @@ problem.
 
 ## Help make Onslaught CE more faithful
 
-The goal is a game that behaves exactly like the original. We check that by replaying recorded input
-in both and comparing them, and recordings of real play find differences our own test runs miss.
+We compare faithful recordings with the original and reproduce CE bugs from CE session recordings, because recordings of real play find differences our own test runs miss.
 
-- Record one session with `onslaught-ce --record`, or every session with **Onslaught CE > CE Settings > Session
+- Record one CE session with `onslaught-ce --record`, or every session with **Onslaught CE > CE Settings > Session
   Recording** in the Main Menu. That starts the next time you start Onslaught CE (quit the game, then start it again); it puts
-  `record_sessions=1` in `ce.ini` in your user folder. While it is on, each start asks whether to record: **Turn
+  `record_sessions=1` in `ce.ini` in your user folder. For a faithful 4:3 parity recording without the CE layer, run
+  `onslaught-ce --record-faithful`. While `record_sessions=1` is on, each start asks whether to record: **Turn
   recording off** there (or starting with `onslaught-ce --no-record`) turns it off again.
 - By default, recording targets 30 frames a second for play and uses the replay clock. Its menus take the keyboard
   and mouse, and you can type a career's name. Direct gamepad and flight-stick input is disabled during recording and
   replay because the tape does not record it; use the keyboard and mouse. An older tape made with live controller
-  input cannot recover that input and may replay differently. The screen is normally the original 4:3 (no
-  widescreen), and the menus are the original's: the version text, no Onslaught CE menu and no Cheats page, and only
-  cheats typed into a career's name work. These Onslaught CE additions are off too: the larger HUD, the command panel,
-  the tutorial's dodge and zoom
-  cues, and the saved Window mode (Windowed or Fullscreen) from Video Options. By default the game tries to play sound
-  through the audio monitor when a device is available. The [dodging instructions](#dodging) above remain available in
-  this guide.
+  input cannot recover that input and may replay differently. With `--record` (or `record_sessions=1`), Onslaught CE
+  features, widescreen, HUD scaling, session logs, and the Onslaught CE menu stay on (mods remain off for
+  reproducibility). With `--record-faithful`, the screen is the original 4:3 (no widescreen), the menus are the
+  original's (no Onslaught CE menu and no Cheats page, and only cheats typed into a career's name work), and CE
+  additions (the larger HUD, the command panel, tutorial cues, and saved Window mode) are off. By default the game tries
+  to play sound through the audio monitor when a device is available. The [dodging instructions](#dodging) above remain
+  available in this guide.
 - Each completed session is saved in the `tapes` folder of your user folder as
   `YYYYMMDD-HHMMSS-PID-SERIAL.tape` and a `.tape.json` beside it. The final tape appears when the recording closes
   successfully. A failed or interrupted capture may leave an `.incomplete` file; it is not a completed recording.
@@ -770,10 +778,11 @@ in both and comparing them, and recordings of real play find differences our own
   are never replaced.
   The tape records key presses and releases, typed text, mouse movement and buttons, their frame numbers, and the
   game's rendering size for menu mouse input. The `.json` includes the CE version and build, platform and OS, date and
-  time, clock, frame rate and audio-monitor setting, game arguments, and encoded copies of some files in your CE user
-  folder at the start. These can include game options, saved careers and other files in that folder. Session recording
-  does not capture video, game audio or microphone audio. Both files can contain personal information; review them
-  before sharing.
+  time, clock, frame rate, audio-monitor setting, `ce_features` flag, game arguments, and encoded copies of retail
+  start files (options, registry, saved careers) plus, for CE recordings, a filtered safe subset of `ce.ini`
+  gameplay/UI settings (local paths, endpoints, and private keys are stripped). Session recording does not capture
+  video, game audio or microphone audio (use **F9** for video+audio bug clips). Both files can still contain personal
+  information (such as typed text or career names); review them before sharing.
 - Start a report with what differed from the original and roughly when. Do not upload a raw `.tape`/`.tape.json` zip
   publicly: encoded user files can include saves and private information. Say in the issue that the recording exists and
   attach nothing; a maintainer will agree an evidence route with you there (see [CONTRIBUTING.md](CONTRIBUTING.md)).
@@ -845,7 +854,7 @@ its win and debrief. This covers one recorded route; it does not establish compl
 - Complete tutorial parity with the original has not yet been established.
 - Gamepad and flight-stick defaults cover menus, single-player levels and bonus Co-Op ([how](port/controller-input.md)); only
   virtual devices have been tested so far.
-- Widescreen play is not compared with the original (the original has no widescreen); ordinary replays and recordings use 4:3.
+- Widescreen play is not compared with the original (the original has no widescreen); faithful recordings (`--record-faithful`) and faithful replays use 4:3.
 - Default public builds do not offer Internet multiplayer; explicit opt-in network/ICE builds include experimental 2 to
   4 player co-op and versus play. Additional HUD options remain planned.
   Mods work on Linux and Windows ([Mods (experimental)](#mods-experimental)); Windows mods have been exercised under Wine while physical Windows NTFS acceptance remains open.

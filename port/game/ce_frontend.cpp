@@ -1146,7 +1146,7 @@ static const SCeRow	kHelpRows[] = {
 
 static const char kTipsRest[] =
 	"Zoom: mouse wheel, or the gamepad bumpers.\n"
-	"Single-player levels: F11 Photo Mode,\nF12 screenshot, grave key (left of 1): console.\n"
+	"F9: video clip. Single-player: F11 Photo Mode,\nF12 screenshot, grave key (left of 1): console.\n"
 	"F: free camera, with the Free Camera cheat on.";
 // The commander view's line, added to the note only with commander=1 under [Experimental] in ce.ini, that is, only when Commander is on:
 // it names the keys and gives no step to take, and says that the view M opens does not pause the battle (0.1.13's M opened the paused
@@ -1224,18 +1224,18 @@ static const SCePlan kCePlans[] = {
 	 "and local bonus levels are on the Onslaught CE\xa0page."},
 #endif
 	{L"Mods", "The Mods page (Onslaught CE > Mods) lists the mods in your mods folder. Turn each on or off and put them in "
-	 "order there; a change applies the next time you start the game. A mod can replace game files such as textures or change a level, "
+	 "order there. A change applies the next time you start the game. A mod can replace game files such as textures or change a level, "
 	 "and each mod file is checked at start. Mods are off in recordings, replays and network games. Online Battle Engine "
 	 "customization is not available."},
 	{L"Map and Mission Tools", "The experimental native Map Editor opens installed scenes inside CE. Select a supported map, "
      "move named placements, undo changes and save or open a CE project. Terrain shaping, new object creation and mission-script editing "
-     "are still being developed. Saved projects refer to your installed game resources; no original map data is overwritten."},
+     "are still being developed. Saved projects refer to your installed game resources. No original map data is overwritten."},
 	{L"HUD and Display", "On wide screens the HUD's size and placement, and Sharper Text, are in CE Settings today. Window mode is in "
 	 "Video Options. More HUD and display options are planned."},
 	{L"Controls and Tutorial", "More help with dodging and zooming, more control options and better gamepad support are planned. "
 	 "Gamepads already work in single-player levels, and the tutorial's dodge and zoom tips name your own controls (English only)."},
-	{L"CE Features in Recordings", "While a session is recorded the menus are the original's, gamepads are not recorded and most "
-	 "Onslaught CE additions are off. Recording more of them is an idea."},
+	{L"CE Features in Recordings", "Session recordings now keep Onslaught CE menus, settings and modes active for problem "
+	 "reports (gamepads remain off in input tapes). Press F9 any time to record a video clip with audio and\xa0log."},
 	{L"Full Photo Mode", "In single-player levels, F11 hides the HUD and F12 takes a screenshot. "
 	 "A future Photo Mode could add camera\xa0tools."},
 	{L"Other Projects and Ideas", "The separate Godot rebuild is in development. Commander mode (experimental): an optional live view "
@@ -1279,10 +1279,10 @@ static const SCeHint	kPlanHints[CE_NUM_PLANS] = {
 	{L"Co-Op maps work online. Full campaign co-op is planned.", 0},
 #endif
 	{L"Mods are on the Mods page. Battle Engine customization is an idea.", 0},
-	{L"Experimental Map Editor inside CE; mission tools remain planned.", 0},
+	{L"Experimental Map Editor inside CE. Mission tools remain planned.", 0},
 	{L"Some of it works today. More is planned.", 0},
 	{L"Some of it works today. More is planned.", 0},
-	{L"Recordings use the original's menus today.", 0},
+	{L"CE features stay on in tapes, F9 records clips.", 0},
 	{L"An idea. F11 and F12 work today.", 0},
 	{L"The Godot rebuild is in development. Commander mode is experimental.", 0},
 };
@@ -1364,8 +1364,8 @@ static void	RecordNote(bool on)
 	char folder[1024], text[2048];
 	if (on)
 		snprintf(text, sizeof(text), "Session recording starts the next time you start Onslaught CE. Each start then asks whether "
-				 "to record.\n\nWhile recording, gamepads and flight sticks do not work, the game runs at 30 frames a second, and "
-				 "the Onslaught CE menu and cheats are hidden.\n\nRecordings are saved in:\n%s",
+				 "to record.\n\nWhile recording, Onslaught CE features stay on, gamepads and flight sticks do not work, and "
+				 "the game runs at 30 frames a second. Press F9 any time for a video clip with audio.\n\nRecordings are saved in:\n%s",
 				 FolderText(folder, sizeof(folder), "tapes"));
 	else
 		snprintf(text, sizeof(text), "Session recording is off from the next time you start Onslaught CE.");
@@ -1894,7 +1894,10 @@ public:
 	}
 	void CatalogueKeys(WORD key, KeyEventType event)
 	{
-		if (!mActive || mPage != CEP_CATALOGUE_FIND || FEMESSBOX.BeingDisplayed()) return;
+		if (!mActive || mPage != CEP_CATALOGUE_FIND || FEMESSBOX.BeingDisplayed()) {
+			if (FEMESSBOX.BeingDisplayed()) CatalogueTextEnd();
+			return;
+		}
 		CMenuOptionsList *list = mLists.At(mPage);
 		if (event == KEY_EVENT_DOWN) {
 			if (key == DIK_ESCAPE) Back();
@@ -2379,7 +2382,12 @@ public:
 			PortCeExtrasDraw();
 		else if (fade > 0.4f)
 		{
+			const bool suspendFindTrap = (mPage == CEP_CATALOGUE_FIND) && (LT.GetKeytrap() == CatalogueTrap());
+			if (suspendFindTrap)
+				LT.SetKeytrap(NULL);
 			title = mLists.At(mPage)->Render(this);
+			if (suspendFindTrap && mActive && mPage == CEP_CATALOGUE_FIND && !FEMESSBOX.BeingDisplayed() && !LT.GetKeytrap())
+				LT.SetKeytrap(CatalogueTrap());
 			CatalogueSelect(); CatalogueStatus();
 		}
 		LT.SRS(D3DRS_ZWRITEENABLE, TRUE);
@@ -2428,6 +2436,13 @@ public:
 			PortCeCataloguePictureClose();	// a sound plays on after its box: another choice or leaving the list stops it
 			sCeBox = false;
 		}				// the box ShowMessage made is gone: Esc and B are the page's again
+		if (mMenu && mMenu->mActive && mMenu->mPage == CEP_CATALOGUE_FIND)
+		{
+			if (FEMESSBOX.BeingDisplayed())
+				CatalogueTextEnd();
+			else if (!LT.GetKeytrap())
+				LT.SetKeytrap(CatalogueTrap());
+		}
 #ifndef CE_NETWORK_OFF
 		if (state == FEPS_ACTIVE)
 			PortCeNetProcess();

@@ -35,6 +35,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+extern "C" int PortCeRecordFeaturesAllowed(void) __attribute__((weak));
 
 #if !defined(__clang__) && !defined(__GNUC__)
 #error CE photo mode requires weak symbol support for the network boot boundary
@@ -78,7 +79,7 @@ unsigned ProofEvery()
 bool AllowedInLevel()
 {
 	if (!PortCeLayer()) return false;
-	if (!ProofEvery())
+	if (!ProofEvery() && !(PortCeRecordFeaturesAllowed && PortCeRecordFeaturesAllowed()))
 	{
 		if (PortRecording()) return false;
 		for (const char *name : kFenced) if (Present(name)) return false;

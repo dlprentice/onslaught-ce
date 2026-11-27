@@ -180,17 +180,17 @@ struct StrategistRuntime
 		for (uint32_t i = 0u; i < nEnt; ++i)
 		{
 			const CePlayerEntityObs &e = obs.entities[i];
+			if (CePlayerObsEntityIsUsableRepairPad(e) && !hasRepair)
+			{
+				hasRepair = true;
+				repairX = e.pos[0];
+				repairY = e.pos[1];
+			}
 			if (e.isFriendly)
 			{
 				++friendlyCount;
-				if (e.isRepairPad && !hasRepair)
-				{
-					hasRepair = true;
-					repairX = e.pos[0];
-					repairY = e.pos[1];
-				}
 			}
-			else
+			else if (CePlayerObsEntityIsHostile(e))
 			{
 				++hostileCount;
 				if (e.airborne)

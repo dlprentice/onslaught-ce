@@ -20,11 +20,14 @@
 #include <string.h>
 
 extern "C" uint64_t PortCeD3dDeviceGeneration(void) __attribute__((weak));
+extern "C" void PortCeCatalogueListInvalidatePreview(void) __attribute__((weak));
 
 namespace {
 IDirect3DTexture9* picture;
 IDirect3DDevice9* pictureDevice;
 uint64_t pictureGen;
+bool pictureSlotValid;
+unsigned pictureSlot;
 IDirect3DTexture9* checkerTex;
 IDirect3DDevice9* checkerDevice;
 uint64_t checkerGen;
@@ -96,14 +99,8 @@ int Upload(const unsigned char* dds, size_t bytes, const CeAssetTextureHeader* h
     sourceW = h->width; sourceH = h->height;
     return 1;
 }
-}
 
-void PortCeCataloguePreviewClose() {
-    PortCeCatalogueSoundsStop();
-    PortCeCataloguePictureClose();
-}
-
-void PortCeCataloguePictureClose() {
+void ReleasePictureGpu() {
     if (picture) { picture->Release(); picture = NULL; }
     pictureDevice = NULL;
     pictureGen = 0;
@@ -113,11 +110,38 @@ void PortCeCataloguePictureClose() {
     sourceW = sourceH = 0;
 }
 
+void EnsurePictureReady(IDirect3DDevice9* device) {
+    SyncDeviceResources(device);
+    if (!picture && pictureSlotValid && device) {
+        if (!PortCeCatalogueReadTexture(pictureSlot, Upload, device)) {
+            pictureSlotValid = false;
+            pictureSlot = 0;
+        }
+    }
+}
+}
+
+void PortCeCataloguePreviewClose() {
+    PortCeCatalogueSoundsStop();
+    PortCeCataloguePictureClose();
+}
+
+void PortCeCataloguePictureClose() {
+    pictureSlotValid = false;
+    pictureSlot = 0;
+    ReleasePictureGpu();
+}
+
 bool PortCeCataloguePreviewOpen(unsigned slot) {
     PortCeCataloguePreviewClose();
     IDirect3DDevice9* device = LT.GetDevice();
     const bool ok = device && PortCeCatalogueReadTexture(slot, Upload, device);
-    if (!ok) PortCeCataloguePreviewClose();
+    if (ok) {
+        pictureSlotValid = true;
+        pictureSlot = slot;
+    } else {
+        PortCeCataloguePreviewClose();
+    }
     return ok;
 }
 
@@ -204,7 +228,7 @@ void DrawPreviewQuads(float x, float y, float w, float h, bool checker) {
 }
 
 void PortCeCataloguePreviewDraw(float above) {
-    SyncDeviceResources(LT.GetDevice());
+    EnsurePictureReady(LT.GetDevice());
     if (!picture || !LT.GetDevice()) return;
     const float foot = above - 5.f, top = foot - 118.f > 106.f ? foot - 118.f : 106.f;
     if (foot - top < 12.f) return;
@@ -221,7 +245,10 @@ void PortCeCataloguePreviewDraw(float above) {
 bool PortCeCataloguePreviewDrawIn(float left, float top, float right, float bottom, bool with_picture, bool checker) {
     FRONTEND.DrawPanel(left, top, right, bottom, 0.55f, 0xa0000000);
     FRONTEND.DrawBox(left, top, right, bottom, 0x80ffffff, 2.f, 0.5f);
-    SyncDeviceResources(LT.GetDevice());
+    if (with_picture)
+        EnsurePictureReady(LT.GetDevice());
+    else
+        SyncDeviceResources(LT.GetDevice());
     if (!with_picture || !picture || !LT.GetDevice() || !sourceW || !sourceH) return false;
     const float room_w = right - left - 12.f, room_h = bottom - top - 12.f;
     float w = room_w, h = w * sourceH / sourceW;
@@ -721,7 +748,9 @@ void PortCeCatalogueSpeechLinesEnd()
 
 extern "C" void PortCeCataloguePreviewDeleteDeviceObjects(void)
 {
-    PortCeCataloguePictureClose();
+    ReleasePictureGpu();
+    if (PortCeCatalogueListInvalidatePreview)
+        PortCeCatalogueListInvalidatePreview();
 }
 #else
 // A private build has no Catalogue (it is a CE page); these let ce_catalogue_menu.cpp and ce_catalogue_sounds.cpp link there.
