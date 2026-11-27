@@ -473,6 +473,7 @@ struct Game {
     CCONTROLLER* GetController(int) { return &controller; }
     int GetCurrentLevel() { return level; }
     int GetGameState() { return 3; }		// the game's playing state
+    int GetNPlayers() { return 1; }
     void Tick() {
         if (!paused) { ++simulation_ticks; player->pilot->life -= 1; }
     }
@@ -489,17 +490,20 @@ struct GameAccess {
     static bool Game::* PauseField() { ++pause_field_reads; return &Game::paused; }
 };
 int GameAccess::pause_field_reads = 0;
-int mouse_starts = 0, mouse_stops = 0, draw_starts = 0, draw_ends = 0;
+int mouse_starts = 0, mouse_stops = 0, mouse_input_active = -1, draw_starts = 0, draw_ends = 0;
 void InitMouse() { ++mouse_starts; }
 void ShutdownMouse() { ++mouse_stops; }
+void SetMouseInputActive(int active) { mouse_input_active = active; }
+enum { QT_NONE = 0, QT_RESTART_LEVEL = 4 };
 // The live view's own pointer (ce_cmdmap.cpp, outside the block): its start as the view opens is counted; the scope that holds MOUSE_X and MOUSE_Y
 // at that pointer for one entry does nothing here, where the authored pointer is written to them directly.
 int live_pointer_starts = 0;
 void LivePointerStart() { ++live_pointer_starts; }
-struct LivePointer { LivePointer() {} };
+struct LivePointer { LivePointer(bool = false) {} };
 // The Commander match's level end (ce_cmdmatch.cpp): counted.
 int match_level_ends = 0;
-void CeCmdMatchLevelEnd() { ++match_level_ends; }
+bool last_match_restarting = false;
+void CeCmdMatchLevelEnd(bool restarting) { ++match_level_ends; last_match_restarting = restarting; }
 struct Sink {} gSink;
 void RelinquishBuriedController(CCONTROLLER* controller, void* target) {
     if (!controller) return;
@@ -509,9 +513,24 @@ void RelinquishBuriedController(CCONTROLLER* controller, void* target) {
 bool gOpen = false, gOpening = false, gShift = false, gLayoutLogged = false;
 bool gEscClosed = false, gDown[256] = {};
 int gArmed = 0, gSelected = 0, gHover=-1, gCount = 0, gKeptLevel = -1;
+CeEntityHandle gSelectedHandle = kCeEntityHandleInvalid;
 // The selection and the numbered groups (ce_cmdmap.cpp's own records; the functions that keep them are the real ones, extracted).
 CeCmdSel gSel = {};
+CeEntityHandle gSelHandles[kCeSelMax] = {};
 CeCmdGroups gGroups = {};
+CeEntityHandle gGroupHandles[kCeSelGroups][kCeSelMax] = {};
+bool gSinkOnPad1 = false;
+int gLevelEndQuit = QT_NONE;
+const CeCmdSquad *ByOrdinal(int ordinal);
+CeEntityHandle SquadHandleOf(int ordinal) {
+    const CeCmdSquad *s = ByOrdinal(ordinal);
+    return s ? s->handle : kCeEntityHandleInvalid;
+}
+bool SquadHandleMatches(const CeCmdSquad *s, CeEntityHandle expected) {
+    if (!s) return false;
+    if (expected == kCeEntityHandleInvalid || s->handle == kCeEntityHandleInvalid) return true;
+    return s->handle == expected;
+}
 // The Commander match (ce_cmdmatch.h): the battle as the live view's header shows it, and the match's own step after each frame, counted (it is
 // ce_cmdmap.cpp's MatchFrame, outside the extracted text; its rules are the match runner's to show in a game).
 CeCmdMatchState gMatch = {};
@@ -741,6 +760,7 @@ void BeginDraw() { VERIFY(false); }		// the paused map's drawing state: the live
 void EndDraw() { VERIFY(false); }
 bool Trap(WORD key, int event);
 void ClearUnitGroupSlot(int);
+int ProjectUnitGroupToSquads(int, CeCmdSel *, CeEntityHandle *);
 
 // The Linux Windows compatibility headers expose these function macros.
 // Exercise the actual consumer under that same preprocessor constraint.

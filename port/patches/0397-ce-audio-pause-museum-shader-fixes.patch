@@ -488,56 +488,77 @@
  int	COggFileRead::Decode(BYTE *dest, UINT size)	// FUNCTION: 0x00524180
 --- a/PCMusicStream.cpp
 +++ b/PCMusicStream.cpp
-@@ -206,6 +206,7 @@
- {
+@@ -55,6 +55,7 @@
+ static int	MusicStreamHandle(DWORD result);
  #ifdef CE_VERSION
- 	CPortMusicStreamGuard guard;
-+	static unsigned sCeConsecutiveOpenFailures = 0;
- 	if (sCeStreamLockReady)
- 	{
- 		if (result == 0)
-@@ -262,8 +263,14 @@
+ bool PortCeLayer();
++static unsigned sCeConsecutiveOpenFailures;
+ static bool sCeStreamAdmission, sCeStreamLockReady;
+ static bool sCeStreamPending, sCeStreamStopped;
+ static CRITICAL_SECTION sCeStreamLock;
+@@ -262,8 +263,21 @@
  				{
  #ifdef CE_VERSION
  					PortSessionAsset(PORT_SESSION_MUSIC, "empty initial read", sTrackName);
 -#endif
-+					++sCeConsecutiveOpenFailures;
-+					if (sCeConsecutiveOpenFailures <= 16u)
-+						SetMusicStreamFinished(true);
++					if (sCeStreamAdmission)
++					{
++						++sCeConsecutiveOpenFailures;
++						if (sCeConsecutiveOpenFailures <= 16u)
++							SetMusicStreamFinished(true);
++						else
++							PortSessionLog(PORT_SESSION_MUSIC, true, "stopping after %u consecutive music open failures", sCeConsecutiveOpenFailures);
++					}
 +					else
-+						PortSessionLog(PORT_SESSION_MUSIC, true, "stopping after %u consecutive music open failures", sCeConsecutiveOpenFailures);
++					{
++						SetMusicStreamFinished(true);
++					}
 +#else
  					SetMusicStreamFinished(true);
 +#endif
  					StopMusicStream();
  					sBuffer->Unlock(data1, size1, data2, size2);
  					break;
-@@ -288,12 +295,20 @@
+@@ -274,6 +288,9 @@
+ 					sSilentHalves++;
  				}
- #endif
- 				sBytesStreamed += size1;
+ 				sBuffer->Unlock(data1, size1, data2, size2);
 +#ifdef CE_VERSION
 +				sCeConsecutiveOpenFailures = 0;
 +#endif
- 			}
- 			else
+ 				sBuffer->SetCurrentPosition(0);
+ 				HRESULT portPlay = sBuffer->Play(0, 0, DSBPLAY_LOOPING);
+ #ifdef CE_VERSION
+@@ -293,6 +310,14 @@
  			{
  #ifdef CE_VERSION
  				PortSessionAsset(PORT_SESSION_MUSIC, "missing or unsupported format", sTrackName, -1);
-+				++sCeConsecutiveOpenFailures;
-+				if (sCeConsecutiveOpenFailures <= 16u)
-+					SetMusicStreamFinished(true);
-+				else
-+					PortSessionLog(PORT_SESSION_MUSIC, true, "stopping after %u consecutive music open failures", sCeConsecutiveOpenFailures);
++				if (sCeStreamAdmission)
++				{
++					++sCeConsecutiveOpenFailures;
++					if (sCeConsecutiveOpenFailures <= 16u)
++						SetMusicStreamFinished(true);
++					else
++						PortSessionLog(PORT_SESSION_MUSIC, true, "stopping after %u consecutive music open failures", sCeConsecutiveOpenFailures);
++				}
  #endif
  				StopMusicStream();
  			}
- 			break;
-@@ -385,6 +400,7 @@
- 		case 3:		// shut down
+@@ -424,6 +449,9 @@
+ 
+ 	ZeroMemory(&wfx, sizeof(wfx));
+ 	ZeroMemory(&desc, sizeof(desc));
++#ifdef CE_VERSION
++	sCeConsecutiveOpenFailures = 0;
++#endif
+ 	wfx.wFormatTag = WAVE_FORMAT_PCM;
+ 	wfx.nChannels = 2;
+ 	wfx.nSamplesPerSec = 44100;
+@@ -526,6 +554,7 @@
+ 		sSilentHalves = 0;
+ 	}
  #ifdef CE_VERSION
- 			PortRefillForget(); // quit also retires the guarded observation
-+			sCeConsecutiveOpenFailures = 0;
- #endif
- 			sThreadAwake = FALSE;
- 			return 1;
++	sCeConsecutiveOpenFailures = 0;
+ 	if (sCeStreamLockReady)
+ 	{
+ 		sCeStreamLockReady = false;

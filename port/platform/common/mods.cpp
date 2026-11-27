@@ -1658,7 +1658,51 @@ HANDLE OpenChild(HANDLE parent, const std::string &name, bool folder)
 			break;
 		Sleep(100);	// a scanner or an indexer holding a just-written file, or an editor saving it: twice more, then it is refused like any other file that cannot be opened
 	}
-	return status < 0 || !h ? INVALID_HANDLE_VALUE : h;
+	if (status < 0 || !h)
+		return INVALID_HANDLE_VALUE;
+	if (!folder)
+	{
+		FILE_ATTRIBUTE_TAG_INFO tag;
+		memset(&tag, 0, sizeof tag);
+		if (GetFileInformationByHandleEx(h, FileAttributeTagInfo, &tag, sizeof tag) &&
+			!(tag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
+			!ce_win_tag_is_link(tag.FileAttributes, tag.ReparseTag) &&
+			ce_win_handle_needs_hydration(h, tag.FileAttributes))
+		{
+			// Verified non-link cloud placeholder: reopen leaf under the same held parent without
+			// OBJ_DONT_REPARSE / FILE_OPEN_REPARSE_POINT so cldflt.sys hydrates data, then verify same file ID.
+			OBJECT_ATTRIBUTES hoa = oa;
+			hoa.Attributes = OBJ_CASE_INSENSITIVE;
+			const ULONG hoptions = FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE;
+			HANDLE hyd = NULL;
+			LONG hstatus = 0;
+			for (int htry = 0; htry < 3; htry++)
+			{
+				hyd = NULL;
+				hstatus = create(&hyd, access, &hoa, &io, NULL, 0, share, FILE_OPEN, hoptions, NULL, 0);
+				if (hstatus != (LONG)0xC0000043 /* STATUS_SHARING_VIOLATION */)
+					break;
+				Sleep(100);
+			}
+			FILE_ATTRIBUTE_TAG_INFO htag;
+			memset(&htag, 0, sizeof htag);
+			bool ok = hstatus >= 0 && hyd &&
+					  GetFileType(hyd) == FILE_TYPE_DISK &&
+					  GetFileInformationByHandleEx(hyd, FileAttributeTagInfo, &htag, sizeof htag) &&
+					  !(htag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
+					  !ce_win_tag_is_link(htag.FileAttributes, htag.ReparseTag) &&
+					  ce_win_same_file_id(h, hyd);
+			CloseHandle(h);
+			if (!ok)
+			{
+				if (hyd)
+					CloseHandle(hyd);
+				return INVALID_HANDLE_VALUE;
+			}
+			h = hyd;
+		}
+	}
+	return h;
 }
 
 // What an opened handle is: a plain folder (folder) or a regular disk file with one name (a file), never a link; for a file its

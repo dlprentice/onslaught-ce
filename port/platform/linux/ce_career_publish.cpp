@@ -321,7 +321,7 @@ bool	readBackMatches(int fd, const unsigned char *data, size_t size)
 }
 
 // Collects lower-cased .bes names across savegames in dirFd; returns false on unsafe entries or errors.
-bool	collectCareerNames(int dirFd, bool allowMissing, std::set<std::string> &out)
+bool	collectCareerNames(int dirFd, bool allowMissing, std::set<std::string> &out, size_t limit = kCareerLimit)
 {
 	Fd saves(openat(dirFd, "savegames", O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW));
 	if (saves.n < 0)
@@ -349,7 +349,7 @@ bool	collectCareerNames(int dirFd, bool allowMissing, std::set<std::string> &out
 			continue;
 		if (!hasBesExt(name))
 			continue;
-		if (++careers > kCareerLimit)
+		if (++careers > limit)
 			return false;
 		struct stat st{};
 		if (fstatat(saves.n, name.c_str(), &st, AT_SYMLINK_NOFOLLOW) != 0 ||
@@ -851,7 +851,7 @@ CeCareerPublishStatus	CeCareerPublishSuggest(CeCareerPublishKind kind, const cha
 		return CE_PUBLISH_REFUSED;
 
 	std::set<std::string> taken;
-	if (!collectCareerNames(userFd.n, true, taken) || !collectCareerNames(gameFd.n, true, taken))
+	if (!collectCareerNames(userFd.n, true, taken, kCareerLimit - 1) || !collectCareerNames(gameFd.n, true, taken))
 		return CE_PUBLISH_REFUSED;
 	if (!boundDir(userFd.n, user, true) || !boundDir(gameFd.n, game, true))
 		return CE_PUBLISH_CHANGED;
@@ -955,7 +955,7 @@ CeCareerPublishResult	CeCareerPublishNew(const CeCareerPublishRequest *request)
 				require(!isAncestorOrSame(protectedDir, rootFd.n) && !isAncestorOrSame(rootFd.n, protectedDir));
 			require(!isAncestorOrSame(userFd.n, gameFd.n) && !isAncestorOrSame(gameFd.n, userFd.n));
 			std::set<std::string> taken;
-			require(collectCareerNames(userFd.n, true, taken) && collectCareerNames(gameFd.n, true, taken));
+			require(collectCareerNames(userFd.n, true, taken, kCareerLimit - 1) && collectCareerNames(gameFd.n, true, taken));
 			require(!taken.count(lowerAscii(target)), CE_PUBLISH_OCCUPIED);
 			require(!entryExists(slotsFd.n, target) && !entryExists(origFd.n, target), CE_PUBLISH_OCCUPIED);
 			needBackup = hasBackupableCareer(userFd.n, gameFd.n);
@@ -1071,7 +1071,7 @@ CeCareerPublishResult	CeCareerPublishNew(const CeCareerPublishRequest *request)
 		require(request->namePermitted(request->owner, sourceName.c_str(), target.c_str()), CE_PUBLISH_BAD_NAME);
 		{
 			std::set<std::string> preStageTaken;
-			require(collectCareerNames(userFd.n, true, preStageTaken) &&
+			require(collectCareerNames(userFd.n, true, preStageTaken, kCareerLimit - 1) &&
 					collectCareerNames(gameFd.n, true, preStageTaken));
 			require(!preStageTaken.count(lowerAscii(target)), CE_PUBLISH_OCCUPIED);
 			require(!entryExists(slotsFd.n, target) && !entryExists(origFd.n, target), CE_PUBLISH_OCCUPIED);
@@ -1102,7 +1102,7 @@ CeCareerPublishResult	CeCareerPublishNew(const CeCareerPublishRequest *request)
 		require(readBackMatches(stage.n, request->bytes, CE_CAREER_SIZE));
 
 		std::set<std::string> taken;
-		require(collectCareerNames(userFd.n, false, taken) && collectCareerNames(gameFd.n, true, taken));
+		require(collectCareerNames(userFd.n, false, taken, kCareerLimit - 1) && collectCareerNames(gameFd.n, true, taken));
 		require(!taken.count(lowerAscii(target)), CE_PUBLISH_OCCUPIED);
 		require(!entryExists(slotsFd.n, target) && !entryExists(origFd.n, target), CE_PUBLISH_OCCUPIED);
 		verifyRoots();
@@ -1111,8 +1111,14 @@ CeCareerPublishResult	CeCareerPublishNew(const CeCareerPublishRequest *request)
 		require(!(request->cancelled && request->cancelled(request->owner)), CE_PUBLISH_CANCELLED);
 		require(request->namePermitted(request->owner, sourceName.c_str(), target.c_str()), CE_PUBLISH_BAD_NAME);
 
-		// Atomic non-replacing publication: linkat with AT_EMPTY_PATH never overwrites an existing entry.
-		if (linkat(stage.n, "", slotsFd.n, target.c_str(), AT_EMPTY_PATH) != 0)
+		// Atomic non-replacing publication via /proc/self/fd (works unprivileged on Linux < 6.10);
+		// fall back to AT_EMPTY_PATH only on ENOENT (for /proc-less >= 6.10 sandboxes).
+		char fdPath[64];
+		std::snprintf(fdPath, sizeof(fdPath), "/proc/self/fd/%d", stage.n);
+		int linkRc = linkat(AT_FDCWD, fdPath, slotsFd.n, target.c_str(), AT_SYMLINK_FOLLOW);
+		if (linkRc != 0 && errno == ENOENT)
+			linkRc = linkat(stage.n, "", slotsFd.n, target.c_str(), AT_EMPTY_PATH);
+		if (linkRc != 0)
 			throw Failure{errno == EEXIST ? CE_PUBLISH_OCCUPIED : CE_PUBLISH_REFUSED};
 		published = true;
 		copyText(out.newFile, sizeof(out.newFile), target.c_str());

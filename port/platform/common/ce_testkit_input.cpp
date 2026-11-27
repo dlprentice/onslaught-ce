@@ -32,16 +32,28 @@ void TakeMouse(long *dx, long *dy, unsigned *buttons)
 	*buttons = sHeld;
 	sTakeX = sTakeY = 0;
 }
+void ResetLevelMouse()
+{
+	sHeld = 0;
+	sTakeX = 0;
+	sTakeY = 0;
+}
 }
 
 // The menus' and the editor's mouse: kind 0 moves the pointer to window point x,y, 1 presses and 2 releases the left button
-// there, through SDL's queue. The level's mouse, which the game reads from the DirectInput poll (dinput.cpp): kind 3 adds a
-// relative movement x,y, 4 holds and 5 lets go of the left button, all taken at the next poll (testhooks.h mouseTake).
+// there, through SDL's queue (6/7 for right button). The level's mouse, which the game reads from the DirectInput poll
+// (dinput.cpp): kind 3 adds a relative movement x,y, 4/5 hold/release left button (bit 0), 8/9 hold/release right button
+// (bit 1), 10/11 hold/release middle button (bit 2), 12 clears all DirectInput mouse state.
 void PortTestKitMouse(int kind, float x, float y)
 {
 	if (kind == 3) { sTakeX += long(x); sTakeY += long(y); return; }
 	if (kind == 4) { sHeld |= 1u; return; }
 	if (kind == 5) { sHeld &= ~1u; return; }
+	if (kind == 8) { sHeld |= 2u; return; }
+	if (kind == 9) { sHeld &= ~2u; return; }
+	if (kind == 10) { sHeld |= 4u; return; }
+	if (kind == 11) { sHeld &= ~4u; return; }
+	if (kind == 12) { ResetLevelMouse(); return; }
 	SDL_Event f{};
 	if (kind == 0) { f.type = SDL_EVENT_MOUSE_MOTION; f.motion.x = x; f.motion.y = y; }
 	else
@@ -65,5 +77,12 @@ bool JourneyActive()
 	return steps && *steps;
 }
 PortTestHooks sKitHooks = {CeTestKitFrame, CeTestKitShotPath, CeTestKitShotDone, CeTestKitWantsQuit, TakeMouse, JourneyActive};
-struct InstallHooks { InstallHooks() { gPortTestHooks = &sKitHooks; } } sInstall;
+struct InstallHooks
+{
+	InstallHooks()
+	{
+		gPortTestHooks = &sKitHooks;
+		CeTestKitRegisterCleanup(ResetLevelMouse);
+	}
+} sInstall;
 }

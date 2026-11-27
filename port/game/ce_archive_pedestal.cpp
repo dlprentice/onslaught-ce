@@ -856,7 +856,14 @@ void RuntimeUpdate(CeMuseumTour::Wing wing, float dtSeconds, bool paused,
     if (!ActiveInWing(d->state, wing)) {
         d->state.hoveredButton = -1;
         d->state.visitorNear = false;
+        d->state.fireHeld = false;
+        d->state.fireCaptured = false;
         return;
+    }
+
+    if (paused) {
+        d->state.fireHeld = false;
+        d->state.fireCaptured = false;
     }
 
     if (!d->hasLoaded || d->loadedGeneration != d->state.swapGeneration)

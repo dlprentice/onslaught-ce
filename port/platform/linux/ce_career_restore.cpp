@@ -536,18 +536,36 @@ struct Session {
         s.all.push_back(std::move(m));
       }
     }
-    struct stat opt{};
-    if (fstatat(user.n, kOptions, &opt, AT_SYMLINK_NOFOLLOW) == 0) {
-      Member m;
-      m.name = kOptions;
-      m.user = true;
-      m.bytes = read(user.n, kOptions, m.identity);
-      total += m.bytes.size();
-      require(s.all.size() < kCountLimit && total <= kSetLimit);
-      s.visible[m.name] = s.all.size();
-      s.all.push_back(std::move(m));
-    } else
-      require(errno == ENOENT);
+    {
+      Fd userCopy(openat(user.n, ".", O_RDONLY | O_CLOEXEC | O_DIRECTORY));
+      require(userCopy.n >= 0);
+      DIR *rawUser = fdopendir(userCopy.n);
+      require(rawUser != nullptr);
+      userCopy.n = -1;
+      std::unique_ptr<DIR, int (*)(DIR *)> userStream(rawUser, closedir);
+      std::string optName;
+      size_t userScanned = 0;
+      errno = 0;
+      while (dirent *ent = readdir(rawUser)) {
+        require(++userScanned <= kDirectoryEntryLimit);
+        std::string name = ent->d_name;
+        if (lower(name) == kOptions) {
+          require(optName.empty()); // refuse ambiguous case-duplicate DefaultOptions.bea files
+          optName = std::move(name);
+        }
+      }
+      require(errno == 0);
+      if (!optName.empty()) {
+        Member m;
+        m.name = optName;
+        m.user = true;
+        m.bytes = read(user.n, optName, m.identity);
+        total += m.bytes.size();
+        require(s.all.size() < kCountLimit && total <= kSetLimit);
+        s.visible[m.name] = s.all.size();
+        s.all.push_back(std::move(m));
+      }
+    }
     return s;
   }
   void check(const std::string &exclude = "", bool allowCancel = true) const {
@@ -742,7 +760,7 @@ std::string manifest(Session &s, const char *reason) {
     if (!first)
       out += ',';
     first = false;
-    std::string parent = m.name == kOptions
+    std::string parent = lower(m.name) == kOptions
                              ? s.r.user
                              : (m.user ? s.r.user : s.r.game) + "/savegames";
     out += "{\"Name\":" + quoted(m.name) +
@@ -973,7 +991,14 @@ CeCareerRestoreAsNew(const CeCareerRestoreRequest &request) {
     require(request.namePermitted(request.owner, request.sourceName, target));
     session.roots();
     require(!exists(session.original.n, target), Status::Occupied);
-    if (linkat(stage.n, "", session.slots.n, target.c_str(), AT_EMPTY_PATH))
+    char fdPath[64];
+    std::snprintf(fdPath, sizeof(fdPath), "/proc/self/fd/%d", stage.n);
+    int linkRc = linkat(AT_FDCWD, fdPath, session.slots.n, target.c_str(),
+                        AT_SYMLINK_FOLLOW);
+    if (linkRc != 0 && errno == ENOENT)
+      linkRc =
+          linkat(stage.n, "", session.slots.n, target.c_str(), AT_EMPTY_PATH);
+    if (linkRc)
       throw Failure{errno == EEXIST ? Status::Occupied : Status::Refused};
     published = true;
     out.newFile = target;

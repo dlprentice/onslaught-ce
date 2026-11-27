@@ -13,13 +13,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <vector>
-#ifndef CE_NETWORK_OFF
-#include "../../network/compatibility.h"
-#endif
 
-#ifndef _WIN32
-extern "C" FILE *port_fopen(const char *name, const char *mode); // platform/linux/files.cpp
-#endif
+extern "C" FILE *port_fopen(const char *name, const char *mode); // platform/{linux,windows}/files.cpp
 
 namespace {
 
@@ -815,18 +810,8 @@ extern "C" HRESULT WINAPI D3DXCreateTextureFromFileExA(LPDIRECT3DDEVICE9 pDevice
         *ppTexture = NULL;
     if (!pDevice || !pSrcFile || !ppTexture)
         return D3DERR_INVALIDCALL;
-#ifndef _WIN32
-    // Loose textures use the same game/user roots, separators and case matching as the game's other reads.
+    // Loose textures use the same game/user roots, separators, case matching, mods, and compatibility checks as other reads.
     FILE *f = port_fopen(pSrcFile, "rb");
-#else
-#ifndef CE_NETWORK_OFF
-    if (!CE_CompatibilityObserveAuthoredRead(pSrcFile, 0, NULL, 0)) return D3DXERR_INVALIDDATA;
-#endif
-    FILE *f = fopen(pSrcFile, "rb");
-#ifndef CE_NETWORK_OFF
-    if (f && !CE_CompatibilityValidateOpenedFile(pSrcFile, f, NULL, 0)) { fclose(f); f = NULL; }
-#endif
-#endif
     if (!f)
         return D3DXERR_INVALIDDATA;
     try

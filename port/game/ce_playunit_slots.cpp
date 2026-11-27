@@ -37,20 +37,92 @@ bool IsNormalSquad(CSquad *squad)
 }
 
 // Headless AI slot possession drives units via ground-projected GoToPoint(MAP.Collide(dst));
-// only mobile ground units (never aircraft, naval vessels, or stationary turrets) are eligible.
+// only mobile non-deploying ground units (never aircraft, naval vessels, stationary turrets,
+// or deploying artillery) are eligible.
 bool IsEligibleGroundDriveClass(int classId)
 {
 	return classId == CE_PLAYUNIT_CLASS_TANK ||
-	       classId == CE_PLAYUNIT_CLASS_INFANTRY ||
-	       classId == CE_PLAYUNIT_CLASS_ARTILLERY;
+	       classId == CE_PLAYUNIT_CLASS_INFANTRY;
 }
 
 bool IsEligibleGroundDriveUnit(const CUnit *u)
 {
 	if (!u) return false;
 	const unsigned kind = static_cast<unsigned>(const_cast<CUnit *>(u)->GetThingType());
-	return (kind & THING_TYPE_GROUND_UNIT) != 0u &&
-	       (kind & (THING_TYPE_AIR_UNIT | THING_TYPE_NAVAL | THING_TYPE_EMPLACEMENT)) == 0u;
+	if ((kind & THING_TYPE_GROUND_UNIT) == 0u ||
+	    (kind & (THING_TYPE_AIR_UNIT | THING_TYPE_NAVAL | THING_TYPE_EMPLACEMENT)) != 0u)
+		return false;
+	const CUnitData *d = const_cast<CUnit *>(u)->GetUnitData();
+	if (d && ((d->mUnknown108 != 0) || (d->mName && strstr(d->mName, "Artillery") != NULL)))
+		return false;
+	return true;
+}
+
+// Clamps and validates a headless AI drive destination onto dry playable map ground (strictly
+// above MAP.GetWaterLevel() and inside map/extents bounds; BEA +Z is down so dry means z < waterZ).
+// If the clamped target is over water, backs off along the ray toward the unit's current position.
+bool FindDryPlayableGroundDestination(const CUnit *u, float goalX, float goalY, FVector *outDst)
+{
+	if (!u || !outDst || !isfinite(goalX) || !isfinite(goalY))
+		return false;
+	if (MAP.mGridWidth <= 2 || MAP.mGridHeight <= 2)
+		return false;
+
+	float minX = 1.f;
+	float maxX = float(MAP.mGridWidth - 2);
+	float minY = 1.f;
+	float maxY = float(MAP.mGridHeight - 2);
+	if (SExtents *e = MAP.GetExtents())
+	{
+		if (e->mMaxX > e->mMinX + 4 && e->mMaxY > e->mMinY + 4)
+		{
+			const float eMinX = float(e->mMinX + 2);
+			const float eMaxX = float(e->mMaxX - 2);
+			const float eMinY = float(e->mMinY + 2);
+			const float eMaxY = float(e->mMaxY - 2);
+			if (eMinX > minX) minX = eMinX;
+			if (eMaxX < maxX) maxX = eMaxX;
+			if (eMinY > minY) minY = eMinY;
+			if (eMaxY < maxY) maxY = eMaxY;
+		}
+	}
+	if (minX >= maxX || minY >= maxY)
+		return false;
+
+	auto clampCoord = [](float v, float lo, float hi) -> float {
+		return (v < lo) ? lo : ((v > hi) ? hi : v);
+	};
+	const float waterZ = MAP.GetWaterLevel();
+	const float dryMargin = 0.5f;
+	auto tryDry = [&](float x, float y) -> bool {
+		const float cx = clampCoord(x, minX, maxX);
+		const float cy = clampCoord(y, minY, maxY);
+		FVector p(cx, cy, 0.f);
+		p.Z = MAP.Collide(p);
+		if (!isfinite(p.Z) || p.Z >= waterZ - dryMargin)
+			return false;
+		*outDst = p;
+		return true;
+	};
+
+	const float cx = clampCoord(goalX, minX, maxX);
+	const float cy = clampCoord(goalY, minY, maxY);
+	if (tryDry(cx, cy))
+		return true;
+
+	const FVector cur = const_cast<CUnit *>(u)->GetPos();
+	if (!isfinite(cur.X) || !isfinite(cur.Y))
+		return false;
+	static const float kFractions[3] = { 0.75f, 0.50f, 0.25f };
+	for (int i = 0; i < 3; ++i)
+	{
+		const float t = kFractions[i];
+		const float rx = cur.X + (cx - cur.X) * t;
+		const float ry = cur.Y + (cy - cur.Y) * t;
+		if (tryDry(rx, ry))
+			return true;
+	}
+	return false;
 }
 
 void FillFacts(CUnit *u, int allegiance, CePlayUnitFacts &f)
@@ -247,9 +319,8 @@ bool CePlayUnitSlotDrive(uint8_t slot, float goalX, float goalY, bool fire, floa
 	}
 	if (isfinite(goalX) && isfinite(goalY) && (simTick == 0u || simTick >= s->lastOrderTick + 6u))
 	{
-		FVector dst(goalX, goalY, 0.f);
-		dst.Z = MAP.Collide(dst);
-		if (isfinite(dst.Z))
+		FVector dst(0.f, 0.f, 0.f);
+		if (FindDryPlayableGroundDestination(u, goalX, goalY, &dst))
 		{
 			u->GoToPoint(dst, FALSE);
 			s->lastOrderTick = simTick;
@@ -269,6 +340,22 @@ CeEntityHandle CePlayUnitSlotUnit(uint8_t slot)
 {
 	const CeUnitPossessionSlot *s = gSlots.Get(slot);
 	return (s && s->active) ? s->unitHandle : kCeEntityHandleInvalid;
+}
+
+bool CePlayUnitSlotsIsLeased(const CUnit *u)
+{
+	if (!u || !PortCeLayer()) return false;
+	const CeEntityHandle h = CeEntityHandleLookup(u);
+	return h != kCeEntityHandleInvalid && gSlots.IsUnitLeased(h);
+}
+
+void CePlayUnitSlotsReleaseUnit(CUnit *u)
+{
+	if (!u) return;
+	const CeEntityHandle h = CeEntityHandleLookup(u);
+	int ownerSlot = -1;
+	if (h != kCeEntityHandleInvalid && gSlots.IsUnitLeased(h, &ownerSlot))
+		CePlayUnitSlotRelease(static_cast<uint8_t>(ownerSlot));
 }
 
 void CePlayUnitSlotsTick(uint32_t)
@@ -297,6 +384,8 @@ bool CePlayUnitSlotTake(uint8_t, int, CeEntityHandle, const char **) { return fa
 bool CePlayUnitSlotDrive(uint8_t, float, float, bool, float, float, float, uint32_t) { return false; }
 void CePlayUnitSlotRelease(uint8_t) {}
 CeEntityHandle CePlayUnitSlotUnit(uint8_t) { return kCeEntityHandleInvalid; }
+bool CePlayUnitSlotsIsLeased(const CUnit *) { return false; }
+void CePlayUnitSlotsReleaseUnit(CUnit *) {}
 void CePlayUnitSlotsTick(uint32_t) {}
 void CePlayUnitSlotsReset() {}
 

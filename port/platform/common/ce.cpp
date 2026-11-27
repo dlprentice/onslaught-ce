@@ -244,12 +244,13 @@ static FILE *ce_ini_open_regular(CeSettingsDir *dir, int *missing = NULL)
 		BY_HANDLE_FILE_INFORMATION info;
 		if (GetFileType(in) == FILE_TYPE_DISK && GetFileInformationByHandle(in, &info) &&
 #ifdef CE_WIN_REPARSE_H
-			!(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && !ce_win_handle_is_link(in, info.dwFileAttributes))
+			!(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && !ce_win_handle_is_link(in, info.dwFileAttributes) &&
+			ce_win_hydrate_handle_a(path, &in, &info, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, 0, 0))
 #else
 			!(info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)))
 #endif
 			input = _open_osfhandle((intptr_t)in, _O_RDONLY | _O_BINARY);
-		if (input < 0) CloseHandle(in);
+		if (input < 0 && in != INVALID_HANDLE_VALUE) CloseHandle(in);
 	}
 	FILE *f = input >= 0 ? _fdopen(input, "rb") : NULL;
 	if (!f && input >= 0) _close(input);

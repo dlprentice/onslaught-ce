@@ -60,6 +60,7 @@ bool	PortModHas(const char *game_path);	// port/platform/common/mods.h: an activ
 extern int gControlPreset __attribute__((weak));
 void	ApplyControlPreset(int preset) __attribute__((weak));
 bool	AllControlBindingsSet(int index) __attribute__((weak));
+extern "C" int	PortCeSoloSkirmishConfigured(void) __attribute__((weak));
 extern "C" void	PortCeCarrierClashCancel(void) __attribute__((weak));
 extern "C" void	PortCeLivingSandboxCancel(void) __attribute__((weak));
 extern "C" void	PortCeFlagshipDuelCancel(void) __attribute__((weak));
@@ -110,8 +111,10 @@ static bool Start(int level, bool mod)
 	if (!PortCeMenus() || (level != kBonusLevel && !IsCoop(level) && !IsRace(level)))
 		return false;
 	// 2P split-screen bonus levels (Building Defence & mod 2P maps): promote default 1P preset
-	// to 2P split-keyboard preset when Player 2 is unbound (matching FEPMultiplayer patch 0382).
-	if (level != kBonusLevel && !IsRace(level) && AllControlBindingsSet && !AllControlBindingsSet(1))
+	// to 2P split-keyboard preset when Player 2 is unbound (matching FEPMultiplayer patch 0382),
+	// unless Solo Skirmish vs AI is configured (P2 is AI-piloted and needs no human bindings).
+	const bool soloSkirmish = (PortCeSoloSkirmishConfigured && PortCeSoloSkirmishConfigured() != 0);
+	if (level != kBonusLevel && !IsRace(level) && !soloSkirmish && AllControlBindingsSet && !AllControlBindingsSet(1))
 	{
 		if (&gControlPreset && gControlPreset == 1 && ApplyControlPreset)
 			ApplyControlPreset(2);

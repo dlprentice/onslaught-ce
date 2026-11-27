@@ -346,11 +346,22 @@ class BugClipAndCeRecordingTests(unittest.TestCase):
             "terrain_detail_distance=extended\n"
             f"gamedir={win_bs}\n"
             f"music_dir={win_fs}\n"
+            "career_backup_folder=D:\\PrivateBackups\\Saves\n"
+            "lobby_url=https://private.example.invalid/lobby\n"
+            "signaling_url=https://private.example.invalid/sig\n"
+            "turn_url=turn:secret.example.invalid:3478\n"
+            "online_relay_only=1\n"
+            "mods=secret_mod_pack\n"
+            "hud_scale=D:\\InjectedPath\n"
             f"shared={win_pub}\n"
             f"common={win_all}\n"
         )
         (user / "onslaught-ce.log").write_text(
             "Loaded renderer enabled saved fixed\n"
+            f"win_bs={win_bs}\n"
+            f"win_fs={win_fs}\n"
+            f"shared={win_pub}\n"
+            f"common={win_all}\n"
             f"user_path={short_home}/game\n"
             f"alt_path={_home_path('al', '/saves')}\n"
         )
@@ -372,13 +383,18 @@ class BugClipAndCeRecordingTests(unittest.TestCase):
         self.assertNotIn("Doe", report)
         self.assertIn("\\<user>\\Games\\BEA", report)
         self.assertIn("/<user>/Music/Tracks", report)
-        # System profile folders stay untouched.
+        # System profile folders stay untouched in log tail.
         self.assertIn("\\Public\\Documents", report)
         self.assertIn("\\All Users\\Shared", report)
-        # Short username ("ed") must NOT mangle ordinary words, while path-anchored home-dir <short> IS scrubbed!
+        # Safe ce.ini switches stay intact; sensitive keys, URLs, and drive paths are filtered out of ce.ini.
         self.assertIn("windowed=1", report)
         self.assertIn("terrain_detail_distance=extended", report)
-        self.assertIn("gamedir=", report)
+        for forbidden in (
+            "gamedir=", "music_dir=", "career_backup_folder=", "PrivateBackups",
+            "lobby_url=", "signaling_url=", "turn_url=", "online_relay_only=",
+            "mods=", "secret_mod_pack", "private.example.invalid", "InjectedPath",
+        ):
+            self.assertNotIn(forbidden, report)
         self.assertIn("Loaded renderer enabled saved fixed", report)
         self.assertNotIn(short_home, report)
         self.assertNotIn(_home_path("al", "/saves"), report)

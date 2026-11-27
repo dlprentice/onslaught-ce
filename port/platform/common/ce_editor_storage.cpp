@@ -66,10 +66,12 @@ bool Same(const struct stat &a, const struct stat &b) {
 #endif
 // The highest number among this level's saves already in the folder (0 when there are none, or it cannot be listed), so a
 // new save is numbered after every earlier one and the newest save always has the highest number, gaps or not.
-int Highest(CeSettingsDir *dir, int level) {
+// Also counts valid .ceproject files so saving and browsing share the same EntryLimit.
+int Highest(CeSettingsDir *dir, int level, int *validProjects) {
     char prefix[16];
     snprintf(prefix, sizeof(prefix), "level-%04d-", level);
     int highest = 0;
+    int valid = 0;
     auto consider = [&](const char *leaf) {
         int serial = 0;
         char tail[16] = "";
@@ -79,25 +81,46 @@ int Highest(CeSettingsDir *dir, int level) {
     };
 #if defined(_WIN32)
     char pattern[4400];
-    if (!Full(dir, "level-*.ceproject", pattern, sizeof(pattern))) return 0;
+    if (!Full(dir, "*.ceproject", pattern, sizeof(pattern))) {
+        if (validProjects) *validProjects = 0;
+        return 0;
+    }
     WIN32_FIND_DATAA found;
     HANDLE handle = FindFirstFileA(pattern, &found);
-    if (handle == INVALID_HANDLE_VALUE) return 0;
-    int entries = 0;
-    do consider(found.cFileName);
-    while (++entries < EntryLimit && FindNextFileA(handle, &found));
+    if (handle == INVALID_HANDLE_VALUE) {
+        if (validProjects) *validProjects = 0;
+        return 0;
+    }
+    do {
+        if (!strcmp(found.cFileName, ".") || !strcmp(found.cFileName, "..")) continue;
+        consider(found.cFileName);
+        if (Leaf(found.cFileName) &&
+            !(found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
+            !ce_win_find_is_link(found.dwFileAttributes, found.dwReserved0) &&
+            !found.nFileSizeHigh && found.nFileSizeLow && found.nFileSizeLow <= DocumentLimit)
+            ++valid;
+    } while (FindNextFileA(handle, &found));
     FindClose(handle);
 #else
     int fd = openat(dir->fd, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     DIR *directory = fd >= 0 ? fdopendir(fd) : nullptr;
     if (!directory) {
         if (fd >= 0) close(fd);
+        if (validProjects) *validProjects = 0;
         return 0;
     }
-    int entries = 0;
-    for (struct dirent *row; entries < EntryLimit && (row = readdir(directory)); ++entries) consider(row->d_name);
+    for (struct dirent *row; (row = readdir(directory));) {
+        if (!strcmp(row->d_name, ".") || !strcmp(row->d_name, "..")) continue;
+        consider(row->d_name);
+        if (!Leaf(row->d_name)) continue;
+        struct stat info;
+        if (fstatat(dir->fd, row->d_name, &info, AT_SYMLINK_NOFOLLOW) == 0 && S_ISREG(info.st_mode) &&
+            info.st_size > 0 && static_cast<unsigned long long>(info.st_size) <= DocumentLimit)
+            ++valid;
+    }
     closedir(directory);
 #endif
+    if (validProjects) *validProjects = valid;
     return highest;
 }
 } // namespace
@@ -128,15 +151,15 @@ int PortCeEditorFiles(CeEditorFile *files, int capacity, char *error, size_t err
     }
     do {
         if (!strcmp(found.cFileName, ".") || !strcmp(found.cFileName, "..")) continue;
-        if (++entries > EntryLimit) {
-            ok = false;
-            break;
-        }
         if (!Leaf(found.cFileName) ||
             (found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ||
             ce_win_find_is_link(found.dwFileAttributes, found.dwReserved0) ||
             found.nFileSizeHigh || !found.nFileSizeLow || found.nFileSizeLow > DocumentLimit)
             continue;
+        if (++entries > EntryLimit) {
+            ok = false;
+            break;
+        }
         if (count == capacity) {
             ok = false;
             break;
@@ -157,10 +180,6 @@ int PortCeEditorFiles(CeEditorFile *files, int capacity, char *error, size_t err
     errno = 0;
     for (struct dirent *row; (row = readdir(directory)); errno = 0) {
         if (!strcmp(row->d_name, ".") || !strcmp(row->d_name, "..")) continue;
-        if (++entries > EntryLimit) {
-            ok = false;
-            break;
-        }
         if (!Leaf(row->d_name)) continue;
         struct stat info;
         if (fstatat(folder.dir.fd, row->d_name, &info, AT_SYMLINK_NOFOLLOW) != 0) {
@@ -170,6 +189,10 @@ int PortCeEditorFiles(CeEditorFile *files, int capacity, char *error, size_t err
         if (!S_ISREG(info.st_mode) || info.st_size <= 0 ||
             static_cast<unsigned long long>(info.st_size) > DocumentLimit)
             continue;
+        if (++entries > EntryLimit) {
+            ok = false;
+            break;
+        }
         if (count == capacity) {
             ok = false;
             break;
@@ -212,7 +235,9 @@ char *PortCeEditorRead(const char *filename, size_t *size, char *error, size_t e
         return nullptr;
     }
     BY_HANDLE_FILE_INFORMATION before{}, after{};
-    if (FileInfo(handle, &before) && !before.nFileSizeHigh && before.nFileSizeLow > 0 &&
+    if (FileInfo(handle, &before) &&
+        ce_win_hydrate_handle_a(path, &handle, &before, GENERIC_READ, FILE_SHARE_READ, 0, 0) &&
+        !before.nFileSizeHigh && before.nFileSizeLow > 0 &&
         before.nFileSizeLow <= DocumentLimit) {
         length = before.nFileSizeLow;
         bytes = static_cast<char *>(malloc(length + 1));
@@ -227,7 +252,7 @@ char *PortCeEditorRead(const char *filename, size_t *size, char *error, size_t e
         ok = ok && ReadFile(handle, &extra, 1, &got, nullptr) && got == 0 && FileInfo(handle, &after) &&
              Same(before, after);
     }
-    if (!CloseHandle(handle)) ok = false;
+    if (handle != INVALID_HANDLE_VALUE && !CloseHandle(handle)) ok = false;
 #else
     int fd = openat(folder.dir.fd, filename, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
     if (fd < 0) {
@@ -247,7 +272,12 @@ char *PortCeEditorRead(const char *filename, size_t *size, char *error, size_t e
             if (ok) at += size_t(n);
         }
         char extra;
-        ok = ok && read(fd, &extra, 1) == 0 && fstat(fd, &after) == 0 && Same(before, after);
+        ssize_t tail = -1;
+        if (ok) {
+            do tail = read(fd, &extra, 1);
+            while (tail < 0 && errno == EINTR);
+        }
+        ok = ok && tail == 0 && fstat(fd, &after) == 0 && Same(before, after);
     }
     if (close(fd) != 0) ok = false;
 #endif
@@ -276,7 +306,12 @@ bool PortCeEditorSave(int level, const char *bytes, size_t size, char *filename,
         return false;
     }
     char name[64];
-    const int first = Highest(&folder.dir, level) + 1;
+    int validProjects = 0;
+    const int first = Highest(&folder.dir, level, &validProjects) + 1;
+    if (validProjects >= EntryLimit) {
+        Error(error, errorCapacity, "This folder has reached the project browser limit.");
+        return false;
+    }
     for (int revision = first; revision < first + EntryLimit && revision <= 999999; ++revision) {
         snprintf(name, sizeof(name), "level-%04d-%06d.ceproject", level, revision);
         size_t at = 0;

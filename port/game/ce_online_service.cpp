@@ -804,7 +804,8 @@ public:
     void FlushLeave(uint64_t now_ms) override {
         if (IsLaunchPreserved()) return;
         if (!client_ || (!client_->Authenticated() && !want_connect_)) return;
-        // Pump any queued or in-flight LeaveRoom (or cancelled entry op) using a monotonic clock base.
+        // Pump any queued or in-flight LeaveRoom (or cancelled entry op) up to a real wall-clock deadline.
+        static constexpr uint64_t kFlushLeaveDeadlineMs = 3000ULL;
         const auto wall_start = std::chrono::steady_clock::now();
         uint64_t base_ms = std::max(now_ms, last_now_ms_);
         if (base_ms == 0u) {
@@ -813,28 +814,25 @@ public:
                     wall_start.time_since_epoch()).count());
             if (base_ms == 0u) base_ms = 1u;
         }
-        uint64_t virtual_advance_ms = 0;
-        for (int step = 0; step < 35; ++step) {
-            bool has_leave = client_->Busy() &&
-                             (client_->ActiveOp() == CeOnlineOpKind::LeaveRoom ||
-                              client_->ActiveOp() == CeOnlineOpKind::Authenticate ||
-                              client_->ActiveOp() == CeOnlineOpKind::Health ||
-                              cancelled_inflight_entry_);
-            for (const auto &a : pending_queue_) {
-                if (a.kind == ActionKind::LeaveRoom) { has_leave = true; break; }
+        auto has_pending_leave = [&]() -> bool {
+            if (client_->Busy() &&
+                (client_->ActiveOp() == CeOnlineOpKind::LeaveRoom ||
+                 client_->ActiveOp() == CeOnlineOpKind::Authenticate ||
+                 client_->ActiveOp() == CeOnlineOpKind::Health ||
+                 cancelled_inflight_entry_)) {
+                return true;
             }
-            if (!has_leave) break;
+            for (const auto &a : pending_queue_) {
+                if (a.kind == ActionKind::LeaveRoom) return true;
+            }
+            return false;
+        };
+        while (has_pending_leave()) {
             const uint64_t elapsed = static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now() - wall_start).count());
-            const uint64_t step_offset = std::max<uint64_t>(elapsed, static_cast<uint64_t>(step) * 10u);
-            if (!client_->Busy() && !want_connect_ && !pending_queue_.empty() &&
-                pending_queue_.front().kind == ActionKind::LeaveRoom &&
-                pending_queue_.front().retry_after_ms > base_ms + virtual_advance_ms + step_offset) {
-                virtual_advance_ms = pending_queue_.front().retry_after_ms - base_ms - step_offset;
-            }
-            const uint64_t tick_ms = base_ms + virtual_advance_ms + step_offset;
-            Poll(tick_ms);
+            Poll(base_ms + elapsed);
+            if (!has_pending_leave() || elapsed >= kFlushLeaveDeadlineMs) break;
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }
@@ -1573,26 +1571,17 @@ public:
 
     void FlushFinishMatch() {
         if (!is_host_ || direct_mode_ || !lobby_ || !finish_requested_ || finish_sent_) return;
+        static constexpr uint64_t kFlushFinishDeadlineMs = 3000ULL;
         const auto wall_start = std::chrono::steady_clock::now();
-        uint64_t base_ms = last_poll_ms_;
-        if (base_ms == 0u) {
-            base_ms = static_cast<uint64_t>(
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    wall_start.time_since_epoch()).count());
-            if (base_ms == 0u) base_ms = 1u;
-        }
-        uint64_t virtual_advance_ms = 0;
-        for (int step = 0; step < 35 && !finish_sent_; ++step) {
+        const uint64_t base_ms = last_poll_ms_ ? last_poll_ms_ : 1u;
+        for (;;) {
             const uint64_t elapsed = static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now() - wall_start).count());
-            const uint64_t step_offset = std::max<uint64_t>(elapsed, static_cast<uint64_t>(step) * 10u);
-            if (!lobby_->Busy() && finish_retry_after_ms_ > base_ms + virtual_advance_ms + step_offset) {
-                virtual_advance_ms = finish_retry_after_ms_ - base_ms - step_offset;
-            }
-            const uint64_t tick_ms = base_ms + virtual_advance_ms + step_offset;
+            const uint64_t tick_ms = base_ms + elapsed;
+            if (tick_ms > last_poll_ms_) last_poll_ms_ = tick_ms;
             PumpFinishMatch(tick_ms);
-            if (finish_sent_) break;
+            if (finish_sent_ || elapsed >= kFlushFinishDeadlineMs) break;
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }

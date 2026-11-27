@@ -9,6 +9,7 @@ zero live Cloudflare deployments).
 from __future__ import annotations
 
 import base64
+import concurrent.futures
 import hashlib
 import hmac
 import http.client
@@ -187,6 +188,7 @@ class WorkerdHarness:
         heartbeat_timeout_ms: int = 30000,
         starting_timeout_ms: int | None = None,
         match_timeout_ms: int = 7200000,
+        match_heartbeat_timeout_ms: int | None = None,
         auth_ip_limit: int = 200,
         auth_pubkey_limit: int = 100,
         room_create_limit: int = 100,
@@ -214,6 +216,7 @@ class WorkerdHarness:
         self.heartbeat_timeout_ms = heartbeat_timeout_ms
         self.starting_timeout_ms = starting_timeout_ms
         self.match_timeout_ms = match_timeout_ms
+        self.match_heartbeat_timeout_ms = match_heartbeat_timeout_ms
         self.auth_ip_limit = auth_ip_limit
         self.auth_pubkey_limit = auth_pubkey_limit
         self.room_create_limit = room_create_limit
@@ -252,6 +255,8 @@ class WorkerdHarness:
         }
         if self.starting_timeout_ms is not None:
             public_vars["CE_STARTING_TIMEOUT_MS"] = str(self.starting_timeout_ms)
+        if self.match_heartbeat_timeout_ms is not None:
+            public_vars["CE_MATCH_HEARTBEAT_TIMEOUT_MS"] = str(self.match_heartbeat_timeout_ms)
         if self.resolve_ip_limit is not None:
             public_vars["CE_RESOLVE_IP_LIMIT"] = str(self.resolve_ip_limit)
         if self.join_ip_limit is not None:
@@ -2249,6 +2254,93 @@ class WorkerdIntegrationTests(unittest.TestCase):
         self.assertTrue(all(not k.startswith("expired_") for k in rates_after))
         self.assertIn(pw_legacy["player_id"], rates_after)
         self.assertNotIn("active_000", rates_after)
+
+    def test_join_password_concurrent_rate_limit_no_toctou_and_in_match_hb_ttl(self):
+        # 1. Concurrent wrong-password joins MUST NOT bypass JOIN_PW_RATE_MAX (5) via PBKDF2 await TOCTOU.
+        srv = self.make_server(join_ip_limit=100)
+        _, host = srv.auth_player("ConcHost")
+        _, attacker = srv.auth_player("ConcAttacker")
+        _, legit = srv.auth_player("ConcLegit")
+        room = srv.api(
+            "POST", "/ce-lobby/v1/lobbies", token=host["session_token"],
+            body={"name": "ConcPwRoom", "mode": "coop_defence", "map": 856, "max_seats": 4, "password": "RightSecret99"},
+        )[2]
+        rid = room["room_id"]
+
+        def attempt_wrong(i: int) -> tuple[int, str]:
+            c, _, body = srv.api(
+                "POST", f"/ce-lobby/v1/rooms/{rid}/join", token=attacker["session_token"],
+                body={"password": f"bad-guess-{i}"},
+            )
+            return c, body.get("error", "")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
+            results = list(pool.map(attempt_wrong, range(12)))
+
+        wrong_count = sum(1 for c, err in results if c == 403 and err == "wrong_password")
+        limited_count = sum(1 for c, err in results if c == 429 and err == "rate_limited")
+        self.assertEqual(5, wrong_count, f"expected exactly JOIN_PW_RATE_MAX=5 wrong_password responses, got {results}")
+        self.assertEqual(7, limited_count, f"expected remaining 7 concurrent attempts rate_limited, got {results}")
+
+        # Legitimate guest with correct password joins cleanly and does not waste a failed-attempt rate slot.
+        c, _, _ = srv.api(
+            "POST", f"/ce-lobby/v1/rooms/{rid}/join", token=legit["session_token"],
+            body={"password": "RightSecret99"},
+        )
+        self.assertEqual(200, c)
+        srv.stop()
+        docs = srv.read_room_sqlite()
+        self.assertEqual(1, len(docs))
+        self.assertNotIn(legit["player_id"], docs[0].get("join_pw_rates", {}))
+        self.assertEqual(5, len(docs[0].get("join_pw_rates", {}).get(attacker["player_id"], [])))
+
+        # 2. in_match heartbeat staleness TTL: dead in_match room expires at match_heartbeat_timeout_ms (5m default),
+        #    while an actively heartbeating host keeps its in_match room alive well past match_heartbeat_timeout_ms!
+        worker_src = (SERVICE_DIR / "worker.mjs").read_text(encoding="utf-8")
+        self.assertIn("const DEFAULT_MATCH_HEARTBEAT_TIMEOUT_MS = 5 * 60 * 1000;", worker_src)
+        srv_hb = self.make_server(
+            heartbeat_timeout_ms=700,
+            starting_timeout_ms=1000,
+            match_heartbeat_timeout_ms=1200,
+            match_timeout_ms=8000,
+        )
+        _, h_dead = srv_hb.auth_player("DeadMatchHost")
+        _, g_dead = srv_hb.auth_player("DeadMatchGuest")
+        _, h_live = srv_hb.auth_player("LiveHbHost")
+        _, g_live = srv_hb.auth_player("LiveHbGuest")
+
+        r_dead = srv_hb.api(
+            "POST", "/ce-lobby/v1/lobbies", token=h_dead["session_token"],
+            body={"name": "DeadInMatch", "mode": "coop_defence", "map": 856, "max_seats": 2},
+        )[2]
+        d_rid = r_dead["room_id"]
+        self.assertEqual(200, srv_hb.api("POST", f"/ce-lobby/v1/rooms/{d_rid}/join", token=g_dead["session_token"], body={})[0])
+        self.assertEqual(200, srv_hb.api("POST", f"/ce-lobby/v1/rooms/{d_rid}/update", token=g_dead["session_token"], body={"ready": True})[0])
+        self.assertEqual(200, srv_hb.api("POST", f"/ce-lobby/v1/rooms/{d_rid}/start", token=h_dead["session_token"], body={})[0])
+        self.assertEqual(200, srv_hb.api("POST", f"/ce-lobby/v1/rooms/{d_rid}/update", token=h_dead["session_token"], body={"state": "in_match"})[0])
+
+        r_live = srv_hb.api(
+            "POST", "/ce-lobby/v1/lobbies", token=h_live["session_token"],
+            body={"name": "LiveInMatch", "mode": "coop_defence", "map": 856, "max_seats": 2},
+        )[2]
+        l_rid = r_live["room_id"]
+        self.assertEqual(200, srv_hb.api("POST", f"/ce-lobby/v1/rooms/{l_rid}/join", token=g_live["session_token"], body={})[0])
+        self.assertEqual(200, srv_hb.api("POST", f"/ce-lobby/v1/rooms/{l_rid}/update", token=g_live["session_token"], body={"ready": True})[0])
+        self.assertEqual(200, srv_hb.api("POST", f"/ce-lobby/v1/rooms/{l_rid}/start", token=h_live["session_token"], body={})[0])
+        self.assertEqual(200, srv_hb.api("POST", f"/ce-lobby/v1/rooms/{l_rid}/update", token=h_live["session_token"], body={"state": "in_match"})[0])
+
+        # Heartbeat l_rid past d_rid's 1200ms in_match staleness TTL (total ~1.8s < 8000ms match cap).
+        for _ in range(4):
+            time.sleep(0.45)
+            self.assertEqual(200, srv_hb.api("GET", f"/ce-lobby/v1/rooms/{l_rid}?since=0", token=h_live["session_token"])[0])
+
+        code, _, listing = srv_hb.api("GET", "/ce-lobby/v1/lobbies", token=h_live["session_token"])
+        self.assertEqual(200, code)
+        room_ids = [r["room_id"] for r in listing["rooms"]]
+        self.assertNotIn(d_rid, room_ids)
+        self.assertIn(l_rid, room_ids)
+        self.assertEqual(404, srv_hb.api("GET", f"/ce-lobby/v1/rooms/{d_rid}", token=h_dead["session_token"])[0])
+        self.assertEqual(200, srv_hb.api("GET", f"/ce-lobby/v1/rooms/{l_rid}?since=0", token=h_live["session_token"])[0])
 
 
 def main() -> int:

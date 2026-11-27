@@ -15,7 +15,7 @@ struct State {
     uint64_t textureDeviceGen;
     unsigned int bitmapW, bitmapH, frame;
     Phase phase;
-    bool inRoom, atConsole, captured, inDoorway, exhausted, fireHeld;
+    bool inRoom, atConsole, captured, inDoorway, exhausted, fireHeld, windowPaused;
     CeMuseumCinemaCatalogue::List catalogue;
     bool catalogueLoaded, firstPlayable;
     int playing;
@@ -30,7 +30,7 @@ struct State {
     unsigned lastMouseSeq;
     State() : film(0), texture(0), textureDevice(0), textureDeviceGen(0), bitmapW(0), bitmapH(0), frame(0),
         phase(Idle), inRoom(false), atConsole(false), captured(false),
-        inDoorway(false), exhausted(false), fireHeld(false),
+        inDoorway(false), exhausted(false), fireHeld(false), windowPaused(false),
         catalogueLoaded(false), firstPlayable(true), playing(-1), controls(), output(),
         hit(CinemaConsole::NoHit()),
         viewValid(false), viewPresent(0), eye{0,0,0}, aim{0,0,0},
@@ -61,13 +61,30 @@ CeMuseumFilm::Film film = CeMuseumFilm::None();
 }
 extern "C" int PortBinkHasSound(HBINK bink) __attribute__((weak));	// port/bink: whether the film's track was loaded
 extern "C" int PortBinkPause(HBINK bink, int pause) __attribute__((weak));	// port/bink: hold a film, sound and clock
+extern "C" int PortWindowIsFocused(void) __attribute__((weak));
+typedef void (*PortWindowPauseFn)(int paused);
+extern "C" void PortWindowSetPauseHook(PortWindowPauseFn fn) __attribute__((weak));
 // The cinema stands still while the game is paused or Photo Mode holds the frame:
 // the film's frame clock, its sound crossfade and the music duck all read one
 // clock, and that clock does not run during a hold (CeMuseumCinemaHeldClock in
 // ce_museum_cinema.h). Nothing catches up afterwards: the film resumes on the
 // frame it stopped on and the duck resumes its ramp where it was.
 bool CinemaHeld() {
-    return GAME.IsPaused() || PortCePhotoOn();
+    return GAME.IsPaused() || PortCePhotoOn() || Cinema::s.windowPaused;
+}
+void CinemaWindowPauseHook(int paused) {
+    using namespace Cinema;
+    if (!s.film || s.phase != Playing) {
+        s.windowPaused = false;
+        return;
+    }
+    if (paused) {
+        s.windowPaused = true;
+        if (PortBinkPause) PortBinkPause(s.film, 1);
+    } else if (s.windowPaused) {
+        s.windowPaused = false;
+        if (PortBinkPause && !CinemaHeld()) PortBinkPause(s.film, 0);
+    }
 }
 double CinemaClock() {
     LARGE_INTEGER now, rate;
@@ -106,6 +123,8 @@ void CinemaFilmFade() {
 
 void CinemaClose(Cinema::Phase next) {
     using namespace Cinema;
+    if (PortWindowSetPauseHook) PortWindowSetPauseHook(NULL);
+    s.windowPaused = false;
     if (s.film) {
         BinkClose(s.film);s.film=0;
         CeMuseumFilm::Closed(&film, CinemaClock(), &duck);
@@ -114,7 +133,7 @@ void CinemaClose(Cinema::Phase next) {
     s.textureDevice=0;
     s.textureDeviceGen=0;
     s.frame=0;s.bitmapW=s.bitmapH=0;s.exhausted=false;s.phase=next;
-    s.playing = -1;
+    if (next != Finished) s.playing = -1;
 }
 void CinemaReset() {
     const CinemaControls::State retained = Cinema::s.controls;
@@ -328,6 +347,8 @@ bool CinemaStartFilm(void *, const CeMuseumCinemaCatalogue::Entry &entry) {
     const bool track = PortBinkHasSound ? PortBinkHasSound(s.film) != 0 : true;
     CeMuseumFilm::Start(&film, CinemaFilmCalls(), CAREER.GetSoundVolume(), track, CinemaClock(), &duck);
     s.phase = Playing;
+    s.windowPaused = false;
+    if (PortWindowSetPauseHook) PortWindowSetPauseHook(CinemaWindowPauseHook);
     return true;
 }
 void CinemaOpen(unsigned selected) {
@@ -377,7 +398,7 @@ CinemaControls::Input CinemaControllerInput() {
     CinemaConsole::View view = {};
     view.museumActive = PortCeMuseumAuthoredMap() && PortCeMuseumVisitActive() && g.valid;
     view.inRoom = s.inRoom;
-    view.focused = PortGetFocus() != 0;
+    view.focused = PortWindowIsFocused ? (PortWindowIsFocused() != 0) : (PortGetFocus() != 0);
     view.paused = GAME.IsPaused();
     view.photo = PortCePhotoOn();
     view.origin = CinemaConsole::Vec3{s.eye[0], s.eye[1], s.eye[2]};
@@ -481,6 +502,7 @@ void CinemaVisitor(float x,float y) {
     const bool room=PortCeMuseumAuthoredMap() && Interior(side,depth);
     if(s.inRoom && !room) CinemaClose(Idle);
     s.inRoom=room;s.atConsole = false;
+    if (!room || CinemaHeld()) s.fireHeld = false;
     s.inDoorway=PortCeMuseumAuthoredMap() && Range(side,kDoorX-3.0f,kDoorX+.7f) && Range(depth,kDoorY-3.5f,kDoorY+3.5f);
     CinemaTrackDevice();
     CinemaStep();

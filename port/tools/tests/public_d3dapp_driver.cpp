@@ -25,6 +25,7 @@ unsigned cooperativeQueries;
 float elapsedAppTime;
 std::vector<unsigned> sleepDurations;
 RECT client={0,0,640,480};
+bool resizeOnSetWindowPos=false;
 WNDPROC dispatch;
 bool wide=false,rejectHal=false,rejectHardware=false;
 bool skipPrimary=false,countedCallbacks=false,writeFailedDevice=false,permitWrongCreate=false;
@@ -88,7 +89,7 @@ BOOL AdjustWindowRect(RECT *,DWORD,BOOL){return TRUE;} void *LoadMenu(HINSTANCE,
 HWND CreateWindow(const char *,const char *,DWORD,int,int,int w,int h,HWND,void *,HINSTANCE,void *){client={0,0,w,h};return reinterpret_cast<HWND>(1);}
 LONG GetWindowLong(HWND,int){return WS_VISIBLE;} LONG SetWindowLong(HWND,int,LONG){return 0;}
 BOOL GetWindowRect(HWND,RECT *p){*p=client;return TRUE;} BOOL GetClientRect(HWND,RECT *p){*p=client;return TRUE;}
-BOOL SetWindowPos(HWND,HWND,int,int,int,int,UINT){return TRUE;} LONG GetClassLong(HWND,int){return 0;}
+BOOL SetWindowPos(HWND,HWND,int,int,int w,int h,UINT){if(resizeOnSetWindowPos&&w>0&&h>0)client={0,0,w,h};return TRUE;} LONG GetClassLong(HWND,int){return 0;}
 LRESULT DefWindowProc(HWND,UINT,WPARAM,LPARAM){return 0;}
 LRESULT SendMessage(HWND h,UINT m,WPARAM w,LPARAM l){return dispatch?dispatch(h,m,w,l):0;}
 HCURSOR SetCursor(HCURSOR p){return p;} BOOL GetCursorPos(POINT *p){*p={0,0};return TRUE;}

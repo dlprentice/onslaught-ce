@@ -105,6 +105,7 @@ static void StartPlay() {
     Check(Near(objectA.position,FVector(5,7,9)),"authored placement reaches Init before gameplay");
     const unsigned before=warmups;Warmup();
     Check(warmups==before+1,"play runs the ordinary mission warmup");
+    GAME.mGameState=GAME_STATE_PLAYING;
     Check(!PortCeEditorKey(DIK_W,false)&&!PortCeEditorKey(DIK_ESCAPE,false),"ordinary flight and pause keys reach the game");
     PortCeEditorFrame();
     Check(!GAME.IsPaused()&&GAME.controller.target==&pilot&&!LT.trap,"per-frame editor hook never parks play");
@@ -343,6 +344,7 @@ int main() {
         press(DIK_F5);PortCeEditorLevelEnd();
         Check(Reload()&&PortCeEditorPlaying()&&Near(objectB.position,moved)&&Near(objectA.position,FVector(4,5,6)),
               "the playable map uses the saved edit and leaves the nearer unchanged object alone");
+        GAME.mGameState=GAME_STATE_PLAYING;
         press(DIK_F5);PortCeEditorLevelEnd();Check(Reload(),"the editor returns from the play test");PortCeEditorFrame();
         Check(gEditorState.Selected()==1&&gEditorState.CanUndo()&&Near(objectB.position,moved),
               "the return keeps the edited selection and its undo history");
@@ -407,6 +409,7 @@ int main() {
         press(DIK_F5);PortCeEditorLevelEnd();
         Check(Reload()&&PortCeEditorPlaying()&&objectA.allegiance==1&&Near(objectA.position,FVector(4,5,6)),
               "the saved allegiance enters the unit's initialization in playable gameplay");
+        GAME.mGameState=GAME_STATE_PLAYING;
         press(DIK_F5);PortCeEditorLevelEnd();Check(Reload(),"side edit returns to the editor");PortCeEditorFrame();
         Check(gEditorState.Selected()==0&&gEditorState.Object(0)->side==1&&gEditorState.CanUndo()&&objectA.allegiance==0,
               "return retains side, selection and history and rebuilds the underlying original");
@@ -560,6 +563,11 @@ int main() {
         PortCeEditorLevelEnd();
         Check(PortCeEditorResolveQuit(GAME.quit)==QT_RESTART_LEVEL&&Reload()&&PortCeEditorPlaying()&&gEditorReachLength==2&&gEditorReachStage==0&&!gEditorReached,
               "Reset replays the same unsaved two stops with fresh progress");
+        GAME.mGameState=GAME_STATE_PLAYING;
+        // F5/F6 during playtest must be ignored while paused, in a menu, on a keytrap, or outside GAME_STATE_PLAYING.
+        GAME.mPause=TRUE; Check(!PortCeEditorKey(DIK_F5,false)&&!PortCeEditorKey(DIK_F6,false),"F5/F6 ignored while playtest is paused"); GAME.mPause=FALSE;
+        GAMEINTERFACE.menuUp=true; Check(!PortCeEditorKey(DIK_F5,false)&&!PortCeEditorKey(DIK_F6,false),"F5/F6 ignored while game menu is up"); GAMEINTERFACE.menuUp=false;
+        LT.trap=OtherTrap; Check(!PortCeEditorKey(DIK_F5,false)&&!PortCeEditorKey(DIK_F6,false),"F5/F6 ignored while another keytrap is active"); LT.trap=nullptr;
         Check(PortCeEditorKey(DIK_F5,false)&&gEditorPhase==ReturnToAuthoring,"Back leaves the pilot and requests the authoring view");
         PortCeEditorLevelEnd();Check(Reload()&&gEditorReady&&!PortCeEditorPlaying()&&GAME.IsPaused(),"Back restores the editing world"); PortCeEditorFrame();
         Check(gEditorState.ReachCount()==2&&gEditorState.Dirty()&&gEditorState.Selected()==1&&gEditorState.CanUndo()&&
@@ -587,16 +595,19 @@ int main() {
         key(DIK_H); key(DIK_RETURN); key(DIK_DOWN); key(DIK_DOWN); key(DIK_RETURN);
         Check(gEditorState.Hold(1).seconds==10 && gEditorState.Dirty(), "inspector makes an undoable change to the saved draft");
         key(DIK_F5);PortCeEditorLevelEnd();Check(Reload()&&PortCeEditorPlaying(),"mixed preview loads");GAME.mGameState=GAME_STATE_PLAYING;
-        auto visit=[&](float y,unsigned milliseconds){auto& e=GAME.pilot.engine;e.old=e.pos;e.pos=FVector(45,y,0);fixtureEditorTimeNs+=milliseconds*1000000ULL;PortCeEditorFrame();};
+        auto visit=[&](float y,unsigned milliseconds){auto& e=GAME.pilot.engine;e.old=e.pos;e.pos=FVector(45,y,0);fixtureEditorTimeNs+=milliseconds*1000000ULL;EVENT_MANAGER.simTime+=float(milliseconds)*0.001f;PortCeEditorFrame();};
         visit(120,10);visit(120,12000);Check(!gEditorReached && gEditorReachStage==0 && gEditorHoldElapsed==0,"early visit to later Hold Area earns nothing");
         visit(40,100);Check(gEditorReachStage==1 && !gEditorReached,"reaching the first point unlocks the Hold Area");
         visit(120,100);visit(120,4000);Check(gEditorHoldInside && std::fabs(gEditorHoldElapsed-4.0)<0.001,"active Hold Area reports elapsed time");
+        fixtureEditorTimeNs+=60000000000ULL; PortCeEditorFrame();
+        Check(gEditorHoldInside && std::fabs(gEditorHoldElapsed-4.0)<0.001,"wall-clock jump (Alt+Tab) without sim time earns no hold dwell");
         visit(151,100);Check(!gEditorHoldInside && gEditorHoldElapsed==0 && !gEditorReached,"leaving the authored radius erases partial dwell");
-        visit(149,100);visit(149,7000);Check(gEditorHoldInside && gEditorHoldElapsed==7 && !gEditorReached,"re-entry inside the selected radius starts from zero");
+        visit(149,100);visit(149,7000);Check(gEditorHoldInside && std::fabs(gEditorHoldElapsed-7.0)<0.001 && !gEditorReached,"re-entry inside the selected radius starts from zero");
         GAME.*EditorGameAccess::PauseField()=TRUE;visit(149,10000);GAME.*EditorGameAccess::PauseField()=FALSE;visit(149,100);
-        Check(gEditorHoldElapsed==7 && !gEditorReached,"paused time does not count");
+        Check(std::fabs(gEditorHoldElapsed-7.0)<0.001 && !gEditorReached,"paused time does not count");
         visit(149,3000);Check(gEditorReached && gEditorHoldElapsed==10 && !PortCeProjectCareerAllowed(),"continuous hold completes without career credit");
         key(DIK_F6);PortCeEditorLevelEnd();Check(PortCeEditorResolveQuit(GAME.quit)==QT_RESTART_LEVEL && Reload()&&PortCeEditorPlaying()&&gEditorReachStage==0 && gEditorHoldElapsed==0 && !gEditorReached,"F6 restarts order and elapsed time");
+        GAME.mGameState=GAME_STATE_PLAYING;
         key(DIK_F5);PortCeEditorLevelEnd();Check(Reload(),"mixed draft returns");PortCeEditorFrame();
         Check(gEditorInputOwned && gEditorState.Hold(1).seconds==10 && gEditorState.Dirty() && savedRevision==savedHold && CareerEquals(entering),"Back preserves the editable settings, explicit file and career");
         EditorUndo(false);Check(gEditorState.Hold(1).seconds==5 && !gEditorState.Dirty(),"undo restores the explicitly saved duration");
@@ -673,6 +684,7 @@ int main() {
     PortCeEditorLevelEnd();
     Check(PortCeEditorResolveQuit(GAME.quit)==QT_RESTART_LEVEL && Reload() && PortCeEditorPlaying() &&
           Near(GAME.pilot.engine.pos,FVector(22,30,-1)), "F6 resets to the same unsaved start");
+    GAME.mGameState=GAME_STATE_PLAYING;
     Check(PortCeEditorKey(DIK_F5,false), "F5 accepts return from player-start preview");
     gEditorChoosingPlayerStart=true;
     PortCeEditorLevelEnd(); Check(Reload(), "player-start draft returns"); PortCeEditorFrame();

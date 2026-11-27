@@ -96,5 +96,13 @@ bool		CeTestKitWantsQuit();	// the journey ended: close the game by its own path
 // For verbs: press a key through the same SDL path as the player (down now, up a few ticks later).
 void		CeTestKitPress(unsigned sdlScancode, unsigned pcScanCode);
 bool		CeTestKitKeysIdle();	// every pressed key has been released
+// Low-level player-path input injection (window.cpp / ce_testkit_input.cpp):
+// PortTestKitMouse kinds: 0 move, 1/2 window LMB down/up, 3 DirectInput relative (dx,dy),
+// 4/5 DirectInput LMB hold/release, 6/7 window RMB down/up, 8/9 DirectInput RMB hold/release,
+// 10/11 DirectInput MMB hold/release, 12 reset DirectInput mouse state.
+void		PortTestKitKey(unsigned sdlScancode, unsigned pcScanCode, bool press);
+void		PortTestKitMouse(int kind, float x, float y);
+// Register an idempotent cleanup callback invoked on step timeout/failure and when the journey finishes.
+void		CeTestKitRegisterCleanup(void (*fn)());
 // The page shown now (the highest-priority active adapter), or NULL.
 const CeTestPage *CeTestKitPage();

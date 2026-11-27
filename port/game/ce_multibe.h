@@ -150,4 +150,12 @@ inline bool CeMultiBeComputeOverviewCam(const float (*positions)[3], int count,
 	return CeMultiBeIsFinitePos(outCamPos[0], outCamPos[1], outCamPos[2]);
 }
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+int PortCeSoloSkirmishConfigured(void);
+#ifdef __cplusplus
+}
+#endif
+
 #endif

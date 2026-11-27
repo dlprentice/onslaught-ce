@@ -44,6 +44,7 @@ struct Point { float x, y; };
 struct Sprite { Point p; };
 struct FrontEnd { bool running = false; bool IsRunning() const { return running; } } FRONTEND;
 struct Platform { int w = 1920, h = 1080; int GetWindowWidth() { return w; } int GetWindowHeight() { return h; } } PLATFORM;
+struct Hud { float mViewportWidth = 0.f, mViewportHeight = 0.f; } HUD;
 struct Game { bool multiplayer = false; bool IsMultiplayer() { return multiplayer; } } GAME;
 #define CE_SPLIT_HUD() GAME.IsMultiplayer()
 static bool CE_WorldActive() { return false; }	// the network layer's replica query in the extracted compass condition (patch 0150)
@@ -170,9 +171,20 @@ int main()
 		CeHudScope scope(0, 3840.f, 2160.f, 0.f, 0.f);
 		check(!CeHudScaleActive(), "multiple players retain existing HUD");
 		GAME.multiplayer = true;
+		HUD.mViewportWidth = 3840.f; HUD.mViewportHeight = 1080.f;	// 2P horizontal split
 		render_compass_projection();
 		check(near(RENDERINFO.width, 3840.f * .00093750004f) && near(RENDERINFO.height, 2160.f * .00046666668f),
-		      "multiplayer ring projection unchanged");
+		      "2P horizontal split ring projection unchanged");
+		HUD.mViewportWidth = 1920.f; HUD.mViewportHeight = 2160.f;	// 2P vertical split
+		render_compass_projection();
+		check(near(RENDERINFO.width, 1920.f * .00093750004f) && near(RENDERINFO.height, 2160.f * .00093333336f),
+		      "2P vertical split ring projection uses active viewport extents uniformly");
+		layer = false;
+		render_compass_projection();
+		check(near(RENDERINFO.width, 3840.f * .00093750004f) && near(RENDERINFO.height, 2160.f * .00046666668f),
+		      "faithful layer keeps retail split ring projection");
+		layer = true;
+		HUD.mViewportWidth = 0.f; HUD.mViewportHeight = 0.f;
 		GAME.multiplayer = false;
 	}
 	for (const char *name : {"BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_PROBES", "BEA_PORT_RECORD"})

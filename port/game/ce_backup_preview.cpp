@@ -69,7 +69,7 @@ bool allowed = false;
 // steps of Restore as New, each a short list of its own.
 enum { S_BROWSE, S_PICK, S_LOOKUP, S_CONFIRM, S_WORK, S_DONE };
 enum { A_NONE, A_CANCEL, A_PICK, A_CONFIRM, A_DONE };
-enum { kRestoreRow = 0, kLines = 72 };
+enum { kRestoreRow = 0, kMaxPickCareers = 512, kMaxLines = kMaxPickCareers + 16 };
 // The browse list, in order: what the player came to do first (a set to view,
 // or Restore as New once a set is verified), then what the card shows, then
 // the other choices, and Back last as on the game's own pages.
@@ -80,7 +80,7 @@ struct Line {
   int tone, act, arg;
   bool dim, name, hintName;
 };
-Line lines[kLines], spare;
+Line lines[kMaxLines];
 int lineCount = 0;
 int screen = S_BROWSE;
 bool picking = false;  // choosing which career of a set with several
@@ -201,7 +201,8 @@ void careerName(char *out, size_t cap, const char *file) {
 }
 Line *add(const char *left, const char *right, const char *help,
           const char *extra, int act = A_NONE) {
-  Line *l = lineCount < kLines ? &lines[lineCount++] : &spare;
+  static Line overflow{};
+  Line *l = lineCount < kMaxLines ? &lines[lineCount++] : &overflow;
   memset(l, 0, sizeof(*l));
   snprintf(l->left, sizeof(l->left), "%s", left);
   snprintf(l->right, sizeof(l->right), "%s", right);
@@ -212,7 +213,8 @@ Line *add(const char *left, const char *right, const char *help,
 }
 void buildPick() {
   static CePreviewDisplay each;
-  for (int i = 0; i < view.careers && i < 32; ++i) {
+  const int total = view.careers < kMaxPickCareers ? view.careers : kMaxPickCareers;
+  for (int i = 0; i < total; ++i) {
     char name[208], text[192];
     CePreviewDisplayRead(unsigned(i), &each);
     careerName(name, sizeof(name), each.name);

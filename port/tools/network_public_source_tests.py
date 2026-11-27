@@ -27,7 +27,7 @@ MANIFEST = ROOT / "port/network/PATCHES.txt"
 # Reviewed public replacements that the network guards touch, through host 1863f816 (update after review). 0.1.14: the device recovery code of d3dapp.* is no longer
 # behind CE_NETWORK_OFF (patch 0085 applies in the default build), so these are the default build's text of the files.
 MAIN_REPLACEMENTS = {
-    "d3dapp.cpp": "f076209afcce2e8a6f49ebacf1cad585a49a522f9796744b66bc67928b0802d2",
+    "d3dapp.cpp": "685310a6caa01695ac5cda2b76af316e8ee9f330c9f40c2aba0417f69fd32647",
     "d3dapp.h": "cc0b7513d58804631fdc3ebce96864ba9d9087a48252ee28e4d1ec23a29c84f1",
 }
 CODE = (".c", ".cpp", ".h", ".hpp", ".inl", ".inc")
@@ -53,7 +53,8 @@ PUBLIC_GUARDED_PATCHES = frozenset(("0190-ce-hud-4k.patch", "0085-public-device-
                                     "0235-ce-commander-one-screen.patch", "0262-ce-normal-quit-status.patch", "0278-ce-commander-unit-orders.patch",
                                     "0285-ce-playunit-hud.patch", "0303-ce-hook-level-begin.patch", "0338-surface-point-order.patch",
                                     "0369-ce-multibe-controller-slots.patch", "0381-ce-perf-surf-museum-fixes.patch",
-                                    "0387-ce-single-viewport-mp.patch"))
+                                    "0387-ce-single-viewport-mp.patch",
+                                    "0399-ce-hud-shadows-split-and-video-fixes.patch"))
 
 
 def strip(text):

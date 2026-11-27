@@ -15,8 +15,10 @@
 #endif
 #include <vector>
 
+extern "C" int CE_SettingSetText(const char *key, const char *value) __attribute__((weak));
+
 namespace {
-struct State { std::mutex lock; CeBackupStatus view{}; unsigned long page=0,job=0,owner=0; bool open=false,busy=false; };
+struct State { std::mutex lock; CeBackupStatus view{}; unsigned long page=0,job=0,owner=0; bool open=false,busy=false,folderDirty=false; };
 // SDL may finish a picker after the page closes; a slow removable drive must not block quitting.
 State &state() { static State *s=new State; return *s; }
 struct Ticket { unsigned long serial; };
@@ -57,12 +59,14 @@ void SDLCALL picked(void *context,const char *const *files,int) {
     if(files[1] || !validFolderPath(files[0]) || len>=sizeof(s.view.folder)){
         note(s.view,CE_BACKUP_ERROR,"Choose one local folder.");return;
     }
-    snprintf(s.view.folder,sizeof(s.view.folder),"%.*s",int(len),files[0]);note(s.view,CE_BACKUP_IDLE,"Ready when you are.");
+    snprintf(s.view.folder,sizeof(s.view.folder),"%.*s",int(len),files[0]);
+    s.folderDirty = true;
+    note(s.view,CE_BACKUP_IDLE,"Ready when you are.");
 }
 }
 void CeBackupEnter(const char *configured) {
     State &s=state();std::lock_guard<std::mutex> hold(s.lock);s.open=true;
-    ++s.page;s.view={};
+    ++s.page;s.view={};s.folderDirty=false;
     if(configured && *configured) {
         const size_t len = trimmedFolderLen(configured, sizeof(s.view.folder));
         if(len<sizeof(s.view.folder))
@@ -71,7 +75,7 @@ void CeBackupEnter(const char *configured) {
 }
 void CeBackupLeave() {
     State &s=state();std::lock_guard<std::mutex> hold(s.lock);s.open=false;
-    ++s.page;s.view.state=CE_BACKUP_IDLE;
+    ++s.page;s.view.state=CE_BACKUP_IDLE;s.folderDirty=false;
 }
 void CeBackupChoose() {
     State &s=state();Ticket *ticket;
@@ -84,9 +88,18 @@ void CeBackupChoose() {
 }
 void CeBackupPoll(CeBackupStatus *out) {
     if(!out)return;
-    State &s=state();std::lock_guard<std::mutex> hold(s.lock);*out=s.view;
-    if(s.busy && s.owner!=s.page)
-        note(*out,CE_BACKUP_OTHER,"The previous backup is still running.");
+    std::string persistFolder;
+    {
+        State &s=state();std::lock_guard<std::mutex> hold(s.lock);*out=s.view;
+        if(s.folderDirty) {
+            s.folderDirty=false;
+            if(s.view.folder[0]) persistFolder=s.view.folder;
+        }
+        if(s.busy && s.owner!=s.page)
+            note(*out,CE_BACKUP_OTHER,"The previous backup is still running.");
+    }
+    if(!persistFolder.empty() && CE_SettingSetText)
+        CE_SettingSetText("career_backup_folder", persistFolder.c_str());
 }
 bool CeBackupStart(const char *user,const char *game,const char *filename,const unsigned char *selected,size_t n, const CeBackupOrigin *origin) {
     State &s=state();std::lock_guard<std::mutex> hold(s.lock);

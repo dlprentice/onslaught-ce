@@ -34,7 +34,8 @@ PATCH_NAME = "0137-ce-save-failed-notice.patch"
 # Patches whose hunks are written against this patch's (0138's PauseMenu.cpp declarations follow its own; 0201's chat overlay is drawn between photo mode's note and this notice): left out with it.
 BUILT_ON_NOTICE = ("0138-ce-pause-photo-mode.patch", "0201-network-text-chat-overlay.patch",
                  '0207-ce-museum-visit-lifecycle.patch', '0381-ce-perf-surf-museum-fixes.patch',
-                 '0397-ce-audio-pause-museum-shader-fixes.patch', '0398-ce-bugclip-frontend-overlay.patch')
+                 '0397-ce-audio-pause-museum-shader-fixes.patch', '0398-ce-bugclip-frontend-overlay.patch',
+                 '0400-ce-speech-stateblock-and-pause-fixes.patch')
 NOTICE = ROOT / "port/game/ce_notice.cpp"
 OVERLAY_H = ROOT / "port/game/ce_overlay_box.h"
 NOTICE_H = ROOT / "port/game/ce_notice.h"
@@ -65,7 +66,7 @@ def check_structure(files):
     write = '\t\tif (FRONTEND.mFEPSaveGame.mSaveGameName[0])'
     visit_guard = (
         '#ifdef CE_VERSION\n'
-        '\t\tif (FRONTEND.mFEPSaveGame.mSaveGameName[0] && !PortCeMuseumVisitActive())\n'
+        '\t\tif (FRONTEND.mFEPSaveGame.mSaveGameName[0] && PortCeProjectCareerAllowed())\n'
         '#else\n'
         '\t\tif (FRONTEND.mFEPSaveGame.mSaveGameName[0])\n'
         '#endif'

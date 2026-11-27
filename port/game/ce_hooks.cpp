@@ -46,6 +46,7 @@ void			PortCePaletteClose();										// ce_palette.cpp (level_end)
 void			PortCeConsoleLevelEnd();									// ce_palette.cpp (level_end)
 void			PortCePhotoLevelEnd();										// ce_photo.cpp (level_end)
 void			PortCeCmdLevelEnd();										// ce_cmdmap.cpp (level_end)
+void			PortCeCmdLevelEnd(int quit) __attribute__((weak));			// ce_cmdmap.cpp (level_end, quit-aware)
 bool			PortCePhotoKey(unsigned key, bool repeat);					// ce_photo.cpp (key_capture)
 bool			PortCePaletteSuppressDown(unsigned key);					// ce_palette.cpp (key_capture)
 bool			PortCePaletteOpen(unsigned key, bool repeat);				// ce_palette.cpp (key_capture)
@@ -109,7 +110,12 @@ static void CeHookGamepadBeginCycle() { PortCeGamepadBeginCycle(); }
 static void CeHookPaletteLevelEnd(int, int) { PortCePaletteClose(); }
 static void CeHookConsoleLevelEnd(int, int) { PortCeConsoleLevelEnd(); }
 static void CeHookPhotoLevelEnd(int, int) { PortCePhotoLevelEnd(); }
-static void CeHookCmdLevelEnd(int, int) { PortCeCmdLevelEnd(); }
+static void CeHookCmdLevelEnd(int, int quit)
+{
+	void (*withQuit)(int) = &PortCeCmdLevelEnd;
+	if (withQuit) withQuit(quit);
+	else PortCeCmdLevelEnd();
+}
 static bool CeHookPhotoKey(unsigned char key, bool repeat) { return PortCePhotoKey(key, repeat); }
 static bool CeHookPaletteSuppressDown(unsigned char key, bool) { return PortCePaletteSuppressDown(key); }
 static bool CeHookPaletteOpen(unsigned char key, bool repeat) { return PortCePaletteOpen(key, repeat); }

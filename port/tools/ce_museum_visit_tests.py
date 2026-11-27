@@ -378,7 +378,8 @@ def main() -> int:
         'refused-load-leaves-for-the-front-end': 'if (PortCeMuseumVisitLoadRefused())' in scopes['RunLevel'] and 'mQuit = QT_QUIT_TO_FRONTEND;' in scopes['RunLevel'],
         'level-end-guard': 'PortCeMuseumVisitLevelEnd();' in scopes['ShutdownRestartLoop'],
         'automatic-commands-suppressed': 'const bool ceEditorAuthoring = PortCeEditorActive() || PortCeMuseumVisitActive();' in scopes['RestartLoopRunLevel'],
-        'continue-skips-career-write-in-a-visit': 'mSaveGameName[0] && !PortCeMuseumVisitActive())' in definition((build.MIRROR / 'PauseMenu.cpp').read_text(), 'Resume', 'CPauseMenu'),
+        'continue-skips-career-write-in-a-visit': ('mSaveGameName[0] && PortCeProjectCareerAllowed())' in definition((build.MIRROR / 'PauseMenu.cpp').read_text(), 'Resume', 'CPauseMenu')
+                                                   or 'mSaveGameName[0] && !PortCeMuseumVisitActive())' in definition((build.MIRROR / 'PauseMenu.cpp').read_text(), 'Resume', 'CPauseMenu')),
         'console-map-win-lose-refused-in-a-visit': all(
             re.search(r'if \(MuseumRefuses\("%s"\)(?: \|\| EditorRefuses\("%s"\))?\) return;' % (re.escape(what), re.escape(what)), palette_text) is not None
             for what in ('other level', 'level to win', 'level to lose')),

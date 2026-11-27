@@ -24,6 +24,7 @@ import json
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tarfile
@@ -824,10 +825,6 @@ for arg in "$@"; do
 done
 if [ "$preflight" = 1 ] && [ "${BEA_SKIP_PREFLIGHT:-}" != 1 ]; then "$HERE/preflight.sh" || exit 1; fi
 export DXVK_WSI_DRIVER=SDL3 DXVK_LOG_LEVEL=${DXVK_LOG_LEVEL:-none}
-if [ -z "${BEA_ORIG_LD_LIBRARY_PATH+x}" ]; then
-	export BEA_ORIG_LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
-fi
-export LD_LIBRARY_PATH="$HERE/lib${BEA_ORIG_LD_LIBRARY_PATH:+:$BEA_ORIG_LD_LIBRARY_PATH}"
 exec "$HERE/onslaught-ce-launch" "$@"
 '''
 
@@ -876,9 +873,15 @@ case "${SDL_VIDEODRIVER:-}" in
 		done ;;
 	*)
 if [ -n "${WAYLAND_DISPLAY:-}" ]; then
-	check libwayland-client.so.0 lib32-wayland libwayland-client0:i386
-	check libwayland-cursor.so.0 lib32-wayland libwayland-cursor0:i386
-	have libdecor-0.so.0 || echo "onslaught-ce: note: no 32-bit libdecor (lib32-libdecor / libdecor-0-0:i386); windows have no title bar on some desktops" >&2
+	if have libwayland-client.so.0 && have libwayland-cursor.so.0; then
+		have libdecor-0.so.0 || echo "onslaught-ce: note: no 32-bit libdecor (lib32-libdecor / libdecor-0-0:i386); windows have no title bar on some desktops" >&2
+	elif [ -n "${DISPLAY:-}" ] && have libX11.so.6 && have libXext.so.6; then
+		echo "onslaught-ce: note: no 32-bit Wayland client libraries; SDL can fall back to XWayland (DISPLAY is set and 32-bit X11 libraries are present)" >&2
+	else
+		check libwayland-client.so.0 lib32-wayland libwayland-client0:i386
+		check libwayland-cursor.so.0 lib32-wayland libwayland-cursor0:i386
+		have libdecor-0.so.0 || echo "onslaught-ce: note: no 32-bit libdecor (lib32-libdecor / libdecor-0-0:i386); windows have no title bar on some desktops" >&2
+	fi
 else
 	check libX11.so.6      lib32-libx11       libx11-6:i386
 	check libXext.so.6     lib32-libxext      libxext6:i386
@@ -895,17 +898,29 @@ esac
 icd=0 good=0
 files=()
 if [ -n "${VK_DRIVER_FILES:-${VK_ICD_FILENAMES:-}}" ]; then
-	IFS=: read -r -a files <<<"${VK_DRIVER_FILES:-$VK_ICD_FILENAMES}"
+	IFS=: read -r -a raw_files <<<"${VK_DRIVER_FILES:-$VK_ICD_FILENAMES}"
+	for entry in "${raw_files[@]}"; do
+		[ -n "$entry" ] || continue
+		if [ -d "$entry" ]; then
+			for f in "$entry"/*.json; do
+				[ -e "$f" ] && files+=("$f")
+			done
+		else
+			files+=("$entry")
+		fi
+	done
 else
 	files=(/usr/share/vulkan/icd.d/*.json /etc/vulkan/icd.d/*.json)
 fi
 for f in "${files[@]}"; do
-	[ -e "$f" ] || continue
+	[ -f "$f" ] || continue
 	lib=$(sed -n 's/.*"library_path"[^"]*"\([^"]*\)".*/\1/p' "$f" | head -n1)
 	ok=0
+	path=
 	case "$lib" in
-		/*) [ -e "$lib" ] && is32 "$lib" && ok=1 ;;
-		?*) have "$lib" && ok=1 ;;
+		/*) [ -e "$lib" ] && is32 "$lib" && { path=$lib; ok=1; } ;;
+		*/*) rel="$(dirname "$f")/$lib"; [ -e "$rel" ] && is32 "$rel" && { path=$rel; ok=1; } ;;
+		?*) path=$(where32 "$lib") && ok=1 ;;
 	esac
 	[ $ok = 1 ] || continue
 	icd=1
@@ -917,7 +932,6 @@ for f in "${files[@]}"; do
 	usable=1
 	v=$(sed -n 's/.*"api_version"[^"]*"1\.\([0-9]*\)\..*/\1/p' "$f" | head -n1)
 	[ -n "$v" ] && [ "$v" -lt 3 ] && usable=0
-	case "$lib" in /*) path=$lib ;; *) path=$(where32 "$lib") ;; esac
 	case "${path##*/}" in
 		libvulkan_*)
 			for e in VK_KHR_load_store_op_none VK_KHR_maintenance5 VK_KHR_maintenance6; do
@@ -967,6 +981,111 @@ if [ $good = 0 ]; then
 fi
 exit 0
 '''
+
+
+def set_elf32_runpath(data: bytes, runpath: bytes = b"$ORIGIN") -> bytes:
+    """Ensure a 32-bit little-endian ELF shared library has DT_RUNPATH set to runpath (default $ORIGIN).
+
+    Appends a new page-aligned PT_LOAD segment containing the relocated program header table, expanded .dynstr,
+    and (when .dynamic has no spare DT_NULL slot) relocated .dynamic without touching existing .bss segments.
+    Returns non-ELF32/non-ET_DYN inputs unchanged so mock unit-test fixtures pass through safely.
+    """
+    if len(data) < 52 or data[:5] != b"\x7fELF\x01" or data[5] != 1:
+        return data
+    if struct.unpack_from("<H", data, 16)[0] != 3:  # ET_DYN
+        return data
+    e_phoff, e_shoff = struct.unpack_from("<II", data, 28)
+    e_phentsize, e_phnum, e_shentsize, e_shnum, _ = struct.unpack_from("<HHHHH", data, 42)
+    if e_phentsize != 32 or e_phnum == 0:
+        return data
+    phdrs = [list(struct.unpack_from("<IIIIIIII", data, e_phoff + i * 32)) for i in range(e_phnum)]
+    dyn_idx = next((i for i, p in enumerate(phdrs) if p[0] == 2), None)
+    if dyn_idx is None:
+        return data
+    dyn_off, dyn_vaddr, dyn_filesz = phdrs[dyn_idx][1], phdrs[dyn_idx][2], phdrs[dyn_idx][4]
+    dyn_entries = []
+    for off in range(dyn_off, dyn_off + dyn_filesz, 8):
+        tag, val = struct.unpack_from("<iI", data, off)
+        if tag == 0:
+            break
+        dyn_entries.append((tag, val))
+    strtab_vaddr = next((v for t, v in dyn_entries if t == 5), None)
+    strsz = next((v for t, v in dyn_entries if t == 10), None)
+    if strtab_vaddr is None or strsz is None:
+        return data
+    strtab_off = None
+    for p in phdrs:
+        if p[0] == 1 and p[2] <= strtab_vaddr < p[2] + p[4]:
+            strtab_off = p[1] + (strtab_vaddr - p[2])
+            break
+    if strtab_off is None:
+        return data
+    orig_dynstr = data[strtab_off : strtab_off + strsz]
+    cur_rp = next((v for t, v in dyn_entries if t == 29), None)
+    if cur_rp is not None and cur_rp < len(orig_dynstr):
+        end = orig_dynstr.find(b"\x00", cur_rp)
+        if end != -1 and orig_dynstr[cur_rp:end] == runpath:
+            return data
+    runpath_off = len(orig_dynstr)
+    new_dynstr = orig_dynstr + runpath + b"\x00"
+    filtered = [(t, v) for t, v in dyn_entries if t not in (15, 29)]
+    filtered.append((29, runpath_off))
+    need_dyn_bytes = (len(filtered) + 1) * 8
+    move_dyn = need_dyn_bytes > dyn_filesz
+    page = 0x1000
+    max_vaddr = max(p[2] + p[5] for p in phdrs if p[0] == 1)
+    new_vaddr = (max_vaddr + page - 1) & ~(page - 1)
+    buf = bytearray(data)
+    if len(buf) % page:
+        buf.extend(b"\x00" * (page - (len(buf) % page)))
+    new_off = len(buf)
+    new_phnum = e_phnum + 1
+    phdr_off, phdr_vaddr = new_off, new_vaddr
+    buf.extend(b"\x00" * (new_phnum * 32))
+    if len(buf) % 16:
+        buf.extend(b"\x00" * (16 - (len(buf) % 16)))
+    new_dynstr_off = len(buf)
+    new_dynstr_vaddr = new_vaddr + (new_dynstr_off - new_off)
+    buf.extend(new_dynstr)
+    if move_dyn:
+        if len(buf) % 8:
+            buf.extend(b"\x00" * (8 - (len(buf) % 8)))
+        new_dyn_off = len(buf)
+        new_dyn_vaddr = new_vaddr + (new_dyn_off - new_off)
+        buf.extend(b"\x00" * need_dyn_bytes)
+        new_dyn_size = need_dyn_bytes
+    else:
+        new_dyn_off, new_dyn_vaddr, new_dyn_size = dyn_off, dyn_vaddr, dyn_filesz
+    final_dyn = [
+        (t, new_dynstr_vaddr if t == 5 else len(new_dynstr) if t == 10 else v)
+        for t, v in filtered
+    ]
+    for i, (t, v) in enumerate(final_dyn):
+        struct.pack_into("<iI", buf, new_dyn_off + i * 8, t, v)
+    for off in range(new_dyn_off + len(final_dyn) * 8, new_dyn_off + new_dyn_size, 8):
+        struct.pack_into("<iI", buf, off, 0, 0)
+    seg_size = len(buf) - new_off
+    for p in phdrs:
+        if p[0] == 6:  # PT_PHDR
+            p[1], p[2], p[3], p[4], p[5] = phdr_off, phdr_vaddr, phdr_vaddr, new_phnum * 32, new_phnum * 32
+        elif p[0] == 2 and move_dyn:  # PT_DYNAMIC
+            p[1], p[2], p[3], p[4], p[5] = new_dyn_off, new_dyn_vaddr, new_dyn_vaddr, new_dyn_size, new_dyn_size
+    phdrs.append([1, new_off, new_vaddr, new_vaddr, seg_size, seg_size, 6 if move_dyn else 4, page])
+    for i, p in enumerate(phdrs):
+        struct.pack_into("<IIIIIIII", buf, phdr_off + i * 32, *p)
+    struct.pack_into("<I", buf, 28, phdr_off)
+    struct.pack_into("<H", buf, 44, new_phnum)
+    if e_shoff and e_shnum and e_shentsize == 40:
+        for i in range(e_shnum):
+            soff = e_shoff + i * 40
+            sh = list(struct.unpack_from("<IIIIIIIIII", buf, soff))
+            if sh[1] == 3 and sh[3] == strtab_vaddr:  # SHT_STRTAB (.dynstr)
+                sh[3], sh[4], sh[5] = new_dynstr_vaddr, new_dynstr_off, len(new_dynstr)
+                struct.pack_into("<IIIIIIIIII", buf, soff, *sh)
+            elif move_dyn and sh[1] == 6 and sh[3] == dyn_vaddr:  # SHT_DYNAMIC (.dynamic)
+                sh[3], sh[4], sh[5] = new_dyn_vaddr, new_dyn_off, new_dyn_size
+                struct.pack_into("<IIIIIIIIII", buf, soff, *sh)
+    return bytes(buf)
 
 
 def strip(src: Path, dst: Path, windows: bool):
@@ -1369,19 +1488,20 @@ def package(a):
                     z.writestr(info, data)
         else:
             for d, so in LINUX_LIBS:
-                files[f"{top}/lib/{so}"] = ((d / so).resolve().read_bytes(), 0o755)
+                files[f"{top}/lib/{so}"] = (set_elf32_runpath((d / so).resolve().read_bytes()), 0o755)
             files[f"{top}/onslaught-ce"] = (LAUNCHER.encode(), 0o755)
             files[f"{top}/preflight.sh"] = (PREFLIGHT.replace("@GLIBC@", GLIBC).encode(), 0o755)
             native_elfs = []
             if native_payload:
                 for soname, data in native_payload["libraries"].items():
+                    patched = set_elf32_runpath(data)
                     key = f"{top}/lib/{soname}"
                     if key in files:
-                        if files[key][0] != data:
+                        if files[key][0] != patched:
                             sys.exit("native-signaling SDK library conflicts with an existing runtime")
                     else:
                         native_elfs.append(native_payload["paths"][soname])
-                    files[key] = (data, 0o755)
+                    files[key] = (patched, 0o755)
             needed = glibc_needed(list([src, launcher] + [(d / so).resolve() for d, so in LINUX_LIBS]) + native_elfs)
             if needed != GLIBC:
                 sys.exit(f"{top}: the programs and libraries need glibc {needed}, but package.py's GLIBC (README.txt, "

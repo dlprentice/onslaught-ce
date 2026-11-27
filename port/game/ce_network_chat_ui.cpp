@@ -10,6 +10,8 @@
 #include "Platform.h"
 #ifndef CE_CHAT_UI_TEST
 #include "ltshell.h"
+#include "Hud.h"
+#include "hud_scale.h"
 #endif
 #include <SDL3/SDL.h>
 #include <algorithm>
@@ -20,7 +22,12 @@ SDL_WindowID text_window = 0;
 SDL_Scancode release_key = SDL_SCANCODE_UNKNOWN;
 uint32_t last_result = CE_CHAT_OK;
 
-bool CanCompose() { return CE_LockstepChatAvailable() && !FRONTEND.IsRunning(); }
+bool CanCompose() {
+#ifndef CE_CHAT_UI_TEST
+    if (LT.GetKeytrap() != NULL) return false;
+#endif
+    return CE_LockstepChatAvailable() && !FRONTEND.IsRunning();
+}
 
 void Wipe(void *value, size_t size) {
     volatile uint8_t *bytes = static_cast<volatile uint8_t*>(value);
@@ -112,8 +119,10 @@ extern "C" int PortCeChatEvent(const SDL_Event *event) {
     if (event->type == SDL_EVENT_KEY_UP && event->key.scancode == release_key) {
         release_key = SDL_SCANCODE_UNKNOWN; return 1;
     }
-    if (release_key != SDL_SCANCODE_UNKNOWN &&
-        (event->type == SDL_EVENT_KEY_DOWN || event->type == SDL_EVENT_KEY_UP)) return 1;
+    if (release_key != SDL_SCANCODE_UNKNOWN) {
+        if (event->type == SDL_EVENT_KEY_DOWN) return 1;
+        if (event->type == SDL_EVENT_KEY_UP) return 0;
+    }
     if (!CanCompose()) return 0;
     if (event->type == SDL_EVENT_TEXT_INPUT && CE_LockstepChatComposing()) {
         if (event->text.text) {
@@ -136,7 +145,7 @@ extern "C" int PortCeChatEvent(const SDL_Event *event) {
         text_window = event->key.windowID; last_result = CE_CHAT_OK;
         return 1;
     }
-    if (!down) return 1;
+    if (!down) return 0;
     if (key == SDL_SCANCODE_ESCAPE) {
         CE_LockstepChatCancel(); StopText(); release_key = key; last_result = CE_CHAT_OK;
     } else if (Enter(key)) {
@@ -171,7 +180,7 @@ void PortCeChatRender(void) {
     if (!font) { Wipe(&view, sizeof(view)); return; }
     const float width = float(PLATFORM.GetWindowWidth());
     const float height = float(PLATFORM.GetWindowHeight());
-    const float scale = (std::max)(0.65f, (std::min)(1.5f, height / 720.f));
+    const float scale = (std::max)(0.65f, height / 720.f);
     const float line_height = (std::max)(12.f, float(font->GetHeight()) * scale);
     Rows rows;
     const unsigned first = view.history_count > 6 ? view.history_count - 6 : 0;
@@ -201,7 +210,22 @@ void PortCeChatRender(void) {
         Plain(rows, font, "", reinterpret_cast<const uint8_t*>(notice),
               static_cast<uint32_t>(std::strlen(notice)), width - 40.f * scale, scale);
     const float x = 20.f * scale;
-    float y = (std::max)(20.f * scale, height - (rows.count + 2) * line_height);
+#ifndef CE_CHAT_UI_TEST
+    float hudScale = 1.f;
+    {
+        CeHudScope scope(1, width, height, 0.f, 0.f);
+        if (CeHudScaleActive()) hudScale = CeHudScaleFactor();
+    }
+    const bool bottomLeftHudActive =
+        HUD.IsComponentVisible(HP_RADAR) || HUD.IsComponentVisible(HP_CURRENT_WEAPON);
+#else
+    const float hudScale = (std::max)(1.f, (std::min)(width / 640.f, height / 480.f));
+    const bool bottomLeftHudActive = true;
+#endif
+    const float y_bottom = bottomLeftHudActive
+        ? (height - 140.f * hudScale)
+        : (height - 2.f * line_height);
+    float y = (std::max)(20.f * scale, y_bottom - float(rows.count) * line_height);
 #ifndef CE_CHAT_UI_TEST
     IDirect3DDevice9 *device = LT.GetDevice();
     IDirect3DStateBlock9 *saved = nullptr;

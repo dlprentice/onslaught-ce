@@ -193,6 +193,21 @@ std::string digits(size_t count) {
   return out;
 }
 
+struct OrdinalLess {
+  bool operator()(const Wide &a, const Wide &b) const {
+    return CompareStringOrdinal(a.c_str(), static_cast<int>(a.size()),
+                                b.c_str(), static_cast<int>(b.size()),
+                                TRUE) == CSTR_LESS_THAN;
+  }
+};
+
+using WideNames = std::set<Wide, OrdinalLess>;
+
+bool ordinalEqual(const Wide &a, const Wide &b) {
+  return CompareStringOrdinal(a.c_str(), static_cast<int>(a.size()), b.c_str(),
+                              static_cast<int>(b.size()), TRUE) == CSTR_EQUAL;
+}
+
 std::string lower(std::string s) {
   for (char &c : s)
     if (c >= 'A' && c <= 'Z')
@@ -756,7 +771,7 @@ struct Session {
                     bool logSkipped = false) const {
     Snapshot s;
     size_t total = 0;
-    std::map<std::string, std::string> spelling;
+    std::map<Wide, std::string, OrdinalLess> spelling;
     for (bool fromUser : {true, false}) {
       HANDLE rootHandle = fromUser ? user.h() : game.h();
       if (!(fromUser ? slotsPresent : originalPresent)) {
@@ -797,10 +812,9 @@ struct Session {
           s.skipped.push_back(SkippedMember{name, fromUser, fs});
           continue;
         }
-        const std::string key = lower(name);
-        auto was = spelling.find(key);
+        auto was = spelling.find(wideName);
         require(was == spelling.end() || (was->second == name && !fromUser));
-        spelling[key] = name;
+        spelling[wideName] = name;
         if (fs.size != CE_CAREER_SIZE) {
           if (logSkipped)
             logSkippedSave(fromUser, name,
@@ -937,7 +951,7 @@ std::string setStamp(const CeCareerStorageRequest &r, const std::string &path,
   return ce_backup_verify::digest(record + expected);
 }
 
-std::set<std::string> names(const CeCareerRestoreRequest &r) {
+WideNames names(const CeCareerRestoreRequest &r) {
   Directory user = openDir(r.user);
   Directory game = openDir(r.game);
   require(!user.below(game) && !game.below(user) &&
@@ -954,8 +968,8 @@ std::set<std::string> names(const CeCareerRestoreRequest &r) {
               (!slotsPresent || isLocalNtfs(slots.h)) &&
               (!originalPresent || isLocalNtfs(original.h)),
           Status::Unsupported);
-  std::map<std::string, std::string> spellings;
-  std::set<std::string> found;
+  std::map<Wide, std::string, OrdinalLess> spellings;
+  WideNames found;
   for (bool fromUser : {true, false}) {
     if (!(fromUser ? slotsPresent : originalPresent))
       continue;
@@ -976,15 +990,14 @@ std::set<std::string> names(const CeCareerRestoreRequest &r) {
       Handle f = child(folder, wideEntry, false, false);
       FileStamp st{};
       require(bool(f) && readFileStamp(f.h, wideEntry, st));
-      const std::string key = lower(entry);
       if (!portable(entry)) {
-        found.insert(key);
+        found.insert(wideEntry);
         continue;
       }
-      auto was = spellings.find(key);
+      auto was = spellings.find(wideEntry);
       require(was == spellings.end() || (was->second == entry && !fromUser));
-      spellings[key] = entry;
-      found.insert(key);
+      spellings[wideEntry] = entry;
+      found.insert(wideEntry);
     }
   }
   DirStamp afterUser{}, afterGame{};
@@ -1231,7 +1244,7 @@ CeCareerRestoreSuggest(const CeCareerRestoreRequest &request,
     const auto stem = copyStem(request.sourceName);
     for (unsigned n = stem.next; n < stem.next + 1000 && n <= 9999; ++n) {
       const std::string candidate = proposal(stem, n);
-      if (!taken.count(lower(candidate))) {
+      if (!taken.count(toWide(candidate))) {
         targetName = candidate;
         return Status::Complete;
       }
@@ -1306,9 +1319,9 @@ CeCareerRestoreAsNew(const CeCareerRestoreRequest &request) {
     const std::string target = request.targetName;
     const Wide wideTarget = toWide(target);
     for (const Member &member : session.saved.all)
-      require(lower(member.name) != lower(target), Status::Occupied);
+      require(!ordinalEqual(toWide(member.name), wideTarget), Status::Occupied);
     for (const SkippedMember &member : session.saved.skipped)
-      require(lower(member.name) != lower(target), Status::Occupied);
+      require(!ordinalEqual(toWide(member.name), wideTarget), Status::Occupied);
     require(!existsEntry(session.slots.h, wideTarget) &&
                 !existsEntry(session.original.h, wideTarget),
             Status::Occupied);

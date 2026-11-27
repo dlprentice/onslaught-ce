@@ -101,6 +101,23 @@ MSG gQueue[256];
 int gHead, gTail;
 bool gReleasePending;	// release repair or a focus-loss release batch is waiting for space in the ring
 
+typedef void (*PortWindowPauseFn)(int paused);
+PortWindowPauseFn gWindowPauseHook;
+bool gWindowMinimized;
+bool gWindowExplicitlyUnfocused;
+bool gInGetMessagePause;
+bool gDispatchedPointerActive;
+int gDispatchedPointerX, gDispatchedPointerY;
+
+bool IsDispatchedPointerMessage(UINT m)
+{
+	return m == WM_MOUSEMOVE ||
+	       m == WM_LBUTTONDOWN || m == WM_LBUTTONUP ||
+	       m == WM_RBUTTONDOWN || m == WM_RBUTTONUP ||
+	       m == WM_MBUTTONDOWN || m == WM_MBUTTONUP ||
+	       m == WM_LBUTTONDBLCLK || m == WM_RBUTTONDBLCLK;
+}
+
 // BEA_PORT_INPUT_LOG: keys down and up (scan code, keycode, virtual key), drops, synthetic releases, focus.
 bool InputLog()
 {
@@ -177,6 +194,22 @@ void PostMouseMove(HWND h, WPARAM w, LPARAM l)
 		}
 	}
 	Post(h, WM_MOUSEMOVE, w, l);
+}
+
+// Coalesce consecutive resize notifications of the same kind so a tiling WM or drag burst produces one WM_SIZE.
+void PostSize(HWND h, WPARAM w, LPARAM l)
+{
+	if (gHead != gTail)
+	{
+		MSG &last = gQueue[(gTail + 255) % 256];
+		if (last.message == WM_SIZE && last.hwnd == h && last.wParam == w)
+		{
+			last.lParam = l;
+			last.time = (DWORD)SDL_GetTicks();
+			return;
+		}
+	}
+	Post(h, WM_SIZE, w, l);
 }
 
 #ifdef CE_VERSION
@@ -1156,6 +1189,7 @@ void Pump()
 			Post(h, WM_CLOSE, 0, 0);
 			break;
 		case SDL_EVENT_WINDOW_FOCUS_GAINED:
+			gWindowExplicitlyUnfocused = false;
 			PortSessionLog(PORT_SESSION_WINDOW, false, "focus gained");
 			if (InputLog()) fprintf(stderr, PORT_LOG_PREFIX "input: focus gained\n");
 			if (PortAudioSetFocused) PortAudioSetFocused(1);
@@ -1163,6 +1197,7 @@ void Pump()
 			Post(h, WM_ACTIVATE, 1, 0);
 			break;
 		case SDL_EVENT_WINDOW_FOCUS_LOST:
+			gWindowExplicitlyUnfocused = true;
 			PortSessionLog(PORT_SESSION_WINDOW, false, "focus lost");
 			if (InputLog()) fprintf(stderr, PORT_LOG_PREFIX "input: focus lost\n");
 			ReleaseAll("focus lost");
@@ -1173,25 +1208,37 @@ void Pump()
 			Post(h, WM_ACTIVATE, 0, 0);
 			break;
 		case SDL_EVENT_WINDOW_RESIZED:
+		{
 			PortSessionLog(PORT_SESSION_WINDOW, false, "logical size=%dx%d", e.window.data1, e.window.data2);
-			if (!PortWideModes())	// HiDPI windows report their size in pixels below, as the client rectangle is
-				Post(h, WM_SIZE, SIZE_RESTORED, MAKELPARAM(e.window.data1, e.window.data2));
+			int width = e.window.data1, height = e.window.data2;
+			if (PortWideModes())
+			{
+				if (SDL_Window *w = Sdl(h))
+					SDL_GetWindowSizeInPixels(w, &width, &height);
+			}
+			PostSize(h, SIZE_RESTORED, MAKELPARAM(width, height));
 			break;
+		}
 		case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
 			PortSessionLog(PORT_SESSION_WINDOW, false, "pixel size=%dx%d", e.window.data1, e.window.data2);
-			if (PortWideModes())
-				Post(h, WM_SIZE, SIZE_RESTORED, MAKELPARAM(e.window.data1, e.window.data2));
+			PostSize(h, SIZE_RESTORED, MAKELPARAM(e.window.data1, e.window.data2));
 			break;
 		case SDL_EVENT_WINDOW_MINIMIZED:
+			gWindowMinimized = true;
 			// Minimize can precede focus loss; end held keys at either boundary.
 			ReleaseAll("minimize");
 			if (!PortRecording() && PortAudioSetFocused) PortAudioSetFocused(0);
+			if (gWindowPauseHook) gWindowPauseHook(1);
 			PortSessionLog(PORT_SESSION_WINDOW, false, "minimized");
 			Post(h, WM_SIZE, SIZE_MINIMIZED, 0);
 			break;
 		case SDL_EVENT_WINDOW_RESTORED:
 		case SDL_EVENT_WINDOW_MAXIMIZED:
 		{
+			const bool wasMinimized = gWindowMinimized;
+			gWindowMinimized = false;
+			if (wasMinimized && !gInGetMessagePause && gWindowPauseHook)
+				gWindowPauseHook(0);
 			// A same-size restore need not produce a resize event. The game's WM_SIZE handler is what makes it
 			// active again after minimization; focus messages alone leave its message loop waiting forever.
 			int width = 0, height = 0;
@@ -1448,6 +1495,11 @@ extern "C" HWND WINAPI PortCreateWindowExA(DWORD exstyle, LPCSTR cls, LPCSTR tit
 	// No SDL text input: it would route every game key through the desktop's input method (an IME's keyboard grab can
 	// lose or delay key-ups); WM_CHAR is made from key-downs instead (KeyChar), as TranslateMessage does.
 	Window &win = gWindows[gNumWindows++];
+	if (gNumWindows == 1)
+	{
+		gWindowMinimized = false;
+		gWindowExplicitlyUnfocused = false;
+	}
 	memset(&win, 0, sizeof(win));
 	win.sdl = sdl;
 #if defined(_WIN32)
@@ -1505,6 +1557,11 @@ extern "C" BOOL WINAPI PortDestroyWindow(HWND h)
 #endif
 	SDL_DestroyWindow(w->sdl);
 	*w = gWindows[--gNumWindows];
+	if (gNumWindows == 0)
+	{
+		gWindowMinimized = false;
+		gWindowExplicitlyUnfocused = false;
+	}
 	return TRUE;
 }
 
@@ -1565,11 +1622,18 @@ extern "C" BOOL WINAPI PortGetMessageA(LPMSG msg, HWND, UINT, UINT)
 	// The game waits here while its window is minimized (its WM_SIZE handler made it inactive, the original's d3dapp): the time it waits is not game time, so the clock it reads stands still
 	// for the wait (clock.cpp: CE layer and the real clock only) and the game does not run the time it was away as one burst when the window comes back.
 	PortClockPauseBegin();
+	const bool prevPause = gInGetMessagePause;
+	gInGetMessagePause = true;
+	if (gWindowPauseHook)
+		gWindowPauseHook(1);
 	for (;;)
 	{
 		Pump();
 		if (Pop(msg, true))
 		{
+			gInGetMessagePause = prevPause;
+			if (gWindowPauseHook && !gWindowMinimized)
+				gWindowPauseHook(0);
 			PortClockPauseEnd();
 			return msg->message != WM_QUIT;
 		}
@@ -1583,14 +1647,37 @@ extern "C" LRESULT WINAPI PortDispatchMessageA(const MSG *msg)
 {
 	Window *w = Find(msg->hwnd);
 	if (w && w->proc)
-#ifndef CE_NETWORK_OFF
 	{
+#ifndef CE_NETWORK_OFF
 		if (PortInputActivity::MouseMessage(msg->message)) PortInputActivity::Count(PortInputActivity::DISPATCHED);
 #endif
+		struct DispatchedPointerScope
+		{
+			bool prevActive;
+			int prevX, prevY;
+			DispatchedPointerScope(UINT message, LPARAM lp)
+				: prevActive(gDispatchedPointerActive), prevX(gDispatchedPointerX), prevY(gDispatchedPointerY)
+			{
+				if (IsDispatchedPointerMessage(message))
+				{
+					gDispatchedPointerActive = true;
+					gDispatchedPointerX = (int)LOWORD(lp);
+					gDispatchedPointerY = (int)HIWORD(lp);
+				}
+				else
+				{
+					gDispatchedPointerActive = false;
+				}
+			}
+			~DispatchedPointerScope()
+			{
+				gDispatchedPointerActive = prevActive;
+				gDispatchedPointerX = prevX;
+				gDispatchedPointerY = prevY;
+			}
+		} pointerScope(msg->message, msg->lParam);
 		return w->proc(msg->hwnd, msg->message, msg->wParam, msg->lParam);
-#ifndef CE_NETWORK_OFF
 	}
-#endif
 	return 0;
 }
 
@@ -1860,6 +1947,62 @@ extern "C" BOOL WINAPI PortClientToScreen(HWND h, LPPOINT p)
 // ---- the platform layer's view of the windows ---------------------------------------------------------------------------
 SDL_Window *PortSdlWindow(HWND hwnd) { return Sdl(hwnd); }
 SDL_Window *PortMainSdlWindow() { return gNumWindows ? gWindows[0].sdl : NULL; }
+
+extern "C" int PortWindowIsFocused(void)
+{
+	SDL_Window *w = PortMainSdlWindow();
+	if (!w)
+		return 0;
+	const SDL_WindowFlags flags = SDL_GetWindowFlags(w);
+	if (gWindowMinimized || (flags & (SDL_WINDOW_MINIMIZED | SDL_WINDOW_HIDDEN)))
+		return 0;
+	if (gWindowExplicitlyUnfocused)
+		return 0;
+	const char *driver = SDL_GetCurrentVideoDriver();
+	if (driver && strcmp(driver, "offscreen") == 0)
+		return 1;
+	return (flags & SDL_WINDOW_INPUT_FOCUS) ? 1 : 0;
+}
+
+extern "C" void PortWindowSetPauseHook(PortWindowPauseFn fn)
+{
+	gWindowPauseHook = fn;
+}
+
+extern "C" int PortDispatchedPointer(int *x, int *y)
+{
+	if (!gDispatchedPointerActive)
+		return 0;
+	if (x)
+		*x = gDispatchedPointerX;
+	if (y)
+		*y = gDispatchedPointerY;
+	return 1;
+}
+
+extern "C" int PortResizeWindowClient(HWND h, unsigned pixelWidth, unsigned pixelHeight)
+{
+	if (!pixelWidth || !pixelHeight || pixelWidth > 65535u || pixelHeight > 32767u)
+		return 0;
+	SDL_Window *w = Sdl(h);
+	if (!w)
+		return 0;
+	if (SDL_GetWindowFlags(w) & SDL_WINDOW_MAXIMIZED)
+		SDL_RestoreWindow(w);
+	float density = SDL_GetWindowPixelDensity(w);
+	if (!(density > 0.f) || !(density < 1e6f))
+		density = 1.f;
+	int logicalW = (int)((double)pixelWidth / density + 0.5);
+	int logicalH = (int)((double)pixelHeight / density + 0.5);
+	if (logicalW < 1)
+		logicalW = 1;
+	if (logicalH < 1)
+		logicalH = 1;
+	if (!SDL_SetWindowSize(w, logicalW, logicalH))
+		return 0;
+	SDL_SyncWindow(w);
+	return 1;
+}
 void PortPumpInput()
 {
 	FeelScriptedKeys();

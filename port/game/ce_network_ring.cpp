@@ -32,6 +32,7 @@
 
 extern "C" void PortCeNetRingMousePoint(float x, float y, int *menuX, int *menuY);
 extern "C" int PortCeChatCapturingInput(void) __attribute__((weak));
+extern "C" void PortCeChatReset(void) __attribute__((weak));
 extern "C" int PortCeOnlineMatchActive(void) __attribute__((weak));
 extern "C" int PortCeOnlineMatchLocalSlot(void) __attribute__((weak));
 extern "C" int PortCeOnlineMatchSlotCount(void) __attribute__((weak));
@@ -350,6 +351,8 @@ extern "C" int PortCeNetRingEvent(const union SDL_Event *event)
 		return 0;
 	}
 	const bool open = gRing && gRing->Open();
+	if (open && event->type == SDL_EVENT_TEXT_INPUT)
+		return 1;
 	if (open && event->type == SDL_EVENT_MOUSE_MOTION)
 	{
 		gRing->Pointer(event->motion.x, event->motion.y, 0);
@@ -398,7 +401,11 @@ extern "C" int PortCeNetRingEvent(const union SDL_Event *event)
 	{
 		const int button = event->gbutton.button;
 		if (button == SDL_GAMEPAD_BUTTON_START)
+		{
+			if (!open && PortCeChatCapturingInput && PortCeChatCapturingInput() && PortCeChatReset)
+				PortCeChatReset();
 			Toggle();
+		}
 		else if (!open)
 			return 0;
 		else if (button == SDL_GAMEPAD_BUTTON_DPAD_UP)

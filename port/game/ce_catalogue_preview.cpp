@@ -367,6 +367,18 @@ void CeCatalogueSpeechRelease()
     if (!sCatalogueSpeech) return;
     CSample* sample = sCatalogueSpeech;
     sCatalogueSpeech = NULL;
+    SOUND.KillAllInstancesOfSample(sample);
+    for (CSoundEvent* se = SOUND.GetFirstSoundEvent(); se; )
+    {
+        CSoundEvent* next = se->mNextEvent;
+        if (se->mSample == sample)
+        {
+            SOUND.StopSoundEvent(se, TRUE);
+            se->mSample = NULL;
+            SOUND.DeleteSoundEvent(se);
+        }
+        se = next;
+    }
     delete sample;                                       // ~CPCSample ends every event of the sample first
 }
 
@@ -439,6 +451,8 @@ bool PortCeCatalogueSpeechStart(const char* game_path, char* why, unsigned why_s
     if (!game_path || strlen(game_path) >= sizeof(path)) { Say(why, why_size, "This sound file could not be opened, so it was skipped."); return false; }
     strcpy(path, game_path);
     COggFileRead* reader = new COggFileRead;
+    reader->mMemData = NULL;
+    reader->mMemSize = 0;
     if (FAILED(reader->Open(path)) || !reader->HasFormat())
     {
         delete reader;
@@ -461,7 +475,13 @@ bool PortCeCatalogueSpeechStart(const char* game_path, char* why, unsigned why_s
         Say(why, why_size, "This sound file could not be decoded, so it was skipped.");
         return false;
     }
-    CSample* sample = SOUND.CreateSampleFromData(pcm, int(size & ~1u), FALSE, NULL);
+    if (size > kCatalogueSpeechBytes) size = kCatalogueSpeechBytes;
+    const UINT rawSize = size & ~1u;
+    UINT paddedSize = (rawSize + 3u) & ~3u;
+    if (paddedSize < 16u) paddedSize = 16u;
+    if (paddedSize > rawSize)
+        memset(pcm + rawSize, 0, paddedSize - rawSize);
+    CSample* sample = SOUND.CreateSampleFromData(pcm, int(paddedSize), FALSE, NULL);
     delete[] pcm;                                        // the sample holds its own copy in its sound buffer
     if (!sample || !static_cast<CPCSample*>(sample)->mDSBuffer)
     {
@@ -492,6 +512,10 @@ bool PortCeCatalogueSpeechLine(const char* folder, const char* stem, char* utf8,
     if (!stem || !utf8 || !size) return false;
     CText* table = TableFor(folder);
     if (!table || !table->mLoaded || !table->mFile || !table->mStrings || (table->mFormat != 2 && table->mFormat != 3)) return false;
+    const char* base = reinterpret_cast<const char*>(table->mFile);
+    const char* end = base + table->mSize;
+    if (table->mStrings < base || table->mStrings > end) return false;
+    const size_t poolSize = static_cast<size_t>(end - table->mStrings);
     if (sLinesTable != table || sLinesLanguage != table->GetLanguage())
     {
         free(sLines);
@@ -502,8 +526,10 @@ bool PortCeCatalogueSpeechLine(const char* folder, const char* stem, char* utf8,
         for (SINT n = 0; sLines && n < table->mNumEntries; n++)
         {
             const SINT offset = table->GetSoundOffset(n);
-            if (offset < 0 || UINT(offset) >= table->mSize) continue;
-            sLines[sLineCount].mHash = FoldHash(table->mStrings + offset);
+            if (offset < 0 || static_cast<size_t>(offset) >= poolSize) continue;
+            const char* name = table->mStrings + offset;
+            if (!memchr(name, 0, poolSize - static_cast<size_t>(offset))) continue;
+            sLines[sLineCount].mHash = FoldHash(name);
             sLines[sLineCount].mEntry = n;
             sLineCount++;
         }
@@ -511,8 +537,15 @@ bool PortCeCatalogueSpeechLine(const char* folder, const char* stem, char* utf8,
     const DWORD hash = FoldHash(stem);
     SINT entry = -1;
     for (SINT i = 0; i < sLineCount && entry < 0; i++)
-        if (sLines[i].mHash == hash && !stricmp(table->mStrings + table->GetSoundOffset(sLines[i].mEntry), stem))
+    {
+        if (sLines[i].mHash != hash) continue;
+        const SINT offset = table->GetSoundOffset(sLines[i].mEntry);
+        if (offset < 0 || static_cast<size_t>(offset) >= poolSize) continue;
+        const char* name = table->mStrings + offset;
+        if (!memchr(name, 0, poolSize - static_cast<size_t>(offset))) continue;
+        if (!stricmp(name, stem))
             entry = sLines[i].mEntry;
+    }
     if (entry < 0) return false;
     const WCHAR* text = table->GetStringById(table->mFile->mEntries[entry].mID);
     if (!text || !*text) return false;

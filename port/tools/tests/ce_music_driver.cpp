@@ -178,7 +178,7 @@ int main(int argc, char **argv) {
 		const size_t now = streamed.size();
 		const int stopped = stops;
 		for (int i = 0; i < 5; ++i) End();
-		check(streamed.size() == now && stops == stopped && draws == frontDraws + 1, "single: one track, then silence, no game cue");
+		check(streamed.size() == now && stops == stopped + 1 && !MUSIC.mPlaying && draws == frontDraws + 1, "single: one track, then silence, no game cue");
 		MUSIC.PlaySelection(MUS_INGAME);
 		check(Leaf(streamed.back()) == "a.ogg", "single: the same track at the next cue");
 		check(CeMusic::Next() && Leaf(streamed.back()) == "B.ogg" && CeMusic::Type() == CE_MUSIC_SINGLE, "next steps on in single mode");

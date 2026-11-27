@@ -1,0 +1,122 @@
+--- a/SoundManager.cpp
++++ b/SoundManager.cpp
+@@ -860,12 +860,28 @@
+ 	
+ 	while (s)
+ 	{
++#ifdef CE_VERSION
++		CSoundEvent *next = s->mNextEvent;
++#endif
+ 		if (s->mSample == sample)
+ 		{
+ 			StopSoundEvent(s,TRUE);
++#ifdef CE_VERSION
++			extern bool PortCeLayer();
++			if (PortCeLayer())
++			{
++				SAFE_DELETE(s->mDebugMarker);
++				s->mSample = NULL;
++				DeleteSoundEvent(s);
++			}
++#endif
+ 		}
+ 	
++#ifdef CE_VERSION
++		s = next;
++#else
+ 		s=s->mNextEvent;
++#endif
+ 	}	
+ 	
+ };
+--- a/pcsoundmanager.cpp
++++ b/pcsoundmanager.cpp
+@@ -549,10 +549,20 @@
+ 	switch (CLIPARAMS.mSoundRate)
+ 	{
+ 	case 1:
++#ifdef CE_VERSION
++		dsbdesc.dwBufferBytes = ((size + 3) / 4) * 2;
++		if (dsbdesc.dwBufferBytes < 4)
++			dsbdesc.dwBufferBytes = 4;
++#else
+ 		dsbdesc.dwBufferBytes = (size + 1) / 2;
++#endif
+ 		break;
+ 	case 2:
+ 		dsbdesc.dwBufferBytes = (size + 7) / 8;
++#ifdef CE_VERSION
++		if (dsbdesc.dwBufferBytes < 4)
++			dsbdesc.dwBufferBytes = 4;
++#endif
+ 		break;
+ 	default:
+ 		dsbdesc.dwBufferBytes = size;
+@@ -573,6 +583,10 @@
+ 		SAFE_RELEASE(*buffer);
+ 		return NULL;
+ 	}
++#ifdef CE_VERSION
++	if (data && size > 0 && CLIPARAMS.mSoundRate != 0)
++		memset(data, CLIPARAMS.mSoundRate == 2 ? 0x80 : 0, size);
++#endif
+ 
+ 	return data;
+ }
+--- a/ltshell.cpp
++++ b/ltshell.cpp
+@@ -1208,6 +1208,9 @@
+ // Name: InvalidateDeviceObjects()
+ // Desc: Called when the device-dependant objects are about to be lost.
+ //-----------------------------------------------------------------------------
++#ifdef CE_VERSION
++extern "C" void PortCeInvalidateGpuStateBlocks(void) __attribute__((weak));
++#endif
+ HRESULT PCLTShell::InvalidateDeviceObjects()	// FUNCTION: 0x005129f0
+ {
+ 	DeviceObject* devob = mDeviceObjects;
+@@ -1224,6 +1227,10 @@
+ 		devob=devob->mNext;
+ 		if (sShowLoadingProgress) CONSOLE.RenderLoadingScreen(0, 3);
+ 	}
++#ifdef CE_VERSION
++	if (PortCeInvalidateGpuStateBlocks)
++		PortCeInvalidateGpuStateBlocks();
++#endif
+     return S_OK;
+ }
+ 
+--- a/PauseMenu.cpp
++++ b/PauseMenu.cpp
+@@ -40,6 +40,7 @@
+ bool PortCeTakeOptionsFailure();	// patch 0137: port/game/ce_notice.cpp
+ void PortCeSaveFailedNotice();
+ extern "C" bool PortCeMuseumVisitActive(void);	// patch 0207: port/game/ce_museum_visit.cpp
++bool PortCeProjectCareerAllowed() noexcept;	// patch 0400: port/game/ce_project.cpp
+ CMenuItem *PortCeMuseumLeaveItem(DWORD text);	// patch 0207: port/game/ce_frontend.cpp
+ #endif
+ #ifdef CE_VERSION
+@@ -1611,8 +1612,8 @@
+ #endif
+ 
+ #ifdef CE_VERSION
+-		// patch 0207: a museum visit has no career of its own to save; Continue skips the career write instead of failing it and warning
+-		if (FRONTEND.mFEPSaveGame.mSaveGameName[0] && !PortCeMuseumVisitActive())
++		// patch 0207/0400: fenced modes (museum visit, editor playtest, project) have no career to save; Continue skips the career write
++		if (FRONTEND.mFEPSaveGame.mSaveGameName[0] && PortCeProjectCareerAllowed())
+ #else
+ 		if (FRONTEND.mFEPSaveGame.mSaveGameName[0])
+ #endif
+--- a/OggFileRead.cpp
++++ b/OggFileRead.cpp
+@@ -352,6 +352,10 @@
+ 	mState = 0;
+ 	mConvSize = 4096;
+ 	mFile = NULL;
++#ifdef CE_VERSION
++	mMemData = NULL;
++	mMemSize = 0;
++#endif
+ 	mPCMBytes = 0;
+ 	mResult = 0;
+ }

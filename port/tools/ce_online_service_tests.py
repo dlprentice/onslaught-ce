@@ -1266,6 +1266,71 @@ int main(int argc, char **argv) {
         PortCeOnlineMatchClear();
     }
 
+    // -----------------------------------------------------------------------
+    // 13. FlushFinishMatch() & FlushLeave() real wall-clock deadline (>350ms slow WAN)
+    //     and no artificial virtual_advance_ms fast-forward past retry backoff
+    // -----------------------------------------------------------------------
+    {
+        // 13a. Slow 450ms /finish reply completes cleanly inside FlushFinishMatch() (previously failed at 350ms!).
+        CE_OnlineMatchTicket slow_tk = MakeMatchTicket(2, 2, 0, true);
+        std::snprintf(slow_tk.match_id, sizeof(slow_tk.match_id), "mt_slow_flush_001");
+        Check(PortCeOnlineMatchSetTicket(&slow_tk) == 1, "13a set slow /finish ticket");
+        unsigned slow_fin_calls = 0;
+        std::chrono::steady_clock::time_point fin_started{};
+        gHttp.should_hold = [&](const std::string &path) -> bool {
+            if (path.find("/finish") != std::string::npos) {
+                const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - fin_started).count();
+                return elapsed_ms < 450;
+            }
+            return false;
+        };
+        gHttp.responder = [&](const RecordedReq &req) -> QueuedReply {
+            if (req.path == "/ce-lobby/v1/rooms/rm_0123456789abcdef/finish") {
+                ++slow_fin_calls;
+                fin_started = std::chrono::steady_clock::now();
+                return {"", 200, RoomJson("rm_0123456789abcdef", 20, "lobby", prof.player_id, 2), false, false};
+            }
+            return {"", 200, "{}", false, false};
+        };
+        Check(PortCeOnlineServiceAttachMatchBridge(compat) == 1, "13a attach bridge");
+        const auto flush_t0 = std::chrono::steady_clock::now();
+        PortCeOnlineServiceFinishMatch(-1);
+        PortCeOnlineServiceDetachMatchBridge(); // runs FlushFinishMatch()
+        const auto flush_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - flush_t0).count();
+        Check(slow_fin_calls == 1u && gHttp.cancels >= 0u && flush_ms >= 420 && flush_ms < 1500,
+              "13a FlushFinishMatch waited past 350ms for 450ms reply and exited promptly once complete");
+        gHttp.should_hold = nullptr;
+        PortCeOnlineMatchClear();
+
+        // 13b. 503 retry inside FlushFinishMatch waits real 250ms backoff instead of virtual-clock hammering!
+        CE_OnlineMatchTicket retry_tk = MakeMatchTicket(2, 2, 0, true);
+        std::snprintf(retry_tk.match_id, sizeof(retry_tk.match_id), "mt_backoff_flush_02");
+        Check(PortCeOnlineMatchSetTicket(&retry_tk) == 1, "13b set backoff /finish ticket");
+        unsigned retry_fin_calls = 0;
+        std::chrono::steady_clock::time_point attempt1_at{}, attempt2_at{};
+        gHttp.responder = [&](const RecordedReq &req) -> QueuedReply {
+            if (req.path == "/ce-lobby/v1/rooms/rm_0123456789abcdef/finish") {
+                ++retry_fin_calls;
+                if (retry_fin_calls == 1u) {
+                    attempt1_at = std::chrono::steady_clock::now();
+                    return {"", 503, "{\"error\":\"unavailable\",\"message\":\"transient\"}", false, false};
+                }
+                attempt2_at = std::chrono::steady_clock::now();
+                return {"", 200, RoomJson("rm_0123456789abcdef", 21, "lobby", prof.player_id, 2), false, false};
+            }
+            return {"", 200, "{}", false, false};
+        };
+        Check(PortCeOnlineServiceAttachMatchBridge(compat) == 1, "13b attach bridge");
+        PortCeOnlineServiceFinishMatch(-1);
+        PortCeOnlineServiceDetachMatchBridge(); // runs FlushFinishMatch()
+        const auto gap_ms = std::chrono::duration_cast<std::chrono::milliseconds>(attempt2_at - attempt1_at).count();
+        Check(retry_fin_calls == 2u && gap_ms >= 220,
+              "13b FlushFinishMatch honored real 250ms retry backoff without virtual-clock fast-forward");
+        PortCeOnlineMatchClear();
+    }
+
     std::printf("CE_ONLINE_SERVICE_TESTS checks=%d failures=%d\n", gChecks, gFails);
     return gFails == 0 ? 0 : 1;
 }

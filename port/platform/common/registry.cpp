@@ -90,6 +90,8 @@ FILE *RegOpenRead(bool *missing)
 		CloseHandle(h);
 		return NULL;
 	}
+	if (!ce_win_hydrate_handle_w(path.c_str(), &h, &info, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, 0, 0))
+		return NULL;
 	int fd = _open_osfhandle((intptr_t)h, _O_RDONLY | _O_BINARY);
 	if (fd < 0)
 	{

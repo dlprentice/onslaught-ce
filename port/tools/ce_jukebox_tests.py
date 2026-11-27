@@ -319,7 +319,7 @@ class OggLengthTests(unittest.TestCase):
             ("U32(tail + at + 6), high = U32(tail + at + 10)", "U32(tail + at + 10), high = U32(tail + at + 6)", "the position's halves"),
             ("(static_cast<unsigned long long>(high) << 32) | low", "low", "the position's high half"),
             ("if (at + 27 + segments + body > size)\n\t\t\tcontinue;", "", "a cut page is not used"),
-            ("(samples + rate / 2) / rate", "samples / rate / 2", "the seconds"),
+            ("whole + (rem >= (rate - rate / 2u) ? 1ull : 0ull)", "whole / 2ull", "the seconds"),
             ("packet[0] != 1 || memcmp(packet + 1, \"vorbis\", 6)", "false", "only a Vorbis header counts"),
         )
         for n, (old, new, what) in enumerate(mutants):

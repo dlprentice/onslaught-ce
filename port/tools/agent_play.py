@@ -43,6 +43,8 @@ import shutil
 import struct
 import subprocess
 import sys
+import tempfile
+import zipfile
 import zlib
 from pathlib import Path
 
@@ -127,6 +129,9 @@ KNOWN_VERBS = frozenset({
     "drag", "test-dirty", "press", "release", "mouse-move", "mouse-stop", "repeat",
     "until", "mouse-down", "mouse-up", "require", "dump", "shot", "editor-pose",
     "probe-line", "probe-ground",
+    "nav-to", "nav-offset", "nav-explore", "nav-nearest-enemy",
+    "aim-at", "aim-nearest-enemy", "engage-enemy", "morph-to", "dodge-step",
+    "take-nearest-friendly", "nav-drive-offset", "f9-clip",
 })
 
 STRIPPED_ENV = frozenset({
@@ -416,6 +421,80 @@ def parse_verbs_telemetry(verbs_path: Path) -> dict[str, object]:
     }
 
 
+def validate_bug_clips(user_dir: Path) -> dict[str, object]:
+    """Validate every F9 bug-clip .zip under user_dir/clips/ (zip integrity, .avi + .txt, ffmpeg decode)."""
+    clips_dir = user_dir / "clips"
+    zips = sorted(clips_dir.glob("*.zip")) if clips_dir.is_dir() else []
+    results: list[dict[str, object]] = []
+    all_valid = True
+    has_ffmpeg = shutil.which("ffmpeg") is not None
+
+    for zp in zips:
+        entry: dict[str, object] = {
+            "zip": str(zp),
+            "zip_bytes": zp.stat().st_size,
+            "avi": None,
+            "avi_bytes": 0,
+            "txt": None,
+            "txt_bytes": 0,
+            "ffmpeg_checked": False,
+            "ffmpeg_ok": None,
+            "valid": False,
+            "errors": [],
+        }
+        errors: list[str] = entry["errors"]  # type: ignore[assignment]
+        try:
+            with zipfile.ZipFile(zp, "r") as zf:
+                bad = zf.testzip()
+                if bad is not None:
+                    errors.append(f"corrupt zip member: {bad}")
+                names = zf.namelist()
+                avis = [n for n in names if n.lower().endswith(".avi")]
+                txts = [n for n in names if n.lower().endswith(".txt")]
+                if not avis:
+                    errors.append("missing .avi video inside clip zip")
+                if not txts:
+                    errors.append("missing .txt diagnostic report inside clip zip")
+                if txts:
+                    tinfo = zf.getinfo(txts[0])
+                    entry["txt"] = txts[0]
+                    entry["txt_bytes"] = tinfo.file_size
+                    if tinfo.file_size <= 0:
+                        errors.append(f"empty diagnostic report {txts[0]}")
+                if avis:
+                    ainfo = zf.getinfo(avis[0])
+                    entry["avi"] = avis[0]
+                    entry["avi_bytes"] = ainfo.file_size
+                    if ainfo.file_size <= 0:
+                        errors.append(f"empty video {avis[0]}")
+                    elif has_ffmpeg:
+                        entry["ffmpeg_checked"] = True
+                        with tempfile.TemporaryDirectory(prefix="ce-clip-check-") as td:
+                            avi_path = Path(td) / Path(avis[0]).name
+                            avi_path.write_bytes(zf.read(avis[0]))
+                            dec = subprocess.run(
+                                ["ffmpeg", "-v", "error", "-i", str(avi_path), "-f", "null", "-"],
+                                capture_output=True, text=True, timeout=60,
+                            )
+                            entry["ffmpeg_ok"] = (dec.returncode == 0 and not dec.stderr.strip())
+                            if not entry["ffmpeg_ok"]:
+                                errors.append(f"ffmpeg decode error (rc={dec.returncode}): {dec.stderr.strip()[:240]}")
+        except (OSError, zipfile.BadZipFile, subprocess.SubprocessError) as exc:
+            errors.append(str(exc))
+
+        entry["valid"] = len(errors) == 0
+        if not entry["valid"]:
+            all_valid = False
+        results.append(entry)
+
+    return {
+        "clips_dir": str(clips_dir),
+        "clip_count": len(results),
+        "all_valid": all_valid,
+        "clips": results,
+    }
+
+
 def dependency_roots() -> list[Path]:
     roots: list[Path] = []
     if os.environ.get("BEA_PORT_DATA"):
@@ -595,6 +674,7 @@ def run_session(
     timeout: int = 240,
     memory: str = "4G",
     png_dest_dir: Path | None = None,
+    require_bug_clip: bool = False,
 ) -> dict[str, object]:
     """Execute one isolated offscreen Onslaught CE play session and return a full result dict."""
     w, h = parse_resolution(res)
@@ -719,12 +799,15 @@ def run_session(
         shots.append(info)
         ppm.unlink()
 
+    bug_clips = validate_bug_clips(user_dir)
+    clips_ok = bool(bug_clips["all_valid"]) and (not require_bug_clip or int(bug_clips["clip_count"]) > 0)
+
     steps_ok = True
     if telemetry is not None:
         end = telemetry.get("end")
         steps_ok = isinstance(end, dict) and end.get("end") == "pass"
 
-    passed = off_ok and aud_ok and x87_ok and steps_ok and (rc in (0, 124) if steps_text is None else rc == 0)
+    passed = off_ok and aud_ok and x87_ok and steps_ok and clips_ok and (rc in (0, 124) if steps_text is None else rc == 0)
     result = {
         "passed": passed,
         "exit_code": rc,
@@ -740,6 +823,7 @@ def run_session(
         "ce_ini": ce_ini or {},
         "level": level,
         "shots": shots,
+        "bug_clips": bug_clips,
         "telemetry_file": str(out_dir / "telemetry.json") if telemetry is not None else None,
         "telemetry_end": telemetry.get("end") if telemetry is not None else None,
         "dump_count": telemetry.get("dump_count", 0) if telemetry is not None else 0,
@@ -957,7 +1041,7 @@ wait ticks 15
         },
         {
             "name": "05b_jet_flight_hud",
-            "description": "Active Jet flight gameplay + HUD on Level 110 (morph + climb)",
+            "description": "Active Jet flight gameplay + HUD on Level 110 (closed-loop morph + aerial nav)",
             "clock": "fixed",
             "level": 110,
             "ce_ini": {"hud_scale": "1", "hud_anchor": "1"},
@@ -966,16 +1050,11 @@ wait ticks 15
             },
             "steps": """
 wait state game.state=3 within 2400
-wait ticks 180
-key SPACE hold 8
-wait ticks 60
-press W
-mouse-move 0 -35 over 30
-wait ticks 100
+wait ticks 90
+morph-to jet within 600
+nav-offset 0 120 tol 18 mode jet within 600
 dump level110_jet
 shot 15_level110_jet_hud
-release W
-wait ticks 10
 """,
         },
         {
@@ -1003,7 +1082,7 @@ shot 18_commander_unit_selection_panel
         },
         {
             "name": "07_play_any_unit",
-            "description": "Play Any Unit (play_unit=1) taking a friendly tank on Level 211 + unit HUD",
+            "description": "Play Any Unit (play_unit=1) autonomously possessing & driving a friendly tank on Level 211",
             "clock": "real",
             "level": 211,
             "ce_ini": {"play_unit": "1"},
@@ -1012,25 +1091,20 @@ shot 18_commander_unit_selection_panel
             },
             "steps": """
 wait state game.state=3 within 2400
-wait ticks 180
-mouse-move -600 0 over 420 background
-repeat 18 every 18 do key E
-mouse-stop
-press W
-wait ticks 450
-release W
-wait ticks 450
+wait ticks 120
+take-nearest-friendly maxdist 160 within 6000
+nav-drive-offset 35 15 tol 10 within 12000
 dump play_unit_tank
 shot 19_play_unit_tank_hud
 """,
         },
         {
             "name": "08_museum_hall_cinema",
-            "description": "Museum Hall (machines, plinths, labels) and Screening Room Cinema",
+            "description": "Museum Hall (A* around plinths to Atrium) and Screening Room Cinema",
             "clock": "fixed",
             "ce_ini": {"museum": "1"},
             "shots_meta": {
-                "20_museum_hall": "Museum Hall entrance & exhibit bays",
+                "20_museum_hall": "Museum Hall Atrium & exhibit bays",
                 "21_museum_cinema": "Museum Screening Room Cinema & console",
             },
             "steps": """
@@ -1044,20 +1118,11 @@ wait page ce:museum within 600
 select row Units
 wait state game.state=3 within 2400
 wait ticks 90
-press W
-wait ticks 45
-release W
-wait ticks 25
+nav-to 256 270 tol 3.5 mode walker within 1200
 dump museum_hall
 shot 20_museum_hall
-mouse-move 420 0 over 40
-wait ticks 15
-press W
-wait ticks 160
-release W
-wait ticks 20
-mouse-move -220 0 over 30
-wait ticks 25
+nav-to 303 256 tol 3.5 mode walker within 1800
+aim-at 304 268 -4.0 tol 8 within 300
 dump museum_cinema
 shot 21_museum_cinema
 """,
@@ -1084,6 +1149,317 @@ shot 22_map_editor_level221
 """,
         },
     ]
+
+
+# ---- Closed-loop autonomous gameplay journeys (--autonomous / --playtest-suite) ---------------------------------------
+def autonomous_scenes() -> list[dict[str, object]]:
+    """Six closed-loop autonomous gameplay journeys using A* pathfinding, combat, takeover, and F9 clip validation."""
+    return [
+        {
+            "name": "auto_01_l110_combat_f9",
+            "description": "Level 110 @ 1920x1080: autonomous nav-explore, dodge-step, engage-enemy & live F9 clip zip+ffmpeg check",
+            "clock": "real",
+            "level": 110,
+            "res": "1920x1080",
+            "ce_ini": {"hud_scale": "1", "hud_anchor": "1"},
+            "require_bug_clip": True,
+            "shots_meta": {
+                "auto_01_explore": "Level 110 after autonomous A* waypoint exploration",
+                "auto_01_combat": "Level 110 after closed-loop enemy engagement & dodge",
+            },
+            "steps": """
+wait state game.state=3 within 2400
+wait ticks 90
+nav-explore 2 radius 45 mode walker within 12000
+assert nav.moved>15
+dump auto_01_explore
+shot auto_01_explore
+dodge-step right within 2400
+engage-enemy ticks 180 maxrange 120 within 10000
+dump auto_01_combat
+shot auto_01_combat
+f9-clip 90 within 6000
+dump auto_01_f9_done
+""",
+        },
+        {
+            "name": "auto_02_l110_morph_commander",
+            "description": "Level 110: Walker patrol -> morph-to jet -> aerial nav-offset -> morph-to walker -> Commander Live View",
+            "clock": "real",
+            "level": 110,
+            "res": "1280x720",
+            "ce_ini": {"commander": "1", "play_unit": "1", "hud_scale": "1", "hud_anchor": "1"},
+            "shots_meta": {
+                "auto_02_jet_flight": "Level 110 autonomous Jet aerial leg",
+                "auto_02_commander_selected": "Level 110 Commander Live View with LCTRL+A unit selection",
+            },
+            "steps": """
+wait state game.state=3 within 2400
+wait ticks 120
+nav-offset 30 30 tol 10 mode walker within 10000
+morph-to jet within 3000
+assert pilot.mode=jet
+nav-offset 80 80 tol 22 mode jet within 8000
+dump auto_02_jet_flight
+shot auto_02_jet_flight
+morph-to walker within 3000
+assert pilot.mode=walker
+wait ticks 60
+key M hold 15
+wait ticks 120
+key LCTRL+A hold 15
+wait ticks 60
+dump auto_02_commander_selected
+shot auto_02_commander_selected
+""",
+        },
+        {
+            "name": "auto_03_l211_playunit_smart",
+            "description": "Level 211: autonomous take-nearest-friendly -> nav-drive-offset tank driving -> live fire burst",
+            "clock": "real",
+            "level": 211,
+            "res": "1280x720",
+            "ce_ini": {"play_unit": "1", "hud_scale": "1", "hud_anchor": "1"},
+            "shots_meta": {
+                "auto_03_tank_possessed": "Level 211 immediately after autonomous tank possession",
+                "auto_03_tank_driven": "Level 211 after A*-steered tank drive & weapon burst",
+            },
+            "steps": """
+wait state game.state=3 within 2400
+wait ticks 120
+take-nearest-friendly maxdist 160 within 6000
+assert pilot.mode=playunit
+dump auto_03_tank_possessed
+shot auto_03_tank_possessed
+nav-drive-offset 35 15 tol 10 within 12000
+mouse-down
+wait ticks 90
+mouse-up
+wait ticks 30
+dump auto_03_tank_driven
+shot auto_03_tank_driven
+""",
+        },
+        {
+            "name": "auto_04_museum_autonomous_tour",
+            "description": "Grand Museum: A* around plinths & columns into Grand Atrium and Screening Room Cinema",
+            "clock": "fixed",
+            "res": "1280x720",
+            "ce_ini": {"museum": "1"},
+            "shots_meta": {
+                "auto_04_museum_atrium": "Grand Museum Atrium reached via A* navigation around plinths",
+                "auto_04_museum_cinema": "Grand Museum Screening Room reached via A* portals",
+            },
+            "steps": """
+wait ticks 600
+key RETURN
+wait page fe:main within 900
+go "Onslaught CE"
+wait page ce:hub within 600
+go Museum
+wait page ce:museum within 600
+select row Units
+wait state game.state=3 within 2400
+wait ticks 90
+nav-to 256 270 tol 3.5 mode walker within 1200
+dump auto_04_museum_atrium
+shot auto_04_museum_atrium
+nav-to 303 256 tol 3.5 mode walker within 1800
+aim-at 304 268 -4.0 tol 8 within 300
+dump auto_04_museum_cinema
+shot auto_04_museum_cinema
+""",
+        },
+        {
+            "name": "auto_05_sandbox_sanctuary_tour",
+            "description": "Living Sandbox: explore Sanctuary Citadel, Archive Pedestal & Shield Dome via A* navigation",
+            "clock": "real",
+            "res": "1280x720",
+            "ce_ini": {"play_unit": "1", "commander": "1", "hud_scale": "1", "hud_anchor": "1"},
+            "shots_meta": {
+                "auto_05_sanctuary_pedestal": "Living Sandbox Sanctuary Citadel Archive Pedestal & Shield Dome",
+                "auto_05_sanctuary_ramp": "Living Sandbox descending Sanctuary SE Ramp toward valley theater",
+            },
+            "steps": """
+wait ticks 180
+key RETURN
+wait page fe:main within 1800
+go "Onslaught CE" within 1200
+wait page ce:hub within 1200
+go "Bonus Levels" within 1200
+wait page ce:bonus within 1200
+select row "Living Sandbox" within 1200
+wait state game.state=3 within 3000
+wait ticks 120
+nav-to 112 385 tol 4.0 mode walker within 8000
+aim-at 112 392 -35.5 tol 10 within 2000
+dump auto_05_sanctuary_pedestal
+shot auto_05_sanctuary_pedestal
+nav-to 144 316 tol 8.0 mode walker within 14000
+dump auto_05_sanctuary_ramp
+shot auto_05_sanctuary_ramp
+""",
+        },
+        {
+            "name": "auto_06_multires_hud_audit",
+            "description": "Level 100 multi-resolution HUD telemetry & non-blank audit (640x480, 1280x720, 1920x1080, 2560x1080)",
+            "clock": "real",
+            "level": 100,
+            "resolutions": ["640x480", "1280x720", "1920x1080", "2560x1080"],
+            "ce_ini": {"hud_scale": "1", "hud_anchor": "1"},
+            "shots_meta": {
+                "auto_06_hud_640x480": "Level 100 HUD at 640x480 (4:3 baseline)",
+                "auto_06_hud_1280x720": "Level 100 HUD at 1280x720 (16:9 HD)",
+                "auto_06_hud_1920x1080": "Level 100 HUD at 1920x1080 (16:9 FHD)",
+                "auto_06_hud_2560x1080": "Level 100 HUD at 2560x1080 (21:9 ultrawide)",
+            },
+            "steps_template": """
+wait state game.state=3 within 2400
+wait ticks 90
+assert hud.buffer={res}
+assert hud.wide={wide}
+assert hud.scale=*
+assert hud.anchored=*
+dump hud_{res}
+shot auto_06_hud_{res}
+""",
+        },
+    ]
+
+
+def expand_autonomous_scene_steps(sc: dict[str, object]) -> list[tuple[str, str, str]]:
+    """Expand a scene (including multi-resolution audit specs) into (sub_name, res, steps_text) tuples."""
+    if "resolutions" in sc:
+        out: list[tuple[str, str, str]] = []
+        tmpl = str(sc["steps_template"])
+        for res in sc["resolutions"]:  # type: ignore[union-attr]
+            w, h = parse_resolution(str(res))
+            wide = "on" if (w * 3 > h * 4) else "off"
+            steps = tmpl.format(res=res, wide=wide)
+            out.append((f"{sc['name']}_{res}", str(res), steps))
+        return out
+    return [(str(sc["name"]), str(sc.get("res", DEFAULT_RES)), str(sc["steps"]))]
+
+
+def run_autonomous(args: argparse.Namespace) -> int:
+    exe = Path(args.exe).resolve() if args.exe else discover_exe(prefer_testkit=True)
+    if b"ce-testkit-v1" not in exe.read_bytes():
+        sys.exit(f"{exe}: --autonomous requires a --test-kit build (build.py --public --test-kit)")
+    libs, deps_root = resolve_libraries(exe, args.lib)
+    out_root = Path(args.out).resolve()
+    out_root.mkdir(parents=True, exist_ok=True)
+    (out_root / "telemetry").mkdir(exist_ok=True)
+    (out_root / "runs").mkdir(exist_ok=True)
+
+    wanted = {s.strip() for s in args.scenes.split(",") if s.strip()} if args.scenes else None
+    all_scenes = autonomous_scenes()
+    scenes = [sc for sc in all_scenes if wanted is None or sc["name"] in wanted]
+    if wanted is not None:
+        known = {str(sc["name"]) for sc in all_scenes}
+        unknown = sorted(wanted - known)
+        if unknown:
+            sys.exit(f"unknown autonomous scene(s): {', '.join(unknown)} (known: {', '.join(sorted(known))})")
+
+    commit = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+    scene_results: list[dict[str, object]] = []
+    frames: list[dict[str, object]] = []
+    any_failed = False
+
+    for sc in scenes:
+        meta = sc.get("shots_meta", {})
+        for sub_name, res_str, steps_text in expand_autonomous_scene_steps(sc):
+            run_dir = out_root / "runs" / f"{sub_name}-{stamp}"
+            print(f"RUN  {sub_name} ({res_str}): {sc['description']}", flush=True)
+            res = run_session(
+                exe=exe,
+                out_dir=run_dir,
+                res=res_str,
+                clock=str(sc["clock"]),
+                dt=args.dt,
+                ce_ini=dict(sc.get("ce_ini", {})),
+                steps_text=steps_text,
+                level=sc.get("level"),
+                gpu=args.gpu,
+                gpu_lock=args.gpu_lock,
+                libs=libs,
+                deps_root=deps_root,
+                game_dir=args.game,
+                timeout=max(args.timeout, 300),
+                memory=args.memory,
+                png_dest_dir=out_root,
+                require_bug_clip=bool(sc.get("require_bug_clip")),
+            )
+            if res.get("telemetry_file") and Path(str(res["telemetry_file"])).is_file():
+                shutil.copy2(Path(str(res["telemetry_file"])), out_root / "telemetry" / f"{sub_name}.json")
+
+            has_blank = False
+            for shot in res["shots"]:
+                label = str(shot["label"])
+                if shot.get("blank_warning"):
+                    has_blank = True
+                frames.append({
+                    "label": label,
+                    "scene": sub_name,
+                    "resolution": res_str,
+                    "caption": meta.get(label, label),
+                    "png": str(out_root / f"{label}.png"),
+                    "width": shot["width"],
+                    "height": shot["height"],
+                    "mean_luma": shot["mean_luma"],
+                    "nonblack_share": shot["nonblack_share"],
+                    "blank_warning": shot["blank_warning"],
+                    "sha256": shot["png_sha256"],
+                    "telemetry": str(out_root / "telemetry" / f"{sub_name}.json"),
+                })
+
+            passed = bool(res["passed"]) and not has_blank
+            status = "PASS" if passed else "FAIL"
+            clips_summary = res.get("bug_clips", {})
+            print(f"{status} {sub_name}  shots={len(res['shots'])}  clips={clips_summary.get('clip_count', 0)}  "
+                  f"exit={res['exit_code']}  end={res['telemetry_end']}", flush=True)
+            if not passed:
+                any_failed = True
+            scene_results.append({
+                "scene": sub_name,
+                "parent_scene": sc["name"],
+                "description": sc["description"],
+                "resolution": res_str,
+                "passed": passed,
+                "has_blank_frame": has_blank,
+                "clock": sc["clock"],
+                "level": sc.get("level"),
+                "ce_ini": sc.get("ce_ini", {}),
+                "exit_code": res["exit_code"],
+                "offscreen_confirmed": res["offscreen_confirmed"],
+                "audio_dummy_confirmed": res["audio_dummy_confirmed"],
+                "x87_confirmed": res["x87_confirmed"],
+                "bug_clips": clips_summary,
+                "telemetry_end": res["telemetry_end"],
+                "telemetry": str(out_root / "telemetry" / f"{sub_name}.json"),
+                "run_dir": str(run_dir),
+                "shots": [s["label"] for s in res["shots"]],
+            })
+
+    manifest = {
+        "schema": 1,
+        "mode": "autonomous",
+        "generated_utc": stamp,
+        "commit": commit,
+        "exe": str(exe),
+        "exe_sha256": sha256_file(exe),
+        "passed": not any_failed,
+        "scene_count": len(scene_results),
+        "frame_count": len(frames),
+        "blank_warnings": [f["label"] for f in frames if f["blank_warning"]],
+        "scenes": scene_results,
+        "frames": frames,
+    }
+    (out_root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    print(f"AUTONOMOUS {'PASS' if not any_failed else 'FAIL'}  runs={len(scene_results)}  frames={len(frames)}  "
+          f"manifest={out_root / 'manifest.json'}")
+    return 1 if any_failed else 0
 
 
 def run_gallery(args: argparse.Namespace) -> int:
@@ -1217,8 +1593,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--exe", type=Path, help="path to bea (test-kit twin for steps/--gallery, or plain candidate for --keys)")
     ap.add_argument("--out", type=Path, help="output folder for PNGs, telemetry JSON, and logs")
     ap.add_argument("--gallery", action="store_true", help="run the repeatable full visual inspection gallery")
-    ap.add_argument("--scenes", help="comma-separated subset of gallery scene names to run with --gallery")
+    ap.add_argument("--autonomous", "--playtest-suite", dest="autonomous", action="store_true",
+                    help="run the closed-loop autonomous gameplay test suite (pathfinding, combat, takeover, F9 clips, multi-res HUD)")
+    ap.add_argument("--scenes", help="comma-separated subset of scene names to run with --gallery or --autonomous")
     ap.add_argument("--list-gallery", action="store_true", help="list all gallery scenes and exit")
+    ap.add_argument("--list-autonomous", action="store_true", help="list all autonomous playtest scenes and exit")
     ap.add_argument("--steps", type=Path, help="test-kit step script file")
     ap.add_argument("--step", action="append", default=[], help="inline test-kit step line (repeatable)")
     ap.add_argument("--keys", type=Path, help="exact-binary 'PRESENT KEY [hold N]' file (BEA_PORT_FAKE_KEYS)")
@@ -1256,11 +1635,21 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{sc['name']:28s} clock={sc['clock']:5s}  {sc['description']}  [{shots}]")
         return 0
 
+    if args.list_autonomous:
+        for sc in autonomous_scenes():
+            shots = ", ".join(sc["shots_meta"].keys())
+            res_label = ",".join(sc["resolutions"]) if "resolutions" in sc else str(sc.get("res", DEFAULT_RES))
+            print(f"{sc['name']:30s} clock={sc['clock']:5s} res={res_label:20s} {sc['description']}  [{shots}]")
+        return 0
+
     if not args.out:
         ap.error("--out DIR is required")
 
     if args.gallery:
         return run_gallery(args)
+
+    if args.autonomous:
+        return run_autonomous(args)
 
     steps_text: str | None = None
     if args.steps or args.step:

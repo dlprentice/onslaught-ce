@@ -209,5 +209,14 @@ int main() {
     page.mSelect(findRow("Restore as New"));
     check(PortCeBackupPreviewStepBack() == 1);
     check(PortCeBackupPreviewStepBack() == 0);
+    // Pick list covers > 32 careers (up to 512) without silently truncating at 32.
+    suppliedPreview.careers = 40;
+    std::strcpy(suppliedPreview.name, "Pilot.bes");
+    process();
+    page.mSelect(findRow("Restore as New"));
+    check(page.mCount() == 41 && findRow("Cancel") == 40);
+    resetCalls();
+    page.mSelect(39);
+    check(beginCalls == 1);
     std::printf("{\"ok\":true,\"checks\":%u}\n", checks);
 }

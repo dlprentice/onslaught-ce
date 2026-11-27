@@ -34,7 +34,8 @@ def main():
     try:
         files = ['src/DXWater.cpp', 'src/DXEngine.cpp', 'src/DXKempyCube.cpp', 'src/RenderMethod.cpp',
                  'port/patches/0070-render-path-diagnostics.patch', 'port/platform/common/portlog.cpp',
-                 'port/platform/common/portlog.h', 'port/tools/tests/render_diagnostics_driver.cpp',
+                 'port/platform/common/portlog.h', 'port/platform/common/ce_record_mode.h',
+                 'port/tools/tests/render_diagnostics_driver.cpp',
                  'port/tools/render_diagnostics_tests.py', 'src/tweak.h', 'src/heightfield.h']
         for name in files:
             dest = out / name

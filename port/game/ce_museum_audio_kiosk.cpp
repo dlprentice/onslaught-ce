@@ -55,6 +55,16 @@ void ReleaseSample() {
         SOUND.KillSamplesForThing(&gOwner);
         CSample *sample = gSample;
         gSample = NULL;
+        SOUND.KillAllInstancesOfSample(sample);
+        for (CSoundEvent *se = SOUND.GetFirstSoundEvent(); se; ) {
+            CSoundEvent *next = se->mNextEvent;
+            if (se->mSample == sample) {
+                SOUND.StopSoundEvent(se, TRUE);
+                se->mSample = NULL;
+                SOUND.DeleteSoundEvent(se);
+            }
+            se = next;
+        }
         delete sample;
     }
 }
@@ -71,6 +81,8 @@ bool BackendStart(void *, const char *stem) {
     ReleaseSample();
     if (!SOUND.IsInitialised() || !SafeStem(stem)) return false;
     COggFileRead reader;
+    reader.mMemData = NULL;
+    reader.mMemSize = 0;
     const char *lang = TEXT.mLoaded ? TEXT.GetLanguageName() : "english";
     bool opened = TryOpenOgg(&reader, lang, stem);
     if (!opened && stricmp(lang, "english") != 0)
@@ -95,7 +107,13 @@ bool BackendStart(void *, const char *stem) {
         std::free(pcm);
         return false;
     }
-    CSample *sample = SOUND.CreateSampleFromData(pcm, static_cast<int>(size & ~1u), FALSE, NULL);
+    if (size > kMaxDecodeBytes) size = kMaxDecodeBytes;
+    const UINT rawSize = size & ~1u;
+    UINT paddedSize = (rawSize + 3u) & ~3u;
+    if (paddedSize < 16u) paddedSize = 16u;
+    if (paddedSize > rawSize)
+        std::memset(pcm + rawSize, 0, paddedSize - rawSize);
+    CSample *sample = SOUND.CreateSampleFromData(pcm, static_cast<int>(paddedSize), FALSE, NULL);
     std::free(pcm);
     if (!sample || !static_cast<CPCSample *>(sample)->mDSBuffer) {
         delete sample;
@@ -152,6 +170,10 @@ void RuntimeUpdate(CeMuseumTour::Wing wing, bool paused, bool cinemaPlaying,
                    float eyeX, float eyeY, float eyeZ,
                    float aimX, float aimY, float aimZ) {
     if (!gInitialized) RuntimeInit();
+    if (paused || cinemaPlaying) {
+        gState.fireHeld = false;
+        gState.fireCaptured = false;
+    }
     gState.hoveredKiosk = PickKiosk(eyeX, eyeY, eyeZ, aimX, aimY, aimZ, wing);
     Step(&gState, wing, paused, cinemaPlaying, MakeBackend(), KioskClock());
 }

@@ -186,9 +186,12 @@ struct CGame {
     int GetNPlayers(){return players;} CCONTROLLER* GetController(int){return controllerAvailable?&controller:nullptr;}
     CCamera* GetCamera(int){return camera;} CCamera* GetCurrentCamera(int){return camera;}
     bool IsFreeCameraOn(int){return freeCamera;} BOOL IsPaused(){return mPause;}
+    EGameState GetGameState(){return mGameState;}
     void SetCurrentCamera(int,CCamera* value,bool dispose){CCamera* old=camera;camera=value;if(dispose)delete old;}
     void SetQuit(int value){quit=value;}
 } GAME;
+struct { bool menuUp=false, mShowJoypad=false; bool IsMenuUp(){return menuUp;} } GAMEINTERFACE;
+struct { float simTime=0.f; const float& GetTime(){return simTime;} } EVENT_MANAGER;
 struct { bool running=true; int mSelectedLevel=0,quit=0; unsigned starts=0;
     bool IsRunning(){return running;} void SetQuit(int level){quit=level;mQuit=level;++starts;} int mQuit=0; } FRONTEND;
 struct { bool mRecordDemo=false,mPlaybackDemo=false,mStressTest=false,mAttractMode=false; } CLIPARAMS;
@@ -255,6 +258,7 @@ static void Reset() {
     CLIPARAMS={};GAME.level=777;GAME.players=1;GAME.multiplayer=GAME.freeCamera=false;
     GAME.controllerAvailable=true;GAME.controller.target=nullptr;GAME.mPause=FALSE;GAME.quit=0;
     GAME.mGameState=GAME_STATE_STARTING;GAME.camera=new CGenericCamera();LT.trap=nullptr;
+    GAMEINTERFACE.menuUp=false;GAMEINTERFACE.mShowJoypad=false;EVENT_MANAGER.simTime=0.f;
     for(unsigned i=0;i<32;++i)CAREER.progress[i]=i+10;
     objectA.unit=true;objectA.allegiance=0;objectB.unit=false;objectB.allegiance=0;
     objectA.position=FVector(4,5,6);objectB.position=FVector(7,8,9);objectA.moves=objectB.moves=0;

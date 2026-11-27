@@ -251,7 +251,7 @@ bool PortCeMusicTrackEnded()
 		custom = false;
 		return false;
 	}
-	if (type == CE_MUSIC_SINGLE) return true;	// retail's single: the track plays once, then silence
+	if (type == CE_MUSIC_SINGLE) { custom = false; MUSIC.Stop(); return true; }	// retail's single: the track plays once, then silence
 	Step(false);
 	Play();
 	return true;

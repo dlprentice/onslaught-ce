@@ -122,11 +122,14 @@ public:
 };
 
 // Engine-integrated headless multi-slot Play-Any-Unit API (ce_playunit_slots.cpp).
+class CUnit;
 int				CePlayUnitSlotsListTakeable(int allegiance, CePlayUnitSlotCandidate *out, int max);
 bool			CePlayUnitSlotTake(uint8_t slot, int allegiance, CeEntityHandle unitHandle, const char **outReason = nullptr);
 bool			CePlayUnitSlotDrive(uint8_t slot, float goalX, float goalY, bool fire, float aimX, float aimY, float aimZ, uint32_t simTick);
 void			CePlayUnitSlotRelease(uint8_t slot);
 CeEntityHandle	CePlayUnitSlotUnit(uint8_t slot);
+bool			CePlayUnitSlotsIsLeased(const CUnit *u);
+void			CePlayUnitSlotsReleaseUnit(CUnit *u);
 void			CePlayUnitSlotsTick(uint32_t simTick);
 void			CePlayUnitSlotsReset();
 

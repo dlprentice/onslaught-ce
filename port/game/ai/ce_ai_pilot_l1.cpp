@@ -462,6 +462,8 @@ void InvokeAiWeaponCall(int idx, CBattleEngine *be, CeAiWeaponCallKind kind)
 			if (xUnit && w && w->GetLockMode() == kSequenceLockMode && w->ReadyToFire() &&
 			    w->GetCurrentMode() != NULL && be->LocksFinished() &&
 			    be->CountLocks() < w->GetMaxLocks() &&
+			    xUnit->GetAllegiance() != kIndependentAllegiance &&
+			    xUnit->GetAllegiance() != kNeutralAllegiance &&
 			    be->IsTargetAlligence(xUnit->GetAllegiance()) &&
 			    w->CanLock(xUnit) && !be->Locked(xUnit))
 			{
@@ -1281,9 +1283,10 @@ void CeAiPilotL1TickSlot(int idx, const CePlayerObs &obs, const CeStrategicPrior
 	const bool dashDrySafe = (wCmd.dashDir < 0) ? dryDashLeft : dryDashRight;
 	const bool armedDrySafe = (brain.dash.dashDir < 0) ? dryDashLeft : dryDashRight;
 	const CeAiDashPhase prevDashPhase = brain.dash.phase;
+	const int prevDashCount = walker->GetDashCount();
 	const CeMultiBeWalkerDashOutput dOut = CeMultiBeStepWalkerDash(
 		brain.dash, wCmd.wantDash && brain.chargeTicks == 0, wCmd.dashDir,
-		be->IsOnGround() != FALSE, walker->GetDashCount(),
+		be->IsOnGround() != FALSE, prevDashCount,
 		(brain.dash.phase == CE_AI_DASH_ARMED) ? armedDrySafe : dashDrySafe, now);
 
 	if (dOut.overrideStrafe)
@@ -1295,8 +1298,6 @@ void CeAiPilotL1TickSlot(int idx, const CePlayerObs &obs, const CeStrategicPrior
 		{
 			brain.damage.heavyHitPending = false;
 			CeMultiBeAiHostNoteEvade();
-			if (walker->GetDashCount() > 0)
-				CeMultiBeAiHostNoteDash();
 		}
 	}
 	else
@@ -1331,6 +1332,9 @@ void CeAiPilotL1TickSlot(int idx, const CePlayerObs &obs, const CeStrategicPrior
 	fireIn.maxPitchCone = 0.28f;
 	ExecuteAiFireDecision(idx, be, curWep, brain, fireIn, pilot);
 	CePilotApplySlot(idx, pilot, obs.activeToggles);
+	if (dOut.dashTriggered && be->GetState() == BATTLE_ENGINE_STATE_WALKER &&
+	    be->GetWalkerPart() && be->GetWalkerPart()->GetDashCount() > prevDashCount)
+		CeMultiBeAiHostNoteDash();
 }
 
 #else

@@ -981,7 +981,8 @@ static inline int ce_ini_edit_file(const char *ini, const char *key, const char 
 		BY_HANDLE_FILE_INFORMATION info;
 		if (GetFileType(in) == FILE_TYPE_DISK && GetFileInformationByHandle(in, &info) &&
 #ifdef CE_WIN_REPARSE_H
-			!(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && !ce_win_handle_is_link(in, info.dwFileAttributes))
+			!(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && !ce_win_handle_is_link(in, info.dwFileAttributes) &&
+			ce_win_hydrate_handle_a(full, &in, &info, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, 0, 0))
 #else
 			!(info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)))
 #endif
@@ -989,7 +990,7 @@ static inline int ce_ini_edit_file(const char *ini, const char *key, const char 
 			readonly = (info.dwFileAttributes & FILE_ATTRIBUTE_READONLY) != 0;
 			input = _open_osfhandle((intptr_t)in, _O_RDONLY | _O_BINARY);
 		}
-		if (input < 0) CloseHandle(in);
+		if (input < 0 && in != INVALID_HANDLE_VALUE) CloseHandle(in);
 	}
 	if (input >= 0) f = _fdopen(input, "rb");
 #else

@@ -641,7 +641,7 @@ void CheckOnlineVersusTeamElimination(int deadSlot)
 		if (s == deadSlot || gMatchState.slotTeam[s] != deadTeam)
 			continue;
 		const bool aliveNow = gEngines[s] && UnitExistsInWorld(gEngines[s]) && !gEngines[s]->IsDying();
-		if (aliveNow || GAME.GetPlayerLives(s + 1) > 0 || (gIsAux[s] && gMatchState.respawnTimer[s] > 0))
+		if (aliveNow || GAME.GetPlayerLives(s + 1) != 0 || (gIsAux[s] && gMatchState.respawnTimer[s] > 0))
 		{
 			teamHasLife = true;
 			break;
@@ -1802,7 +1802,7 @@ extern "C" int PortCeMultiBeHandleDeath(void *battleEnginePtr)
 			{
 				GAME.SetPlayerLives(idx + 1, lives - 1);
 			}
-			else
+			else if (lives == 0)
 			{
 				shouldRespawn = false;
 				if (WORLD.GetType() == CWorld::kCooperativeMultiplayer)
@@ -1897,6 +1897,11 @@ extern "C" int PortCeMultiBePlaySideIsMuspell(void)
 	if (MultiBeFenced())
 		return 0;
 	return (ReadPlaySideSetting() == CE_MULTIBE_SIDE_MUSPELL) ? 1 : 0;
+}
+
+extern "C" int PortCeSoloSkirmishConfigured(void)
+{
+	return (!MultiBeFenced() && ReadSoloSkirmishSetting() == CE_SOLO_SKIRMISH_SOLO_AI) ? 1 : 0;
 }
 
 extern "C" int PortCeSoloSkirmishActive(void)
@@ -2099,6 +2104,7 @@ extern "C" int PortCeMultiBeIsAuxDeathCam(int) { return 0; }
 extern "C" int PortCeMultiBeWinningTeam(void) { return -1; }
 extern "C" int PortCeMultiBeVersusCheckOutOfLives(int) { return 0; }
 extern "C" int PortCeMultiBePlaySideIsMuspell(void) { return 0; }
+extern "C" int PortCeSoloSkirmishConfigured(void) { return 0; }
 extern "C" int PortCeSoloSkirmishActive(void) { return 0; }
 extern "C" void PortCeMultiBeDrawMpStartStatus(float) {}
 extern "C" int PortCeSoloControlsActive(void) { return 0; }

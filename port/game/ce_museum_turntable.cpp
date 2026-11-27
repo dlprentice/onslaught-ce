@@ -615,6 +615,10 @@ void RuntimeUpdate(CeMuseumTour::Wing wing, float dtSeconds, bool paused,
                    float eyeX, float eyeY, float eyeZ,
                    float aimX, float aimY, float aimZ) {
     if (!gBank.initialized) Reset(&gBank);
+    if (paused) {
+        gBank.fireHeld = false;
+        gBank.fireCaptured = false;
+    }
     SyncWingResidency(wing, dtSeconds, paused);
     StepRotation(&gBank, dtSeconds, paused);
     gBank.hoveredIndex = PickStud(eyeX, eyeY, eyeZ, aimX, aimY, aimZ, wing);
@@ -891,6 +895,10 @@ void RuntimeDraw(float floorZ) {
 extern "C" void PortCeMuseumTurntableDeleteDeviceObjects(void) {
     CeMuseumTurntable::ReleaseTurntableStateBlock();
 }
+
+extern "C" void PortCeMuseumTurntableInvalidateStateBlock(void) {
+    CeMuseumTurntable::ReleaseTurntableStateBlock();
+}
 #else
 #include "ce_museum_turntable.h"
 namespace CeMuseumTurntable {
@@ -902,4 +910,6 @@ bool RuntimeIsAimingControl() { return false; }
 bool RuntimeCue(float, float, float, float, CeMuseumTour::Wing, char *, unsigned, char *, unsigned, char *, unsigned) { return false; }
 void RuntimeDraw(float) {}
 } // namespace CeMuseumTurntable
+
+extern "C" void PortCeMuseumTurntableInvalidateStateBlock(void) {}
 #endif

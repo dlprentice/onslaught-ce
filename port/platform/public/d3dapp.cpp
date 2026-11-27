@@ -21,6 +21,9 @@
 extern CTweakSLONG SCREEN_SHAPE, TEXTURE_RES_LOSS_SHIFT, TEXTURE_ALLOW_32_BIT;
 void LoadCardId(char *filename);
 HRESULT D3DUtil_SetDeviceCursor(LPDIRECT3DDEVICE9 device, HCURSOR cursor);
+#ifndef BEA_PUBLIC_D3DAPP_TEST
+extern "C" int PortResizeWindowClient(HWND h, unsigned pixelWidth, unsigned pixelHeight);
+#endif
 #ifdef CE_VERSION
 #ifndef BEA_PUBLIC_D3DAPP_TEST
 #include "ce_graphics_policy.h"
@@ -235,6 +238,16 @@ bool PublishWindowMode(CD3DApplication &app, WindowModeState &state, bool reset)
     device.modes[state.savedIndex] = state.mode;
     return true;
 }
+bool ResizeWindowClient(HWND h, DWORD width, DWORD height)
+{
+#ifndef BEA_PUBLIC_D3DAPP_TEST
+    return PortResizeWindowClient(h, width, height) != 0;
+#else
+    RECT r = {0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
+    AdjustWindowRect(&r, GetWindowLong(h, GWL_STYLE), FALSE);
+    return SetWindowPos(h, HWND_NOTOPMOST, 0, 0, r.right - r.left, r.bottom - r.top, 0) != FALSE;
+#endif
+}
 struct ModeChange
 {
     CD3DApplication &app;
@@ -243,8 +256,10 @@ struct ModeChange
     D3DDISPLAYMODE desktop;
     D3DCAPS9 caps;
     D3DPRESENT_PARAMETERS parameters;
+    RECT bounds, client;
     BOOL windowed;
     float screenShape;
+    bool resizedWindow;
     bool committed;
     ModeChange(CD3DApplication &owner, WindowModeState &window)
         : app(owner), state(window), previous(window), adapterIndex(owner.m_dwAdapter),
@@ -252,9 +267,10 @@ struct ModeChange
           selectedIndex(window.published ? window.savedIndex : owner.GetCurrentDevice()->dwCurrentMode),
           createFlags(owner.m_dwCreateFlags), desktop(owner.m_Adapters[adapterIndex].d3ddmDesktop),
           caps(owner.GetCurrentDevice()->d3dCaps), parameters(owner.m_d3dpp),
+          bounds(owner.m_rcWindowBounds), client(owner.m_rcWindowClient),
           windowed(presentationTransition || presentationFailureOwner == &owner ? owner.m_bWindowed :
                    window.published ? TRUE : owner.m_bWindowed),
-          screenShape(owner.mScreenShapeScale), committed(false)
+          screenShape(owner.mScreenShapeScale), resizedWindow(false), committed(false)
     {
         // The resize caller has already written its requested dimensions into the presentation parameters.
         // The published record retains the last completed client even if that pending resize fails.
@@ -275,6 +291,15 @@ struct ModeChange
         device.dwCurrentMode = selectedIndex; device.d3dCaps = caps; device.bWindowed = windowed;
         adapter.d3ddmDesktop = desktop; adapter.dwCurrentDevice = deviceIndex;
         app.m_dwAdapter = adapterIndex; app.m_bWindowed = windowed; app.m_d3dpp = parameters;
+        app.m_rcWindowBounds = bounds; app.m_rcWindowClient = client;
+        if (resizedWindow && app.m_hWnd)
+        {
+            const long long oldW = static_cast<long long>(client.right) - client.left;
+            const long long oldH = static_cast<long long>(client.bottom) - client.top;
+            if (oldW > 0 && oldH > 0 && ClientSize(oldW, oldH))
+                ResizeWindowClient(app.m_hWnd, static_cast<DWORD>(oldW), static_cast<DWORD>(oldH));
+            resizedWindow = false;
+        }
         app.m_dwCreateFlags = createFlags; app.mScreenShapeScale = screenShape;
         committed = true;
     }
@@ -614,6 +639,30 @@ HRESULT CD3DApplication::Initialize3DEnvironment(bool reset)
         D3DDeviceInfo &device = *GetCurrentDevice();
         if (!m_bWindowed) RestoreMode(device, *window);
         if (device.dwCurrentMode >= device.dwNumModes) return E_FAIL;
+        if (attempt == 0 && reset && m_bWindowed && !presentationTransition &&
+            window->published && device.dwCurrentMode != window->savedIndex)
+        {
+            // Screen mode changed while already windowed: restore the previously overwritten slot first, resize
+            // the SDL window to the chosen mode's pixel size, and refresh client/window bounds before publishing.
+            RestoreMode(device, *window);
+            const DWORD chosenW = device.modes[device.dwCurrentMode].Width;
+            const DWORD chosenH = device.modes[device.dwCurrentMode].Height;
+            if (window->valid && ClientSize(chosenW, chosenH) && ResizeWindowClient(m_hWnd, chosenW, chosenH))
+            {
+                change.resizedWindow = true;
+                RECT bounds, clientRect;
+                if (GetWindowRect(m_hWnd, &bounds) && GetClientRect(m_hWnd, &clientRect))
+                {
+                    const long long cw = static_cast<long long>(clientRect.right) - clientRect.left;
+                    const long long ch = static_cast<long long>(clientRect.bottom) - clientRect.top;
+                    if (cw > 0 && ch > 0 && ClientSize(cw, ch))
+                    {
+                        m_rcWindowBounds = bounds;
+                        m_rcWindowClient = clientRect;
+                    }
+                }
+            }
+        }
         if (attempt == 6) { device.MultiSampleType = D3DMULTISAMPLE_NONE; lockable = false;
                             if (!m_bWindowed) device.dwCurrentMode = ModeAtSize(device, m_dwCreationWidth, m_dwCreationHeight); }
         if (m_bWindowed && (!window->valid || !PublishWindowMode(*this, *window, reset))) return E_FAIL;
@@ -915,7 +964,63 @@ LRESULT CD3DApplication::MsgProc(HWND window, UINT message, WPARAM wparam, LPARA
         reinterpret_cast<MINMAXINFO *>(lparam)->ptMinTrackSize.x = 100;
         reinterpret_cast<MINMAXINFO *>(lparam)->ptMinTrackSize.y = 100;
         break;
-    case WM_SIZE: m_bActive = wparam != SIZE_MAXHIDE && wparam != SIZE_MINIMIZED; break;
+    case WM_SIZE:
+        m_bActive = wparam != SIZE_MAXHIDE && wparam != SIZE_MINIMIZED;
+        {
+#ifdef SIZE_MAXIMIZED
+            const WPARAM sizeMaximized = SIZE_MAXIMIZED;
+#else
+            const WPARAM sizeMaximized = 2;
+#endif
+            if ((wparam == SIZE_RESTORED || wparam == sizeMaximized) &&
+                m_bActive && m_bWindowed && m_bReady && m_pd3dDevice &&
+                !deviceChanging && !presentationTransition && !DeviceRecoveryPending())
+            {
+                RECT bounds, clientRect;
+                if (GetWindowRect(m_hWnd, &bounds) && GetClientRect(m_hWnd, &clientRect))
+                {
+                    const long long width = static_cast<long long>(clientRect.right) - clientRect.left;
+                    const long long height = static_cast<long long>(clientRect.bottom) - clientRect.top;
+                    const long long oldWidth = static_cast<long long>(m_rcWindowClient.right) - m_rcWindowClient.left;
+                    const long long oldHeight = static_cast<long long>(m_rcWindowClient.bottom) - m_rcWindowClient.top;
+                    if (width > 0 && height > 0 && ClientSize(width, height) &&
+                        (width != oldWidth || height != oldHeight))
+                    {
+                        HRESULT coop = m_pd3dDevice->TestCooperativeLevel();
+                        if (coop == D3DERR_DEVICELOST || coop == D3DERR_DEVICENOTRESET)
+                        {
+                            m_rcWindowBounds = bounds;
+                            m_rcWindowClient = clientRect;
+                            break;
+                        }
+                        m_rcWindowBounds = bounds;
+                        m_rcWindowClient = clientRect;
+                        const BOOL wasReady = m_bReady;
+                        m_bReady = FALSE;
+                        m_d3dpp.BackBufferWidth = static_cast<UINT>(width);
+                        m_d3dpp.BackBufferHeight = static_cast<UINT>(height);
+                        HRESULT result = Resize3DEnvironment();
+                        if (result == D3DERR_DEVICELOST || result == D3DERR_DEVICENOTRESET)
+                        {
+                            m_rcWindowBounds = bounds;
+                            m_rcWindowClient = clientRect;
+                            if (deviceObjectsLive)
+                            {
+                                DeleteDeviceObjects();
+                                ++deviceGeneration;
+                                deviceObjectsLive = false;
+                            }
+                            presentationFailureOwner = this;
+                            presentationRecoveryReady = wasReady || pauseDepth != 0;
+                            return 0;
+                        }
+                        if (FAILED(result)) return DisplayErrorMsg(result, 1), 0;
+                        m_bReady = wasReady && pauseDepth == 0;
+                    }
+                }
+            }
+        }
+        break;
     case WM_ENTERSIZEMOVE: if (m_bFrameMoving) DXUtil_Timer(TIMER_STOP); break;
     case WM_EXITSIZEMOVE:
         if (m_bFrameMoving) DXUtil_Timer(TIMER_START);

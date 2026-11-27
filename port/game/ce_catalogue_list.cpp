@@ -164,8 +164,8 @@ void	Build()
 	}
 	const bool headings = !(groups == 1 && !sGroups[0][0]) && groups > 0;
 	sRowCount = 0;
-	Grow((void **)&sRows, &sRowSpace, int(matches) + groups + 3, sizeof(int));
-	for (int k = 0; sRows && k < groups; k++)
+	const bool rowsReady = Grow((void **)&sRows, &sRowSpace, int(matches) + groups + 3, sizeof(int));
+	for (int k = 0; rowsReady && k < groups; k++)
 	{
 		const int g = order[k];
 		if (headings) sRows[sRowCount++] = -1 - g;
@@ -173,12 +173,12 @@ void	Build()
 			if (group_of[m] == g) sRows[sRowCount++] = int(m);
 	}
 	free(order);
-	if (!groups && matches)	// no groups read (nothing to group): the matches in their own order
+	if (rowsReady && !groups && matches)	// no groups read (nothing to group): the matches in their own order
 		for (unsigned m = 0; m < matches; m++) sRows[sRowCount++] = int(m);
 	if (cache && group_of) sNameCount = int(matches);
 	free(group_of);
 	// same-named rows of a group, numbered once here, not on every draw: names read once each, compared within the group
-	if (sRows && Grow((void **)&sNumbers, &sNumberSpace, sRowCount + 3, sizeof(int)))
+	if (rowsReady && Grow((void **)&sNumbers, &sNumberSpace, sRowCount + 3, sizeof(int)))
 	{
 		enum { kNameChars = 96 };
 		char (*names)[kNameChars] = (char (*)[kNameChars])malloc(size_t(sRowCount ? sRowCount : 1) * kNameChars);
@@ -205,7 +205,7 @@ void	Build()
 		}
 		free(names);
 	}
-	if (sRows)
+	if (rowsReady)
 	{
 		if (headings) sRows[sRowCount++] = kActions;
 		sRows[sRowCount++] = kFind;

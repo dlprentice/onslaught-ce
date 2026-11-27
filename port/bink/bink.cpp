@@ -274,7 +274,7 @@ bool DecodeAudio(Video *v, int stream, std::vector<short> &pcm, int *rate, int *
 						s = ((const short *)fr->extended_data[c])[i] / 32768.0f;
 					else
 						s = ((const short *)fr->extended_data[0])[i * ch + c] / 32768.0f;
-					s = !(s > -1.0f) ? (s < -1.0f ? -1.0f : 0.0f) : s > 1.0f ? 1.0f : s;
+					s = !isfinite(s) ? 0.0f : s < -1.0f ? -1.0f : s > 1.0f ? 1.0f : s;
 					pcm[base + (size_t)i * ch + c] = (short)(s * 32767.0f);
 				}
 			av_frame_unref(fr);
@@ -457,9 +457,19 @@ bool DecodeFrame(Video *v, U32 n)
 	}
 	while (v->decoded < n)
 	{
-		if (avcodec_send_packet(v->dec, v->packets[v->decoded]) < 0)
-			return false;
+		int rc = avcodec_send_packet(v->dec, v->packets[v->decoded]);
+		if (rc == AVERROR(EAGAIN))
+		{
+			avcodec_receive_frame(v->dec, v->frame);
+			rc = avcodec_send_packet(v->dec, v->packets[v->decoded]);
+		}
 		v->decoded++;
+		if (rc < 0)
+		{
+			if (v->decoded == n)
+				return false;
+			continue;
+		}
 		if (avcodec_receive_frame(v->dec, v->frame) < 0 && v->decoded == n)
 			return false;
 	}

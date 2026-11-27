@@ -448,11 +448,13 @@ extern "C" void	PortCeCrispFontsDeleteDeviceObjects(void)
 }
 
 CDXBitmapFont::CDXBitmapFont()
-: mCharSwapHack(FALSE), mUnknown16c(0)
+: mHeight(0), mFlags(0), mSysFont(false), mTexWidth(0), mTexHeight(0),
+  mCharSwapHack(FALSE), mUnknown16c(0), mTexture(NULL), mVBufTexture(NULL),
+  mVBufTexture2(NULL), mTextScale(1.0f)
 {
-	mTexture = NULL;
-	mVBufTexture = NULL;
-	mVBufTexture2 = NULL;
+	memset(mFontName, 0, sizeof(mFontName));
+	memset(mTextureName, 0, sizeof(mTextureName));
+	memset(mTexCoords, 0, sizeof(mTexCoords));
 	InitCharMap();
 }
 
@@ -824,6 +826,12 @@ BOOL	CDXBitmapFont::GetTextExtent(WCHAR *text, SIZE *size)
 		return FALSE;
 	if (!mTexture)
 		PrepareFont(this);
+	if (!mTexture || !mTexture->GetTexture())
+	{
+		size->cx = 0;
+		size->cy = 0;
+		return FALSE;
+	}
 
 	FLOAT	line = 0.0f;
 	FLOAT	lineHeight = (mTexCoords[0][3] - mTexCoords[0][1]) * mTexHeight;

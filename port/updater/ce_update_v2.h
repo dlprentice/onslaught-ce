@@ -551,6 +551,12 @@ static int upd_lock(UpdLock *l, const char *dir)
 	if (!GetFileInformationByHandle(l->h, &info) || info.nNumberOfLinks != 1 ||
 		(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || upd_win_handle_is_link(l->h, info.dwFileAttributes))
 	{ CloseHandle(l->h); return -1; }
+#ifdef CE_WIN_REPARSE_H
+	if (!ce_win_hydrate_handle_w(wp, &l->h, &info, GENERIC_READ | GENERIC_WRITE,
+		FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_ATTRIBUTE_NORMAL, 0))
+		return -1;
+	if (info.nNumberOfLinks != 1) { CloseHandle(l->h); return -1; }
+#endif
 	SetHandleInformation(l->h, HANDLE_FLAG_INHERIT, 0);
 	OVERLAPPED at = {0};
 	at.Offset = 0x7fffffff;	/* a byte past any journal: the journal itself stays writable through this handle */
@@ -2052,6 +2058,11 @@ static int upd_ask(const UpdOffer *o)
 	return ask_box(&box, &which, 1) ? which : -1;
 }
 
+#define CE_BOX_UPDATE_READONLY \
+	"The update cannot be installed automatically because this Onslaught CE folder is read-only.\n\n" \
+	"Move Onslaught CE to a writable folder of its own, or download and extract the new version manually. " \
+	"Nothing was changed, and this version is starting now."
+
 static void upd_tell(int explicit_cmd, const char *text)
 {
 	if (explicit_cmd) return;	/* --update-only reports on the terminal (say) */
@@ -2060,6 +2071,56 @@ static void upd_tell(int explicit_cmd, const char *text)
 	if (answer && *answer) return;
 #endif
 	tell_box(SDL_MESSAGEBOX_WARNING, text);	/* nothing was changed and the game starts: a warning, not an error */
+}
+
+/* Probe whether sRoot/versions (if present) or sRoot (otherwise) is writable before downloading the update package.
+ * Sets *is_readonly = 1 and returns 0 only on explicit permission/read-only errors so disk-full or symlink refusals
+ * still go through their normal paths. Leaves no probe file behind. */
+static int upd_install_writable(int *is_readonly)
+{
+	if (is_readonly) *is_readonly = 0;
+	char vdir[PATHN];
+	const char *target = sRoot;
+	if (upd_join(vdir, sizeof vdir, sRoot, "versions"))
+	{
+		int vkind = upd_kind(vdir, NULL);
+		if (vkind == UPD_DIR) target = vdir;
+		else if (vkind != UPD_ABSENT) return 1;
+	}
+#ifdef _WIN32
+	char hex[17], pname[48], probe[PATHN];
+	WCHAR wprobe[PATHN + 16];
+	if (!upd_random_hex(hex)) return 1;
+	snprintf(pname, sizeof pname, ".ce-upd-probe-%s", hex);
+	if (!upd_join(probe, sizeof probe, target, pname) ||
+		!ce_win_wide_path(probe, wprobe, sizeof wprobe / sizeof *wprobe, 1))
+		return 1;
+	HANDLE h = CreateFileW(wprobe, GENERIC_WRITE, 0, NULL, CREATE_NEW,
+		FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+	if (h != INVALID_HANDLE_VALUE)
+	{
+		CloseHandle(h);
+		return 1;
+	}
+	DWORD err = GetLastError();
+	if (err == ERROR_ACCESS_DENIED || err == ERROR_WRITE_PROTECT)
+	{
+		if (is_readonly) *is_readonly = 1;
+		return 0;
+	}
+	return 1;
+#else
+	if (access(target, W_OK | X_OK) != 0)
+	{
+		int e = errno;
+		if (e == EACCES || e == EROFS || e == EPERM)
+		{
+			if (is_readonly) *is_readonly = 1;
+			return 0;
+		}
+	}
+	return 1;
+#endif
 }
 
 /* Unpacks the verified package into a new recorded entry and makes it active. Returns an UPD_* status. */
@@ -2074,16 +2135,25 @@ static int upd_install(const char *package, const UpdOffer *o, char *installed, 
 	int made = upd_mkdir(vdir, 0);
 #ifdef _WIN32
 	DWORD mk_err = made < 0 ? GetLastError() : 0;
+#else
+	int mk_err = made < 0 ? errno : 0;
 #endif
 	int kind = made < 0 ? -1 : upd_kind(vdir, &id);
 	if (made < 0 || kind != UPD_DIR)
 	{
 #ifdef _WIN32
 		DWORD err = made < 0 ? mk_err : GetLastError();
-		say("update: the versions folder could not be made or is a link (made=%d kind=%d error=%lu); nothing changed",
-			made, kind, (unsigned long)err);
+		if (made < 0 && (mk_err == ERROR_ACCESS_DENIED || mk_err == ERROR_WRITE_PROTECT))
+			say("update: this Onslaught CE install folder is read-only (error=%lu); move it to a writable folder or update manually",
+				(unsigned long)mk_err);
+		else
+			say("update: the versions folder could not be made or is a link (made=%d kind=%d error=%lu); nothing changed",
+				made, kind, (unsigned long)err);
 #else
-		say("update: the versions folder could not be made or is a link; nothing changed");
+		if (made < 0 && (mk_err == EACCES || mk_err == EROFS || mk_err == EPERM))
+			say("update: this Onslaught CE install folder is read-only; move it to a writable folder or update manually");
+		else
+			say("update: the versions folder could not be made or is a link; nothing changed");
 #endif
 		return UPD_INSTALL_FAILED;
 	}
@@ -2428,6 +2498,16 @@ static int upd_check(int explicit_cmd)
 		answer == 0 ? "later" : "nobody could be asked");
 	if (answer == 2) ini_set("skip_version", o.version);
 	if (answer != 1) { rc = UPD_NOT_NOW; goto recover; }
+	{
+		int install_ro = 0;
+		if (!upd_install_writable(&install_ro) && install_ro)
+		{
+			say("update: this Onslaught CE install folder is read-only; move it to a writable folder or update manually");
+			upd_tell(explicit_cmd, CE_BOX_UPDATE_READONLY);
+			rc = UPD_INSTALL_FAILED;
+			goto recover;
+		}
+	}
 	if (!upd_fetch(o.url, pkg, o.size, 1800, &pn))
 	{
 		say("update: the package download failed or exceeded its signed size (%" PRIu64 " of %" PRIu64 " bytes)", pn, o.size);

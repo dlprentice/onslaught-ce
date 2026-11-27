@@ -42,7 +42,9 @@ CASES=('no-loss','race-before-reset','loss-1','loss-6','loss-7','loss-8','restor
        'options-reset-refused','options-reset-recovers','toggle-refused','window-switch-messages-first','resize-refused',
        'reset-reentrant','four-pads',
        # one Apply with the Window mode row and a row that asks for the options reset
-       'apply-to-window','apply-to-fullscreen','apply-reset-refused')
+       'apply-to-window','apply-to-fullscreen','apply-reset-refused',
+       # windowed Screen mode resolution change and external tiling/DPI WM_SIZE resizes
+       'windowed-mode-change','windowed-mode-change-refused','external-wm-size')
 # What each of these cases met at 3c2f5c40 (--negative-ref): a write or read through the freed pad state, a device used
 # after it was dropped, a frame admitted on released objects, or a window switch inside the options reset.
 NEGATIVE=('loss-1','loss-6','loss-7','loss-8','restore','repeated-restore','minimize','resize','close','cleanup','permanent',

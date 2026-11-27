@@ -33,6 +33,10 @@ extern "C" int CE_SettingGetBool(const char *key, int def)
 }
 FakeGame GAME;
 FakeEngine ENGINE;
+bool gSoloSkirmish = false, gCmdMatch = false, gOneScreen = false;
+extern "C" int PortCeSoloSkirmishActive(void) { return gSoloSkirmish ? 1 : 0; }
+bool CeCmdMatch() { return gCmdMatch; }
+bool PortCeOneScreenMatch() { return gOneScreen; }
 
 // widescreen.cpp's state, which the cut-out statements read.
 bool gActive = true;
@@ -90,6 +94,20 @@ int main(int argc, char **argv)
 	check(PortHudAnchored() == (wanted ? 1 : 0), "one viewpoint, not multiplayer");
 	check(CeHudAnchorEnabled() == wanted && iniReads == 1, "the ini is read once");
 	GAME.multiplayer = true;
+	ENGINE.viewpoints = 0;	// pre-Render level-load state (BuildLevelSpecifics)
+	check(PortCeIsSplitScreen() == 1 && PortCeCameraSplitAspect() == 1, "local 2P splitscreen before first render stays split");
+	GAME.SetFullscreenMultiplayer(1);
+	check(!PortCeIsSplitScreen() && !PortCeCameraSplitAspect(), "cg_fullscreenmultiplayer=1 is single-viewport even when viewpoints==0");
+	GAME.SetFullscreenMultiplayer(0);
+	gSoloSkirmish = true;
+	check(!PortCeIsSplitScreen() && !PortCeCameraSplitAspect(), "Solo Skirmish is single-viewport even when viewpoints==0");
+	gSoloSkirmish = false;
+	gCmdMatch = true;
+	check(!PortCeIsSplitScreen() && !PortCeCameraSplitAspect(), "Commander Match is single-viewport even when viewpoints==0");
+	gCmdMatch = false;
+	gOneScreen = true;
+	check(!PortCeIsSplitScreen() && !PortCeCameraSplitAspect(), "One-screen match is single-viewport even when viewpoints==0");
+	gOneScreen = false;
 	ENGINE.viewpoints = 1;
 	check(!PortCeIsSplitScreen() && !PortCeCameraSplitAspect(), "single-viewport MP is not splitscreen and keeps 0.75 aspect");
 	check(PortHudAnchored() == (wanted ? 1 : 0), "single-viewport MP (Solo Skirmish / Commander) follows hud_anchor");

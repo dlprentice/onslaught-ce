@@ -1813,6 +1813,7 @@ public:
 	CCeCatalogueRow *mCategory[CE_CATALOGUE_GROUPS], *mCatalogRows[CE_CATALOGUE_SLOTS], *mCatalogMore, *mCatalogClear;
 	CCeCatalogueField *mCatalogField;
 	SCeHint mCategoryHints[CE_CATALOGUE_GROUPS]; int mCatalogueGroupChosen;	// the category row a CEA_CAT_MODELS action came from
+	bool mFindMouseRender = false;
 	void ReadCatalogue()
 	{
 		PortCeCatalogueOpen();
@@ -2261,6 +2262,12 @@ public:
 			OpenPage(CEP_CATALOGUE_FIND); LT.SetKeytrap(CatalogueTrap()); mPageOpened = true;
 			break;
 		case CEA_CAT_FIELD:
+			if (mFindMouseRender)
+			{
+				mLists.At(CEP_CATALOGUE_FIND)->mSelected = 0;
+				break;
+			}
+			// fall through: keyboard/gamepad Select on the Name: row submits the search
 		case CEA_CAT_APPLY:
 			PortCeCatalogueFilter(mCatalogField->mValue); CatalogueResult(); mPageOpened = true;
 			break;
@@ -2385,7 +2392,9 @@ public:
 			const bool suspendFindTrap = (mPage == CEP_CATALOGUE_FIND) && (LT.GetKeytrap() == CatalogueTrap());
 			if (suspendFindTrap)
 				LT.SetKeytrap(NULL);
+			mFindMouseRender = suspendFindTrap;
 			title = mLists.At(mPage)->Render(this);
+			mFindMouseRender = false;
 			if (suspendFindTrap && mActive && mPage == CEP_CATALOGUE_FIND && !FEMESSBOX.BeingDisplayed() && !LT.GetKeytrap())
 				LT.SetKeytrap(CatalogueTrap());
 			CatalogueSelect(); CatalogueStatus();

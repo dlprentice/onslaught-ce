@@ -76,7 +76,7 @@ bool PortCeAudioSingleListener()
 	return gScreenSet || !PortCeIsSplitScreen() || (CE_BootRequested && CE_BootRequested()) || (CE_SessionActive && CE_SessionActive());
 }
 
-void CeCmdMatchLevelEnd()
+void CeCmdMatchLevelEnd(bool restarting)
 {
 	const bool hadScreen = gScreenSet;
 	if (gScreenSet)
@@ -86,7 +86,7 @@ void CeCmdMatchLevelEnd()
 	}
 	gLastSide = -1;
 	gLastSideLevel = -1;
-	if (hadScreen)
+	if (hadScreen && !restarting)
 		CeCmdCliLevelConsume(gCliLatch);
 }
 

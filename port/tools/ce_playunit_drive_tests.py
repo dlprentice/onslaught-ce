@@ -138,6 +138,7 @@ const CePlayUnitLaw *gLaw = &CePlayUnitClasses()[CE_PLAYUNIT_CLASS_TANK].law;
 CePlayUnitDrive gApplied;
 bool gOnFoot; extern float gLookYaw;
 bool gDeliveryAssigned = false;
+bool gRelaxedAssigned = false;
 int gPossessedAllegiance = 0;
 bool FootKeepsAssignment(CUnit *unit) { return unit->GetSquad() == nullptr; }
 bool gPathDrive;

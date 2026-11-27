@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -150,6 +153,94 @@ class AgentPlayUnitTests(unittest.TestCase):
             # Fenced live-play features must use real clock so BEA_PORT_CLOCK is not set.
             if any(k in sc.get("ce_ini", {}) for k in ("commander", "play_unit")) and sc.get("level") is not None:
                 self.assertEqual(sc["clock"], "real", sc["name"])
+
+    def test_autonomous_scenes_are_valid_and_unique(self):
+        scenes = agent_play.autonomous_scenes()
+        self.assertEqual(len(scenes), 6)
+        seen_names: set[str] = set()
+        seen_shots: set[str] = set()
+        for sc in scenes:
+            self.assertNotIn(sc["name"], seen_names)
+            seen_names.add(sc["name"])
+            all_shot_labels: set[str] = set()
+            for sub_name, res_str, steps_text in agent_play.expand_autonomous_scene_steps(sc):
+                agent_play.parse_resolution(res_str)
+                lines = agent_play.validate_steps_text(steps_text)
+                self.assertTrue(lines, f"empty steps in {sub_name}")
+                for line in lines:
+                    if line.startswith("shot "):
+                        label = line.split()[1]
+                        all_shot_labels.add(label)
+                        self.assertNotIn(label, seen_shots, f"duplicate autonomous shot label {label}")
+                        seen_shots.add(label)
+            self.assertEqual(all_shot_labels, set(sc["shots_meta"].keys()), sc["name"])
+            if any(k in sc.get("ce_ini", {}) for k in ("commander", "play_unit")) and sc.get("level") is not None:
+                self.assertEqual(sc["clock"], "real", sc["name"])
+
+    def test_nav_verbs_registered_in_known_verbs(self):
+        required = {
+            "nav-to", "nav-offset", "nav-explore", "nav-nearest-enemy",
+            "aim-at", "aim-nearest-enemy", "engage-enemy", "morph-to",
+            "dodge-step", "take-nearest-friendly", "nav-drive-offset", "f9-clip",
+        }
+        self.assertTrue(required.issubset(agent_play.KNOWN_VERBS))
+        lines = agent_play.validate_steps_text("\n".join([
+            "nav-to 256 270 tol 3.5 mode walker",
+            "nav-offset 20 -15 mode auto",
+            "nav-explore 3 radius 60",
+            "nav-nearest-enemy range 80",
+            "aim-at 100 200 -5 tol 6",
+            "aim-nearest-enemy tol 5",
+            "engage-enemy ticks 120 maxrange 95",
+            "morph-to jet",
+            "dodge-step left",
+            "take-nearest-friendly maxdist 120",
+            "nav-drive-offset 30 0 tol 8",
+            "f9-clip 90",
+        ]))
+        self.assertEqual(len(lines), 12)
+
+    def test_validate_bug_clips_checks_zip_members_and_ffmpeg(self):
+        with tempfile.TemporaryDirectory() as td:
+            user = Path(td)
+            # Empty / missing clips dir -> 0 clips, all_valid=True
+            empty = agent_play.validate_bug_clips(user)
+            self.assertEqual(empty["clip_count"], 0)
+            self.assertTrue(empty["all_valid"])
+
+            clips_dir = user / "clips"
+            clips_dir.mkdir()
+
+            # Missing .txt report -> invalid
+            bad_zip = clips_dir / "missing_txt.zip"
+            with zipfile.ZipFile(bad_zip, "w") as zf:
+                zf.writestr("clip.avi", b"not-a-valid-avi")
+            bad_res = agent_play.validate_bug_clips(user)
+            self.assertEqual(bad_res["clip_count"], 1)
+            self.assertFalse(bad_res["all_valid"])
+            self.assertFalse(bad_res["clips"][0]["valid"])
+            bad_zip.unlink()
+
+            # Valid clip zip (with real tiny MJPEG AVI + PCM audio if ffmpeg is present)
+            good_zip = clips_dir / "onslaught-ce-clip-20261127-120000.zip"
+            if shutil.which("ffmpeg"):
+                avi_tmp = Path(td) / "test.avi"
+                subprocess.run(
+                    [
+                        "ffmpeg", "-v", "error", "-y",
+                        "-f", "lavfi", "-i", "color=c=blue:s=64x48:r=20:d=0.25",
+                        "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo:d=0.25",
+                        "-c:v", "mjpeg", "-c:a", "pcm_s16le", "-shortest", str(avi_tmp),
+                    ],
+                    check=True, capture_output=True,
+                )
+                with zipfile.ZipFile(good_zip, "w") as zf:
+                    zf.write(avi_tmp, "onslaught-ce-clip-20261127-120000.avi")
+                    zf.writestr("onslaught-ce-clip-20261127-120000.txt", "Onslaught CE diagnostic report\n")
+                good_res = agent_play.validate_bug_clips(user)
+                self.assertEqual(good_res["clip_count"], 1)
+                self.assertTrue(good_res["all_valid"], good_res)
+                self.assertTrue(good_res["clips"][0]["ffmpeg_ok"])
 
 
 if __name__ == "__main__":

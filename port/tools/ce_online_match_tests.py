@@ -563,6 +563,12 @@ static void TestFourPeerStarLockstep200Ticks() {
     CeOnlineChatEntry chatEntry = {};
     Check(peers[3].GetChat(0, &chatEntry) && chatEntry.from_sim_slot == 2 &&
           std::strcmp(chatEntry.text, "Hello squad!") == 0, "sanitized chat preserved across relay");
+    // Transport send failure MUST NOT append a duplicate local echo to chat history!
+    const size_t chatBeforeFail = peers[2].ChatCount();
+    net.bridges[2].connected = false;
+    Check(!peers[2].SendChat("Dropped while busy"), "SendChat fails when bridge transport fails");
+    Check(peers[2].ChatCount() == chatBeforeFail, "failed SendChat does not append local echo");
+    net.bridges[2].connected = true;
 
     // Tick 0 start hash
     for (uint8_t s = 0; s < 4; ++s)

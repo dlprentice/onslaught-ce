@@ -1,0 +1,441 @@
+--- a/Hud.cpp
++++ b/Hud.cpp
+@@ -547,7 +547,15 @@
+ 		return;
+ 
+ 	DWORD	col = 0x27ffffff;
+-	float	y = TargetPanelY(splitSecond);
++#ifdef CE_VERSION
++	extern bool PortCeLayer();
++	const bool ceVpTarget = PortCeLayer() && mViewportWidth > 0.f && mViewportHeight > 0.f;
++	const float tx = ceVpTarget ? (mViewportX + HUD_OFFSET_X + 42.f) : (HUD_OFFSET_X + 42.f);
++	const float ty = ceVpTarget ? (mViewportY + HUD_OFFSET_Y + ((splitSecond && mViewportY > 0.f) ? 40.f : 42.f)) : TargetPanelY(splitSecond);
++#else
++	const float tx = HUD_OFFSET_X + 42.f;
++	const float ty = TargetPanelY(splitSecond);
++#endif
+ 	SINT	side;
+ 	if ((!target->GetUnitData()) || ((side = target->GetUnitData()->mIcon) == -1))
+ 	{
+@@ -569,7 +577,7 @@
+ 	RENDERINFO.SRS(D3DRS_ZFUNC, D3DCMP_ALWAYS);
+ 	RENDERINFO.SRS(D3DRS_ZENABLE, TRUE);
+ 	RENDERINFO.SRS(D3DRS_ZWRITEENABLE, TRUE);
+-	CSPRITERENDERER::DrawSprite(HUD_OFFSET_X + 42.f, y, 1.f, GetWhiteTexture(), SA_CENTRE, SPT_NONE, 1.f, 0.f, back, 1.f, 1.f, 0.f, 1.f, 0.f, 1.f);
++	CSPRITERENDERER::DrawSprite(tx, ty, 1.f, GetWhiteTexture(), SA_CENTRE, SPT_NONE, 1.f, 0.f, back, 1.f, 1.f, 0.f, 1.f, 0.f, 1.f);
+ 	RENDERINFO.SRS(D3DRS_ZWRITEENABLE, TRUE);
+ 	RENDERINFO.SRS(D3DRS_ZENABLE, TRUE);
+ 	RENDERINFO.SRS(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+@@ -606,16 +614,8 @@
+ 		CViewport	vp;
+ 		vp.Width = mWhiteTexture->mWidth;
+ 		vp.Height = mWhiteTexture->GetHeight();
+-		if (!splitSecond)
+-		{
+-			vp.X = (SINT)(HUD_OFFSET_X + 42.f);
+-			vp.Y = (SINT)(HUD_OFFSET_Y + 42.f);
+-		}
+-		else
+-		{
+-			vp.X = (SINT)(HUD_OFFSET_X + 42.f);
+-			vp.Y = (SINT)(PLATFORM.GetWindowHeight() * 0.5f + HUD_OFFSET_Y + 40.f);
+-		}
++		vp.X = (SINT)tx;
++		vp.Y = (SINT)ty;
+ 		vp.X -= vp.Width / 2;
+ 		vp.Y -= vp.Height / 2;
+ 		if (CeHudScaleActive())
+@@ -680,17 +680,11 @@
+ 			else
+ 				sx *= frame->mWidth / frame->mHeight;
+ 			col = 0x3fffffff;
+-			if (!splitSecond)
+-				CSPRITERENDERER::DrawSprite(HUD_OFFSET_X + 42.f, HUD_OFFSET_Y + 42.f, 0.011f, tex, SA_CENTRE, SPT_NONE, 1.f, 0.f, col, sx, sy, u0, u1, v0, v1);
+-			else
+-				CSPRITERENDERER::DrawSprite(HUD_OFFSET_X + 42.f, PLATFORM.GetWindowHeight() * 0.5f + HUD_OFFSET_Y + 40.f, 0.011f, tex, SA_CENTRE, SPT_NONE, 1.f, 0.f, col, sx, sy, u0, u1, v0, v1);
++			CSPRITERENDERER::DrawSprite(tx, ty, 0.011f, tex, SA_CENTRE, SPT_NONE, 1.f, 0.f, col, sx, sy, u0, u1, v0, v1);
+ 		}
+ 	}
+ 
+-	if (!splitSecond)
+-		CSPRITERENDERER::DrawSprite(HUD_OFFSET_X + 42.f, (HUD_OFFSET_Y + 42.f) + 28.f, 0.011f, GetWhiteTexture(), SA_CENTRE, SPT_NONE, 1.f, 0.f, 0xff000000, 0.9f, 0.07f, 0.f, 1.f, 0.f, 1.f);
+-	else
+-		CSPRITERENDERER::DrawSprite(HUD_OFFSET_X + 42.f, (PLATFORM.GetWindowHeight() * 0.5f + HUD_OFFSET_Y + 40.f) + 28.f, 0.011f, mWhiteTexture, SA_CENTRE, SPT_NONE, 1.f, 0.f, 0xff000000, 0.9f, 0.07f, 0.f, 1.f, 0.f, 1.f);
++	CSPRITERENDERER::DrawSprite(tx, ty + 28.f, 0.011f, GetWhiteTexture(), SA_CENTRE, SPT_NONE, 1.f, 0.f, 0xff000000, 0.9f, 0.07f, 0.f, 1.f, 0.f, 1.f);
+ 	if (!(target->GetMaxLife() > 0.0001f))
+ 		return;
+ 	float	health = target->GetLifeUnknown4f9a40() / target->GetMaxLife();
+@@ -705,16 +699,10 @@
+ 	case 2:	col = 0xff777777;	break;
+ 	case 3:	col = 0xff55cf55;	break;
+ 	}
+-	if (!splitSecond)
+-		CSPRITERENDERER::DrawSprite(HUD_OFFSET_X + 42.f, (HUD_OFFSET_Y + 42.f) + 28.f, 0.011f, GetWhiteTexture(), SA_CENTRE, SPT_FILL_RIGHT, health, 0.f, col, 0.9f, 0.07f, 0.f, 1.f, 0.f, 1.f);
+-	else
+-		CSPRITERENDERER::DrawSprite(HUD_OFFSET_X + 42.f, (PLATFORM.GetWindowHeight() * 0.5f + HUD_OFFSET_Y + 40.f) + 28.f, 0.011f, mWhiteTexture, SA_CENTRE, SPT_FILL_RIGHT, health, 0.f, col, 0.9f, 0.07f, 0.f, 1.f, 0.f, 1.f);
++	CSPRITERENDERER::DrawSprite(tx, ty + 28.f, 0.011f, GetWhiteTexture(), SA_CENTRE, SPT_FILL_RIGHT, health, 0.f, col, 0.9f, 0.07f, 0.f, 1.f, 0.f, 1.f);
+ 	if (!component)
+ 		return;
+-	if (!splitSecond)
+-		CSPRITERENDERER::DrawSprite(HUD_OFFSET_X + 42.f, (HUD_OFFSET_Y + 42.f) + 21.f, 0.011f, GetWhiteTexture(), SA_CENTRE, SPT_NONE, 1.f, 0.f, 0xff000000, 0.9f, 0.07f, 0.f, 1.f, 0.f, 1.f);
+-	else
+-		CSPRITERENDERER::DrawSprite(HUD_OFFSET_X + 42.f, (PLATFORM.GetWindowHeight() * 0.5f + HUD_OFFSET_Y + 40.f) + 21.f, 0.011f, mWhiteTexture, SA_CENTRE, SPT_NONE, 1.f, 0.f, 0xff000000, 0.9f, 0.07f, 0.f, 1.f, 0.f, 1.f);
++	CSPRITERENDERER::DrawSprite(tx, ty + 21.f, 0.011f, GetWhiteTexture(), SA_CENTRE, SPT_NONE, 1.f, 0.f, 0xff000000, 0.9f, 0.07f, 0.f, 1.f, 0.f, 1.f);
+ 	if (!(component->GetMaxLife() > 0.0001f))
+ 		return;
+ 	health = component->GetLife() / component->GetMaxLife();
+@@ -722,10 +710,7 @@
+ 		health = 0;
+ 	else if (health > 1.f)
+ 		health = 1.f;
+-	if (!splitSecond)
+-		CSPRITERENDERER::DrawSprite(HUD_OFFSET_X + 42.f, (HUD_OFFSET_Y + 42.f) + 21.f, 0.011f, GetWhiteTexture(), SA_CENTRE, SPT_FILL_RIGHT, health, 0.f, col, 0.9f, 0.07f, 0.f, 1.f, 0.f, 1.f);
+-	else
+-		CSPRITERENDERER::DrawSprite(HUD_OFFSET_X + 42.f, (PLATFORM.GetWindowHeight() * 0.5f + HUD_OFFSET_Y + 40.f) + 21.f, 0.011f, mWhiteTexture, SA_CENTRE, SPT_FILL_RIGHT, health, 0.f, col, 0.9f, 0.07f, 0.f, 1.f, 0.f, 1.f);
++	CSPRITERENDERER::DrawSprite(tx, ty + 21.f, 0.011f, GetWhiteTexture(), SA_CENTRE, SPT_FILL_RIGHT, health, 0.f, col, 0.9f, 0.07f, 0.f, 1.f, 0.f, 1.f);
+ }
+ 
+ // STAND-IN (accessor view): retail reads the world's text slots through inline CWorld member
+@@ -1732,7 +1717,7 @@
+ 				char	text[4];
+ 				sprintf(text, "x%d", lives);
+ 				WCHAR	*wtext = ToWCHAR(text);
+-				PLATFORM.Font(FONT_NORMAL)->DrawTextDynamic((mViewportX + 177.f), y, 0.008f, 0.8f, 0.8f, 0xff00ff00, wtext, 4.f, 1, 0);
++				PLATFORM.Font(FONT_NORMAL)->DrawTextDynamic((mViewportX + HUD_OFFSET_X + 177.f), y, 0.008f, 0.8f, 0.8f, 0xff00ff00, wtext, 4.f, 1, 0);
+ 			}
+ 		}
+ 	}
+@@ -1815,6 +1800,21 @@
+ 		if ((CE_SPLIT_HUD() && !CE_WorldActive()))
+ #endif
+ 		{
++#ifdef CE_VERSION
++			extern bool PortCeLayer();
++			const bool ceVertSplit = PortCeLayer() && HUD.mViewportHeight > 0.f && HUD.mViewportY <= 0.f && HUD.mViewportBottom >= float(PLATFORM.GetWindowHeight()) - 0.5f;
++			if (ceVertSplit)
++				y = HUD.mViewportBottom - 13.f - HUD_OFFSET_Y;
++			else if (PortCeLayer() && HUD.mViewportY > 0.f)
++			{
++				y = HUD.mViewportY + 82.f;
++				v0 = 1.f;
++				v1 = 0.f;
++			}
++			else if (PortCeLayer() && HUD.mViewportHeight > 0.f)
++				y = HUD.mViewportBottom + 45.f;
++			else
++#endif
+ 			if (mBattleEngine->GetPlayer()->GetNumber() == 1)
+ 				y = HUD.mViewportBottom + 45.f;
+ 			else
+@@ -1873,6 +1873,19 @@
+ 		if ((CE_SPLIT_HUD() && !CE_WorldActive()))
+ #endif
+ 		{
++#ifdef CE_VERSION
++			extern bool PortCeLayer();
++			if (PortCeLayer() && HUD.mViewportHeight > 0.f)
++			{
++				if (HUD.mViewportY <= 0.f && HUD.mViewportBottom >= float(PLATFORM.GetWindowHeight()) - 0.5f)
++					y = HUD.mViewportBottom - HUD_OFFSET_Y - 140.f;
++				else if (HUD.mViewportY > 0.f)
++					y = HUD.mViewportY + 45.f;
++				else
++					y = HUD.mViewportBottom - 80.f;
++			}
++			else
++#endif
+ 			if (mBattleEngine->GetPlayer()->GetNumber() == 1)
+ 				y = PLATFORM.GetWindowHeight() * 0.5f - 80.f;
+ 			else
+@@ -1886,7 +1899,13 @@
+ 		WCHAR	*wtext = ToWCHAR(text);
+ 		SIZE	size;
+ 		PLATFORM.Font(FONT_NORMAL)->GetTextExtent(wtext, &size);
+-		PLATFORM.Font(FONT_NORMAL)->DrawTextDynamic(PLATFORM.GetWindowWidth() - HUD_OFFSET_X - 73.f - size.cx * 0.5f, y, 0.008f, 1.f, 1.f, 0xff30ff30, wtext, 5.f, 1, 0);
++#ifdef CE_VERSION
++		extern bool PortCeLayer();
++		const float ammoRight = (PortCeLayer() && HUD.mViewportWidth > 0.f && HUD.mViewportRight > 0.f) ? HUD.mViewportRight : float(PLATFORM.GetWindowWidth());
++#else
++		const float ammoRight = float(PLATFORM.GetWindowWidth());
++#endif
++		PLATFORM.Font(FONT_NORMAL)->DrawTextDynamic(ammoRight - HUD_OFFSET_X - 73.f - size.cx * 0.5f, y, 0.008f, 1.f, 1.f, 0xff30ff30, wtext, 5.f, 1, 0);
+ 	}
+ }
+ 
+@@ -2301,6 +2320,8 @@
+ 	mViewportHeight = float(viewport->Height);
+ 	mViewportX = float(viewport->X);
+ 	mViewportY = float(viewport->Y);
++	mViewportRight = mViewportX + mViewportWidth;
++	mViewportBottom = mViewportY + mViewportHeight;
+ 
+ 	float y, y2;
+ #ifdef CE_NETWORK_OFF
+--- a/Compass.cpp
++++ b/Compass.cpp
+@@ -117,12 +117,22 @@
+ 	if ((CE_SPLIT_HUD() && !CE_WorldActive()))
+ #endif
+ 	{
+-		if (be->GetPlayer()->GetNumber() == 1)
+-			cy *= 0.5f;
++		if (be->GetPlayer()->GetNumber() != 1)
++			view = 1;
++#ifdef CE_VERSION
++		extern bool PortCeLayer();
++		if (PortCeLayer() && HUD.mViewportWidth > 0.f && HUD.mViewportHeight > 0.f)
++		{
++			cx = HUD.mViewportX + HUD.mViewportWidth * 0.5f;
++			cy = HUD.mViewportY + HUD.mViewportHeight * 0.5f;
++		}
+ 		else
++#endif
+ 		{
+-			cy *= 1.5f;
+-			view = 1;
++			if (be->GetPlayer()->GetNumber() == 1)
++				cy *= 0.5f;
++			else
++				cy *= 1.5f;
+ 		}
+ 	}
+ 
+--- a/DXCompass.cpp
++++ b/DXCompass.cpp
+@@ -399,7 +399,12 @@
+ #else
+ 	if ((CE_SPLIT_HUD() && !CE_WorldActive()))
+ #endif
+-		RENDERINFO.SetProjection(0.5f, 100.0f, PLATFORM.GetWindowWidth() * 0.00093750004f, PLATFORM.GetWindowHeight() * 0.00046666668f);
++	{
++		extern bool PortCeLayer();
++		const float ceVpW = (PortCeLayer() && HUD.mViewportWidth > 0.f) ? HUD.mViewportWidth : (float)PLATFORM.GetWindowWidth();
++		const float ceVpH = (PortCeLayer() && HUD.mViewportHeight > 0.f) ? HUD.mViewportHeight : (float)PLATFORM.GetWindowHeight() * 0.5f;
++		RENDERINFO.SetProjection(0.5f, 100.0f, ceVpW * 0.00093750004f, ceVpH * 0.00093333336f);
++	}
+ 	else if (CeHudScaleActive())
+ 	{
+ 		// The rings use their own projection; match the screen-space compass sprites around the same centre.
+--- a/DXBattleLine.cpp
++++ b/DXBattleLine.cpp
+@@ -608,6 +608,28 @@
+ 	mOverlayVB->SetStreamSource(0);
+ 	LT.SRS(D3DRS_POINTSPRITEENABLE, TRUE);
+ 	LT.SRS(D3DRS_POINTSCALEENABLE, FALSE);
++	const bool ceScalePoints = CeHudScaleActive() && LT.m_d3dCaps.MaxPointSize > 1.f;
++	DWORD ceOldPointMax = INVALID_STATE;
++	if (ceScalePoints)
++	{
++		ceOldPointMax = PCLTShell::mRenderStates[D3DRS_POINTSIZE_MAX];
++		float ptSize = 8.f * CeHudScaleFactor();
++		if (ptSize > LT.m_d3dCaps.MaxPointSize)
++			ptSize = LT.m_d3dCaps.MaxPointSize;
++		float curMax = (LT.m_d3dCaps.MaxPointSize < 32.f) ? LT.m_d3dCaps.MaxPointSize : 32.f;
++		if (ceOldPointMax != INVALID_STATE)
++			memcpy(&curMax, &ceOldPointMax, sizeof(curMax));
++		else
++			memcpy(&ceOldPointMax, &curMax, sizeof(ceOldPointMax));
++		float ptMax = (curMax > ptSize) ? curMax : ptSize;
++		if (ptMax > LT.m_d3dCaps.MaxPointSize)
++			ptMax = LT.m_d3dCaps.MaxPointSize;
++		DWORD ptBits = 0, maxBits = 0;
++		memcpy(&ptBits, &ptSize, sizeof(ptBits));
++		memcpy(&maxBits, &ptMax, sizeof(maxBits));
++		LT.SRS(D3DRS_POINTSIZE, ptBits);
++		LT.SRS(D3DRS_POINTSIZE_MAX, maxBits);
++	}
+ 	LT.SRS(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+ 	LT.SRS(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+ 	LT.STS(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+@@ -624,6 +646,14 @@
+ 	LT.STS(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+ 	RENDERINFO.Apply();
+ 	LT.GetDevice()->DrawPrimitive(D3DPT_POINTLIST, 0, mNumOverlayPoints);
++	if (ceScalePoints)
++	{
++		float baseSize = (LT.m_d3dCaps.MaxPointSize < 8.f) ? LT.m_d3dCaps.MaxPointSize : 8.f;
++		DWORD baseBits = 0;
++		memcpy(&baseBits, &baseSize, sizeof(baseBits));
++		LT.SRS(D3DRS_POINTSIZE, baseBits);
++		LT.SRS(D3DRS_POINTSIZE_MAX, ceOldPointMax);
++	}
+ 	LT.SRS(D3DRS_POINTSPRITEENABLE, FALSE);
+ }
+ 
+--- a/DXLandscape.cpp
++++ b/DXLandscape.cpp
+@@ -706,6 +706,10 @@
+ 		mNumViews = ceViews;
+ 		for (SINT ceV = 0; ceV < mNumViews; ceV++)
+ 			mViews[ceV].CreateMipLevels(4);
++#ifdef CE_VERSION
++		extern bool PortCeLayer();
++		if (!PortCeLayer())
++#endif
+ 		SHADOWS.mShadows = !CePolicyIsSplitViewport();
+ 	}
+ 	else
+@@ -714,6 +718,10 @@
+ 		mViews = new(MEMTYPE_LANDSCAPE) CLandscapeView[1];
+ 		mNumViews = 1;
+ 		mViews[0].CreateMipLevels(5);
++#ifdef CE_VERSION
++		extern bool PortCeLayer();
++		if (!PortCeLayer())
++#endif
+ 		SHADOWS.mShadows = true;
+ 	}
+ #ifdef CE_VERSION
+@@ -815,6 +823,10 @@
+ //******************************************************************************************
+ void CDXLandscape::UpdatePos(CCamera *cam, int viewpoint)	// FUNCTION: 0x005453f0
+ {
++#ifdef CE_VERSION
++	if (!mViews || viewpoint < 0 || viewpoint >= mNumViews)
++		return;
++#endif
+ 	mViews[viewpoint].mCamera = cam;
+ }
+ 
+@@ -872,6 +884,10 @@
+ 	if (!LANDSCAPE_LIGHTING.mValue)
+ 		RENDERINFO.EnableLighting(false);
+ 
++#ifdef CE_VERSION
++	if (!mViews || viewpoint < 0 || viewpoint >= mNumViews)
++		return;
++#endif
+ 	CLandscapeView	*view = &mViews[viewpoint];
+ 	float	scale = 1.0f / 512;
+ 	if (viewpoint == 0)
+@@ -1775,6 +1791,10 @@
+ 	if (LANDSCAPE_MAXLEVELS_USER.mValue > maxlevels)
+ 		LANDSCAPE_MAXLEVELS_USER.Set((float)maxlevels);
+ 
++#ifdef CE_VERSION
++	if (!mViews || viewpoint < 0 || viewpoint >= mNumViews || !mViews[viewpoint].mCamera)
++		return;
++#endif
+ 	CLandscapeView	*view = &mViews[viewpoint];
+ 	FVector	pos = view->mCamera->GetPos();
+ 	FVector	dir = LandscapeColumnY(view->mCamera->GetOrientation());
+--- a/DXShadows.cpp
++++ b/DXShadows.cpp
+@@ -29,6 +29,11 @@
+ #include	"meshrenderer.h"
+ #ifdef CE_VERSION
+ #include "../platform/common/reflection_quality.h"
++static inline bool CeDynamicShadowsSuppressed()
++{
++	extern bool PortCeLayer();
++	return PortCeLayer() && CePolicyIsSplitViewport();
++}
+ #endif
+ 						// FUNCTION: 0x00551d90 init:ID_FMATRIX
+ CTweakSLONG		DXSHADOWS_INVERSE("DXSHADOWS_INVERSE", 0);		// 009c7c80: render with a depth surface
+@@ -343,6 +348,13 @@
+ 
+ 	if (mShadows == TRUE)
+ 	{
++#ifdef CE_VERSION
++		if (CeDynamicShadowsSuppressed())
++		{
++			mRequests[mNumTextures - 1].mDist = -1.0f;
++			return;
++		}
++#endif
+ 		for (SINT i = 0; i < mNumTextures; i++)
+ 		{
+ 			mRequests[i].mUnit.SetReader(NULL);
+@@ -360,7 +372,7 @@
+ 	if (gMirrorPass)
+ 		return;
+ #ifdef CE_VERSION
+-	if (mNumTextures <= 0)
++	if (mNumTextures <= 0 || CeDynamicShadowsSuppressed())
+ 		return;
+ #endif
+ #ifdef CE_VERSION
+@@ -607,6 +619,8 @@
+ 	if (!mShadows)
+ 		return;
+ #ifdef CE_VERSION
++	if (CeDynamicShadowsSuppressed())
++		return;
+ 	if (mNumTextures <= 0 || mNumTextures > 32)
+ 		return;
+ 	if (mTextures[0] && CeDynamicShadowNeedsRebuild())
+@@ -936,6 +950,8 @@
+ 	if (!mShadows)
+ 		return;
+ #ifdef CE_VERSION
++	if (CeDynamicShadowsSuppressed())
++		return;
+ 	if (mNumTextures <= 0 || mNumTextures > 32)
+ 		return;
+ #endif
+@@ -1152,6 +1168,8 @@
+ 	if (!mShowShadowMap)
+ 		return;
+ #ifdef CE_VERSION
++	if (CeDynamicShadowsSuppressed())
++		return;
+ 	if (mNumTextures <= 0 || mNumTextures > 32)
+ 		return;
+ #endif
+@@ -1279,7 +1297,11 @@
+ 		else if (alpha <= 0)
+ 			return;
+ 
++#ifdef CE_VERSION
++		if (mShadows && !CeDynamicShadowsSuppressed())
++#else
+ 		if (mShadows)
++#endif
+ 		{
+ 			SShadowTexInfo	*tex = mTexInfo;
+ 			for (SINT i = 0; i < mNumTextures; tex++, i++)
+--- a/DXFrontEndVideo.cpp
++++ b/DXFrontEndVideo.cpp
+@@ -143,20 +143,15 @@
+ 	RADSetMemory(BinkAlloc, BinkFree);
+ 	mWidth = width;
+ 	mHeight = height;
+-#ifdef CE_VERSION
+-	strncpy(sCeFrontEndVideoName, name ? name : "", sizeof(sCeFrontEndVideoName) - 1);
+-	sCeFrontEndVideoName[sizeof(sCeFrontEndVideoName) - 1] = 0;
+-	sCeFrontEndVideoWidth = width;
+-	sCeFrontEndVideoHeight = height;
+-	sCeFrontEndVideoPreload = preload;
+-	sCeFrontEndVideoSoundTrack = sound_track;
+-	sCeFrontEndVideoActive = (sCeFrontEndVideoName[0] != 0);
+-#endif
+ 
+ 	if (mBink || sBinkOpenThread.IsBusy() || sBinkOpenThread.mOpened)
+ 	{
+ 		if (async && sBinkOpenThread.IsBusy())
+ 		{
++#ifdef CE_VERSION
++			sCeFrontEndVideoWidth = width;
++			sCeFrontEndVideoHeight = height;
++#endif
+ 			strcpy(sPendingName, name);
+ 			sPendingPreload = preload;
+ 			sPendingSoundTrack = sound_track;
+@@ -165,6 +160,16 @@
+ 		CloseVideo();
+ 	}
+ 
++#ifdef CE_VERSION
++	strncpy(sCeFrontEndVideoName, name ? name : "", sizeof(sCeFrontEndVideoName) - 1);
++	sCeFrontEndVideoName[sizeof(sCeFrontEndVideoName) - 1] = 0;
++	sCeFrontEndVideoWidth = width;
++	sCeFrontEndVideoHeight = height;
++	sCeFrontEndVideoPreload = preload;
++	sCeFrontEndVideoSoundTrack = sound_track;
++	sCeFrontEndVideoActive = (sCeFrontEndVideoName[0] != 0);
++#endif
++
+ 	mSoundTrack = sound_track;
+ 	sBinkOpenThread.mSoundTrack = sound_track;
+ 	sBinkOpenThread.Acquire();

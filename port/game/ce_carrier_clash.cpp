@@ -117,7 +117,11 @@ void UpdateP0PlayUnitStasis() {
 	}
 
 	if (gP0StasisApplied) {
-		be->SetVulnerable(TRUE);
+		const bool outcomeHold = gOutcomeShieldApplied ||
+			gDirector.Phase() == CE_CC_VICTORY ||
+			(gDirector.Phase() == CE_CC_DEFEAT && !gDirector.OutcomeDeclared());
+		if (!outcomeHold)
+			be->SetVulnerable(TRUE);
 		gP0StasisApplied = false;
 	}
 }
@@ -642,6 +646,9 @@ extern "C" int PortCeCarrierClashBeInStasis(const void *be) {
 	if (!PortCeCarrierClashActive() || !gDirector.IsRunning() || !be) return 0;
 	CPlayer *p0 = GAME.GetPlayer(0);
 	if (!p0 || static_cast<const void *>(p0->GetBattleEngine()) != be) return 0;
+	if (gOutcomeShieldApplied || gDirector.Phase() == CE_CC_VICTORY ||
+	    (gDirector.Phase() == CE_CC_DEFEAT && !gDirector.OutcomeDeclared()))
+		return 1;
 	return (gP0StasisApplied || IsP0DrivingOtherUnit()) ? 1 : 0;
 }
 
@@ -708,7 +715,7 @@ extern "C" void PortCeCarrierClashTickPre(void) {
 	// on its first frame. The player cannot lose the level during that hold.
 	if (!gDirector.OutcomeDeclared() && GAME.GetGameState() == GAME_STATE_PLAYING &&
 	    (gDirector.Phase() == CE_CC_VICTORY || gDirector.Phase() == CE_CC_DEFEAT)) {
-		if (gDirector.Phase() == CE_CC_VICTORY && !gOutcomeShieldApplied && !gP0StasisApplied) {
+		if (!gOutcomeShieldApplied && !gP0StasisApplied) {
 			CPlayer *p0 = GAME.GetPlayer(0);
 			CBattleEngine *be = p0 ? p0->GetBattleEngine() : NULL;
 			if (be) {

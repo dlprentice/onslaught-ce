@@ -24,21 +24,27 @@ using DWORD = uint32_t;
 struct SIZE { long cx, cy; };
 enum { FONT_SMALL = 0 };
 extern std::vector<std::u16string> drawn;
+struct DrawnRow { float x, y, sx, sy; std::u16string text; };
+extern std::vector<DrawnRow> drawn_rows;
 struct CDXBitmapFont {
  bool CanDisplay(WCHAR c) { return c >= 32 && c < 127; }
  int GetHeight() { return 16; }
  void GetTextExtent(WCHAR* text, SIZE* size) {
   unsigned count=0; while(text[count]) ++count; size->cx=count*8; size->cy=16;
  }
- void DrawTextWithShadow(float,float,DWORD,WCHAR* text,int,float,float,float) {
-  std::u16string copy; while(*text) copy+=static_cast<char16_t>(*text++); drawn.push_back(copy);
+ void DrawTextWithShadow(float x,float y,DWORD,WCHAR* text,int,float,float sx,float sy) {
+  std::u16string copy; while(*text) copy+=static_cast<char16_t>(*text++);
+  drawn.push_back(copy);
+  drawn_rows.push_back(DrawnRow{x, y, sx, sy, copy});
  }
 };
 struct FakePlatform {
  CDXBitmapFont font;
+ int width = 1280;
+ int height = 720;
  CDXBitmapFont* Font(int) { return &font; }
- int GetWindowWidth() { return 1280; }
- int GetWindowHeight() { return 720; }
+ int GetWindowWidth() { return width; }
+ int GetWindowHeight() { return height; }
 };
 struct FakeFrontend { bool running=false; bool IsRunning() { return running; } };
 extern FakePlatform PLATFORM;

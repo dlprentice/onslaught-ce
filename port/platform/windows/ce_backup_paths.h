@@ -75,7 +75,38 @@ Handle child(HANDLE parent,const Wide &name,bool dir,bool create,NTSTATUS *statu
         dir?share:FILE_SHARE_READ,create?FILE_CREATE:FILE_OPEN,FILE_OPEN_REPARSE_POINT|
         FILE_SYNCHRONOUS_IO_NONALERT|(dir?FILE_DIRECTORY_FILE:FILE_NON_DIRECTORY_FILE),nullptr,0);
     if (status) *status=result;
-    return Handle(result==0?h:INVALID_HANDLE_VALUE);
+    if (result!=0) return Handle();
+    if (!dir && !create) {
+        FILE_ATTRIBUTE_TAG_INFO tag{};
+        if (GetFileInformationByHandleEx(h,FileAttributeTagInfo,&tag,sizeof(tag)) &&
+            !(tag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
+            !ce_win_tag_is_link(tag.FileAttributes,tag.ReparseTag) &&
+            ce_win_handle_needs_hydration(h,tag.FileAttributes)) {
+            HANDLE hyd=INVALID_HANDLE_VALUE;
+            NTSTATUS hres=0;
+            for (int htry=0;htry<4;++htry) {
+                hyd=INVALID_HANDLE_VALUE;
+                hres=nt(&hyd,access,&oa,&io,nullptr,FILE_ATTRIBUTE_NORMAL,FILE_SHARE_READ,FILE_OPEN,
+                        FILE_SYNCHRONOUS_IO_NONALERT|FILE_NON_DIRECTORY_FILE,nullptr,0);
+                if (hres==0 || hres!=static_cast<NTSTATUS>(0xc0000043u)) break;
+                if (htry+1<4) Sleep(25);
+            }
+            FILE_ATTRIBUTE_TAG_INFO htag{};
+            bool ok=hres==0 && hyd!=INVALID_HANDLE_VALUE && GetFileType(hyd)==FILE_TYPE_DISK &&
+                    GetFileInformationByHandleEx(hyd,FileAttributeTagInfo,&htag,sizeof(htag)) &&
+                    !(htag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
+                    !ce_win_tag_is_link(htag.FileAttributes,htag.ReparseTag) &&
+                    ce_win_same_file_id(h,hyd);
+            CloseHandle(h);
+            if (!ok) {
+                if (hyd!=INVALID_HANDLE_VALUE) CloseHandle(hyd);
+                if (status) *status=hres?hres:static_cast<NTSTATUS>(0xc0000022u);
+                return Handle();
+            }
+            h=hyd;
+        }
+    }
+    return Handle(h);
 }
 bool dirInfo(HANDLE h,FILE_ID_INFO &id) {
     FILE_ATTRIBUTE_TAG_INFO tag{};

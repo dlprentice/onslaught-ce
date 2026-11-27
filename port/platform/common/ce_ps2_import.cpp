@@ -422,8 +422,14 @@ public:
 		if (GetFileType(h) != FILE_TYPE_DISK ||
 			!GetFileInformationByHandle(h, &info) ||
 			(info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_DEVICE)) ||
-			ce_win_handle_is_link(h, info.dwFileAttributes) ||
-			!GetFileSizeEx(h, &sz) || sz.QuadPart < 0)
+			ce_win_handle_is_link(h, info.dwFileAttributes))
+		{
+			CloseHandle(h);
+			return false;
+		}
+		if (!ce_win_hydrate_handle_w(wpath.data(), &h, &info, GENERIC_READ, FILE_SHARE_READ, 0, 0))
+			return false;
+		if (!GetFileSizeEx(h, &sz) || sz.QuadPart < 0)
 		{
 			CloseHandle(h);
 			return false;
@@ -4041,8 +4047,8 @@ struct PickerTicket
 
 PickerState &Picker()
 {
-	static PickerState s;
-	return s;
+	static PickerState *s = new PickerState;
+	return *s;
 }
 
 void SetPickNote(CePs2ImportPickStatus &v, CePs2ImportPickState st, const char *msg)

@@ -854,8 +854,29 @@ struct Device : public IDirectInputDevice8A
 #ifndef CE_NETWORK_OFF
 #if defined(CE_NETWORK_TEXT)
         if (PortCeChatCapturingInput()) {
-            float ignored_x = 0, ignored_y = 0;
-            SDL_GetRelativeMouseState(&ignored_x, &ignored_y);
+            if (kind == MOUSE) {
+                float ignored_x = 0, ignored_y = 0;
+                SDL_GetRelativeMouseState(&ignored_x, &ignored_y);
+                SDL_LockSpinlock(&gWheelLock);
+                gWheel = 0;
+                ClearDiagnosticMouse();
+                SDL_UnlockSpinlock(&gWheelLock);
+#ifdef CE_VERSION
+                ceMouseRemainderX = ceMouseRemainderY = 0;
+#endif
+            } else if (kind == JOYSTICK) {
+                triggerDown[0] = triggerDown[1] = false;
+#ifdef CE_VERSION
+                ceButtons.Reset();
+                ceInputSince = SDL_GetTicksNS();
+#endif
+                if (size >= sizeof(DIJOYSTATE)) {
+                    DIJOYSTATE2 *j = (DIJOYSTATE2 *)data;
+                    LONG centre = rangeMin + (rangeMax - rangeMin) / 2;
+                    j->lX = j->lY = j->lZ = j->lRx = j->lRy = j->lRz = centre;
+                    for (int i = 0; i < 4; ++i) j->rgdwPOV[i] = 0xFFFFFFFF;
+                }
+            }
             return DI_OK;
         }
 #endif
@@ -1295,6 +1316,12 @@ void DrainPadEvents()
 				continue;
 			}
 			if (!d->ceFocused || d->ceMinimized || !d->ceButtons.active) continue;
+#if !defined(CE_NETWORK_OFF) && defined(CE_NETWORK_TEXT)
+			if (PortCeChatCapturingInput()) {
+				d->ceButtons.Reset();
+				continue;
+			}
+#endif
 			unsigned button;
 			bool down;
 			if ((v.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN || v.type == SDL_EVENT_GAMEPAD_BUTTON_UP) && d->pad)
@@ -1630,7 +1657,11 @@ int PortCePadNext(void *device, bool rotate, unsigned *out)
 		}
 	}
 	bool connected = (d->pad && SDL_GamepadConnected(d->pad)) || (d->joy && SDL_JoystickConnected(d->joy));
-	if (!sampled || !d->ceFocused || d->ceMinimized || !connected)
+	bool chatCapturing = false;
+#if !defined(CE_NETWORK_OFF) && defined(CE_NETWORK_TEXT)
+	chatCapturing = PortCeChatCapturingInput() != 0;
+#endif
+	if (!sampled || !d->ceFocused || d->ceMinimized || !connected || chatCapturing)
 	{
 		d->ceButtons.Reset();
 		*out = 0;

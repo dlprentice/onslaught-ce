@@ -757,6 +757,29 @@ unsigned PortSaveReserveUtf8(const char *path)
 
 int port_findnext(intptr_t h, struct _finddata_t *d);
 
+static bool ModeWrites(const char *mode)
+{
+	return mode && (mode[0] == 'w' || mode[0] == 'a' || strchr(mode, '+') != NULL);
+}
+
+static bool ModeUpdate(const char *mode)
+{
+	return mode && (mode[0] == 'a' || (mode[0] == 'r' && strchr(mode, '+') != NULL));
+}
+
+// Legacy card-ID callers pass "ra" (read ASCII); strip the non-standard 'a' flag for UCRT fopen/_fdopen.
+static const char *NormalizeMode(const char *mode, char *buf, size_t cap)
+{
+	if (!mode || mode[0] != 'r' || !strchr(mode + 1, 'a'))
+		return mode;
+	size_t o = 0;
+	for (const char *p = mode; *p && o + 1 < cap; ++p)
+		if (*p != 'a')
+			buf[o++] = *p;
+	buf[o] = 0;
+	return buf;
+}
+
 #ifdef CE_NETWORK_OFF
 FILE *port_fopen(const char *name, const char *mode)
 #else
@@ -776,26 +799,28 @@ static FILE *OpenFile(const char *name, const char *mode)
 #endif
 {
 	char path[MAX_PATH * 2];
-	bool writes = strpbrk(mode, "wa+") != NULL;
-	bool update = strchr(mode, 'a') || (strchr(mode, 'r') && strchr(mode, '+'));
+	char norm_buf[16];
+	const char *crt_mode = NormalizeMode(mode, norm_buf, sizeof(norm_buf));
+	bool writes = ModeWrites(mode);
+	bool update = ModeUpdate(mode);
 	int rc = writes ? (update ? CopyOnWrite(name, path, sizeof(path)) : Resolve(name, WRITE, path, sizeof(path)))
 					: Resolve(name, READ, path, sizeof(path));
 	if (rc != 0)
 		return NULL;
 	if (HANDLE h = writes ? NULL : ModRead(name, path))
 	{
-		int fd = _open_osfhandle((intptr_t)h, _O_RDONLY | (strchr(mode, 'b') ? _O_BINARY : _O_TEXT));
+		int fd = _open_osfhandle((intptr_t)h, _O_RDONLY | (strchr(crt_mode, 'b') ? _O_BINARY : _O_TEXT));
 		if (fd < 0)
 		{
 			CloseHandle(h);
 			return NULL;
 		}
-		FILE *f = _fdopen(fd, mode);
+		FILE *f = _fdopen(fd, crt_mode);
 		if (!f)
 			_close(fd);
 		return f;
 	}
-	return fopen(path, mode);
+	return fopen(path, crt_mode);
 }
 
 #ifndef CE_NETWORK_OFF
@@ -803,7 +828,7 @@ void PortInitializeContentRoots(void) { Init(); }
 
 FILE *port_fopen(const char *name, const char *mode)
 {
-	bool writes = strpbrk(mode, "wa+") != NULL;
+	bool writes = ModeWrites(mode);
 	if (!CE_CompatibilityObserveAuthoredRead(name, writes, NULL, 0)) { errno = EACCES; return NULL; }
 	FILE *file = OpenFile(name, mode);
 	if (!file && !writes)
@@ -834,10 +859,20 @@ FILE *PortOpenLocalFile(unsigned owner, const char *name, const char *mode)
 		return NULL;
 	}
 	// Card-ID's legacy "ra" is a read mode. Do not let the old substring-based COW test copy it.
-	if (mode[0] == 'r')
+	if (mode && mode[0] == 'r' && !strchr(mode, '+'))
 	{
-		char path[MAX_PATH * 2];
-		return Resolve(name, READ, path, sizeof path) == 0 ? fopen(path, mode) : NULL;
+		char path[MAX_PATH * 2], norm_buf[16];
+		const char *crt_mode = mode;
+		if (strchr(mode, 'a'))
+		{
+			size_t o = 0;
+			for (const char *p = mode; *p && o + 1 < sizeof(norm_buf); ++p)
+				if (*p != 'a')
+					norm_buf[o++] = *p;
+			norm_buf[o] = 0;
+			crt_mode = norm_buf;
+		}
+		return Resolve(name, READ, path, sizeof path) == 0 ? fopen(path, crt_mode) : NULL;
 	}
 	// These owners use flat names only. Open without truncation, establish the opened object and
 	// named identity, then truncate/append that same handle. This is not an atomic filesystem lock.
@@ -862,11 +897,13 @@ FILE *PortOpenLocalFile(unsigned owner, const char *name, const char *mode)
 	FILE_ID_INFO opened = {}, named_id = {};
 	bool valid = GetFileType(file) == FILE_TYPE_DISK && GetFileInformationByHandle(file, &basic) &&
 #ifdef CE_WIN_REPARSE_H
-		!(basic.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && !ce_win_handle_is_link(file, basic.dwFileAttributes) &&
+		!(basic.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && !ce_win_handle_is_link(file, basic.dwFileAttributes);
+	if (valid && ce_win_handle_needs_hydration(file, basic.dwFileAttributes))
+		valid = ce_win_hydrate_handle_a(path, &file, &basic, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, 0, 1) != 0;
 #else
-		!(basic.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) &&
+		!(basic.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT));
 #endif
-		basic.nNumberOfLinks == 1 && GetFileInformationByHandleEx(file, FileIdInfo, &opened, sizeof opened);
+	valid = valid && basic.nNumberOfLinks == 1 && GetFileInformationByHandleEx(file, FileIdInfo, &opened, sizeof opened);
 	HANDLE named = valid ? CreateFileA(path, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
 		NULL, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, NULL) : INVALID_HANDLE_VALUE;
 	valid = valid && named != INVALID_HANDLE_VALUE;
@@ -884,7 +921,7 @@ FILE *PortOpenLocalFile(unsigned owner, const char *name, const char *mode)
 #else
 		!(root_attributes & FILE_ATTRIBUTE_REPARSE_POINT);
 #endif
-	if (!valid) { CloseHandle(file); errno = EACCES; SetLastError(ERROR_ACCESS_DENIED); return NULL; }
+	if (!valid) { if (file != INVALID_HANDLE_VALUE) CloseHandle(file); errno = EACCES; SetLastError(ERROR_ACCESS_DENIED); return NULL; }
 	int flags = _O_WRONLY | (strchr(mode, 'b') ? _O_BINARY : _O_TEXT) | (mode[0] == 'a' ? _O_APPEND : 0);
 	int fd = _open_osfhandle((intptr_t)file, flags);
 	if (fd < 0) { CloseHandle(file); return NULL; }

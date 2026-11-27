@@ -43,6 +43,7 @@ extern "C" int CE_SettingGetBool(const char *key, int def);
 bool PortCeLayer();
 extern "C" bool PortCeMuseumVisitActive(void) __attribute__((weak));	// ce_museum_visit.cpp (absent from a test harness that does not link the museum)
 extern "C" bool PortCeEditorActive(void) __attribute__((weak));			// ce_editor.cpp (absent from standalone console tests)
+extern bool PortCeEditorPlaying() __attribute__((weak));				// ce_editor.cpp (absent from standalone console tests)
 bool PortRecording();
 extern WORD gCharScanCode;
 
@@ -102,6 +103,7 @@ bool Allowed()
 	else if (!PortCeLayer()) return false;
 	if (CE_BootRequested && CE_BootRequested()) return false;
 	if (CE_SessionActive && CE_SessionActive()) return false;
+	if (PortCeEditorActive && PortCeEditorActive() && !(PortCeEditorPlaying && PortCeEditorPlaying())) return false;
 	if (PLAYABLE_DEMO || CLIPARAMS.mAutoConfigTest || CLIPARAMS.mRecordDemo || CLIPARAMS.mPlaybackDemo ||
 		CLIPARAMS.mStressTest || CLIPARAMS.mAttractMode || FRONTEND.IsRunning()) return false;
 	if (GAME.GetGameState() != GAME_STATE_PLAYING || GAME.IsMultiplayer() || GAME.GetNPlayers() != 1 ||
@@ -639,10 +641,19 @@ void Run(const char *line)
 	if (argc < 0)
 	{
 		// A music folder may have spaces: music adddir takes the rest of the line.
-		Arg head[kArgs];
-		char start[16];
-		snprintf(start, sizeof(start), "%.15s", line);
-		if (Words(start, head) >= 2 && Same(head[0], "music") && Same(head[1], "adddir")) { CmdMusic(2, head); return; }
+		Arg head[2];
+		const char *c = line;
+		int count = 0;
+		while (*c && count < 2)
+		{
+			while (*c == ' ') ++c;
+			if (!*c) break;
+			unsigned n = 0;
+			while (*c && *c != ' ' && n < kInputLimit) head[count][n++] = *c++;
+			if (*c && *c != ' ') { count = 0; break; }
+			head[count++][n] = 0;
+		}
+		if (count == 2 && Same(head[0], "music") && Same(head[1], "adddir")) { CmdMusic(2, head); return; }
 		Out("Too many words. Type help.");
 		return;
 	}

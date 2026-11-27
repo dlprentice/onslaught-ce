@@ -548,6 +548,8 @@ int CE_HandoffRead(const char *path, int64_t now, CE_Handoff *h, const char **er
 		if (!GetFileInformationByHandle(f, &info) || (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ||
 			ce_win_handle_is_link(f, info.dwFileAttributes))
 			why = "the handoff file is not a plain file";
+		else if (!ce_win_hydrate_handle_w(w, &f, &info, GENERIC_READ, 0, FILE_ATTRIBUTE_NORMAL, 1))
+			why = "the handoff file could not be read";
 		else if (info.nFileSizeHigh || info.nFileSizeLow > CE_HANDOFF_MAX_BYTES)
 			why = "the handoff file is too large";
 		else
@@ -562,7 +564,8 @@ int CE_HandoffRead(const char *path, int64_t now, CE_Handoff *h, const char **er
 			else
 				n = got;
 		}
-		CloseHandle(f);
+		if (f != INVALID_HANDLE_VALUE)
+			CloseHandle(f);
 		DeleteFileW(w);
 	}
 #else
@@ -1179,10 +1182,24 @@ static OwnedFile OwnerOpen(const char *path, bool create) {
         psa = &sec.sa;
     }
     for (int attempt = 0; attempt < 8; ++attempt) {
-        HANDLE h = CreateFileW(w, GENERIC_READ | GENERIC_WRITE, 0, psa,
+        HANDLE h = CreateFileW(w, GENERIC_READ | GENERIC_WRITE | DELETE, 0, psa,
                                create ? CREATE_NEW : OPEN_EXISTING,
                                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, 0);
-        if (h != INVALID_HANDLE_VALUE) return h;
+        if (h != INVALID_HANDLE_VALUE) {
+            if (!create) {
+                BY_HANDLE_FILE_INFORMATION info;
+                if (GetFileType(h) != FILE_TYPE_DISK || !GetFileInformationByHandle(h, &info) ||
+                    (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ||
+                    ce_win_handle_is_link(h, info.dwFileAttributes)) {
+                    CloseHandle(h);
+                    return INVALID_HANDLE_VALUE;
+                }
+                if (!ce_win_hydrate_handle_w(w, &h, &info, GENERIC_READ | GENERIC_WRITE | DELETE,
+                                             0, FILE_ATTRIBUTE_NORMAL, 1))
+                    return INVALID_HANDLE_VALUE;
+            }
+            return h;
+        }
         DWORD err = GetLastError();
         if (err != ERROR_SHARING_VIOLATION && err != ERROR_ACCESS_DENIED) break;
         if (attempt + 1 < 8) Sleep(25);
@@ -1221,6 +1238,11 @@ static bool OwnerClearFile(OwnedFile file) {
     zero.QuadPart = 0;
     return SetFilePointerEx(file, zero, 0, FILE_BEGIN) && SetEndOfFile(file) &&
            FlushFileBuffers(file);
+}
+static void OwnerUnlinkVerified(const char *, OwnedFile file, const CE_HandoffOwner *) {
+    FILE_DISPOSITION_INFO disp;
+    disp.DeleteFile = TRUE;
+    (void)SetFileInformationByHandle(file, FileDispositionInfo, &disp, sizeof disp);
 }
 static bool OwnerClose(OwnedFile file) { return CloseHandle(file) != 0; }
 #else
@@ -1270,6 +1292,13 @@ static bool OwnerReadBytes(OwnedFile file, char *data, size_t size) {
 static bool OwnerClearFile(OwnedFile file) {
     return ftruncate(file, 0) == 0 && fsync(file) == 0;
 }
+static void OwnerUnlinkVerified(const char *path, OwnedFile, const CE_HandoffOwner *owner) {
+    if (!path || !*path || !owner) return;
+    struct stat named;
+    if (lstat(path, &named) == 0 && S_ISREG(named.st_mode) &&
+        uint64_t(named.st_dev) == owner->volume && uint64_t(named.st_ino) == owner->file)
+        (void)unlink(path);
+}
 static bool OwnerClose(OwnedFile file) { return close(file) == 0; }
 #endif
 
@@ -1295,8 +1324,9 @@ static int OwnerUse(const char *path, const CE_HandoffOwner *owner, int64_t now,
     const char *parse_error = 0;
     bool parsed = known && (!parse || CE_HandoffParse(text, size_t(size), now,
                                                      &admitted, &parse_error));
-    // Ownership is independent of age. A known stale record is still cleared.
+    // Ownership is independent of age. A known stale record is still cleared and unlinked.
     bool cleared = known && OwnerClearFile(file);
+    if (cleared) OwnerUnlinkVerified(path, file, owner);
     bool closed = OwnerClose(file);
     bool ok = parsed && cleared && closed;
     if (ok && handoff) *handoff = admitted;

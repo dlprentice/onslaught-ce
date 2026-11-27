@@ -1991,8 +1991,8 @@ extern "C" uint32_t CE_LockstepChatSubmit(void) {
             gOnlineChat.Reset();
             return CE_CHAT_OK;
         }
-        if (!PortCeOnlineMatchSendChat(gOnlineChat.draft))
-            return CE_CHAT_INVALID;
+        if (!PortCeOnlineMatchSendChat || !PortCeOnlineMatchSendChat(gOnlineChat.draft))
+            return CE_CHAT_BUSY;
         gOnlineChat.Reset();
         return CE_CHAT_OK;
     }
@@ -2038,13 +2038,14 @@ extern "C" void CE_LockstepChatCopyView(CE_ChatView *out) {
         const uint32_t dlen = (std::min<uint32_t>)(gOnlineChat.draft_len, sizeof(out->draft));
         out->draft_size = dlen;
         if (dlen) std::memcpy(out->draft, gOnlineChat.draft, dlen);
-        if (!gOnlineChat.muted && PortCeOnlineMatchGetChat) {
+        if (PortCeOnlineMatchGetChat && PortCeOnlineMatchChatCount) {
             const int total = PortCeOnlineMatchChatCount();
-            const int start = (total > (int)CE_CHAT_HISTORY) ? (total - (int)CE_CHAT_HISTORY) : 0;
-            for (int i = start; i < total && out->history_count < CE_CHAT_HISTORY; ++i) {
+            const int start = (!gOnlineChat.muted && total > (int)CE_CHAT_HISTORY) ? (total - (int)CE_CHAT_HISTORY) : 0;
+            for (int i = start; i < total; ++i) {
                 uint8_t slot = 0;
                 char msg[164] = {};
                 if (!PortCeOnlineMatchGetChat(i, &slot, msg, sizeof(msg))) continue;
+                if (gOnlineChat.muted && slot != L.online_local_slot) continue;
                 char label[32] = {};
                 if (PortCeOnlineMatchSlotLabel) PortCeOnlineMatchSlotLabel(slot, label, sizeof(label));
                 char formatted[200] = {};
@@ -2052,6 +2053,10 @@ extern "C" void CE_LockstepChatCopyView(CE_ChatView *out) {
                     ? snprintf(formatted, sizeof(formatted), "%s: %s", label, msg)
                     : snprintf(formatted, sizeof(formatted), "%s", msg);
                 if (flen <= 0) continue;
+                if (out->history_count == CE_CHAT_HISTORY) {
+                    std::memmove(out->history, out->history + 1, sizeof(out->history) - sizeof(out->history[0]));
+                    --out->history_count;
+                }
                 CE_ChatLine &line = out->history[out->history_count++];
                 line.local_transport_accepted = (slot == L.online_local_slot) ? 1u : 0u;
                 line.has_sender_label = label[0] != 0;

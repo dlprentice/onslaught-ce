@@ -334,6 +334,13 @@ IDirect3DTexture9 *CreateTerrainDetailTexture(IDirect3DDevice9 *dev) {
     return tex;
 }
 
+void ReleaseDioramaStateBlock(RuntimeData *d) {
+    if (!d) return;
+    if (d->stateBlock) { d->stateBlock->Release(); d->stateBlock = NULL; }
+    d->stateBlockDev = NULL;
+    d->stateBlockGen = 0u;
+}
+
 void ReleaseStageBuffers(RuntimeData *d) {
     if (!d) return;
     if (d->stageVb) { d->stageVb->Release(); d->stageVb = NULL; }
@@ -341,9 +348,7 @@ void ReleaseStageBuffers(RuntimeData *d) {
     if (d->domeVb)  { d->domeVb->Release();  d->domeVb = NULL; }
     if (d->domeIb)  { d->domeIb->Release();  d->domeIb = NULL; }
     if (d->terrainDetailTex) { d->terrainDetailTex->Release(); d->terrainDetailTex = NULL; }
-    if (d->stateBlock) { d->stateBlock->Release(); d->stateBlock = NULL; }
-    d->stateBlockDev = NULL;
-    d->stateBlockGen = 0u;
+    ReleaseDioramaStateBlock(d);
     d->stageVertCount = 0;
     d->stageIdxCount = 0;
     d->domeVertCount = 0;
@@ -1763,6 +1768,10 @@ void RuntimeUpdate(CeMuseumTour::Wing wing, float dtSeconds, bool paused,
                    float aimX, float aimY, float aimZ) {
     RuntimeData *d = EnsureData();
     if (!d) return;
+    if (paused) {
+        d->state.fireHeld = false;
+        d->state.fireCaptured = false;
+    }
     Step(&d->state, dtSeconds, paused);
     d->state.hoveredIndex = PickStud(eyeX, eyeY, eyeZ, aimX, aimY, aimZ, wing);
 }
@@ -2171,6 +2180,10 @@ extern "C" void PortCeMuseumDioramaDeleteDeviceObjects(void) {
         CeMuseumDiorama::ReleaseStageBuffers(CeMuseumDiorama::gDio);
     }
 }
+
+extern "C" void PortCeMuseumDioramaInvalidateStateBlock(void) {
+    CeMuseumDiorama::ReleaseDioramaStateBlock(CeMuseumDiorama::gDio);
+}
 #else
 #include "ce_museum_diorama.h"
 namespace CeMuseumDiorama {
@@ -2182,4 +2195,6 @@ bool RuntimeIsAimingControl() { return false; }
 bool RuntimeCue(float, float, float, float, CeMuseumTour::Wing, char *, unsigned, char *, unsigned, char *, unsigned) { return false; }
 void RuntimeDraw(float, bool) {}
 } // namespace CeMuseumDiorama
+
+extern "C" void PortCeMuseumDioramaInvalidateStateBlock(void) {}
 #endif

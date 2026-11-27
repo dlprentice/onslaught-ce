@@ -338,6 +338,10 @@ struct File {
                GetFileInformationByHandle(handle, &before) &&
                !(before.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
                !ce_win_handle_is_link(handle, before.dwFileAttributes) &&
+               InsideRoot(handle, root.path) &&
+               ce_win_hydrate_handle_w(path.c_str(), &handle, &before, GENERIC_READ,
+                                       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                       FILE_FLAG_RANDOM_ACCESS, 0) &&
                InsideRoot(handle, root.path);
     }
     uint64_t Size() const { return (static_cast<uint64_t>(before.nFileSizeHigh) << 32) | before.nFileSizeLow; }
@@ -383,7 +387,35 @@ struct Directory {
         while (*current) {
             const char* slash = std::strchr(current, '/');
             const std::string component(current, slash ? static_cast<size_t>(slash - current) : std::strlen(current));
-            const int next = openat(fd, component.c_str(), O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW);
+            int next = openat(fd, component.c_str(), O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW);
+            if (next < 0 && errno == ENOENT) {
+                const int copy = openat(fd, ".", O_RDONLY | O_CLOEXEC | O_DIRECTORY);
+                if (copy >= 0) {
+                    DIR* dir = fdopendir(copy);
+                    if (!dir) {
+                        close(copy);
+                    } else {
+                        const std::string want = LowerAscii(component);
+                        std::string matched;
+                        size_t visited = 0;
+                        unsigned matches = 0;
+                        bool good = true;
+                        errno = 0;
+                        while (dirent* entry = readdir(dir)) {
+                            if (std::strcmp(entry->d_name, ".") == 0 || std::strcmp(entry->d_name, "..") == 0) continue;
+                            if (++visited > kMaxDirectoryEntries) { good = false; break; }
+                            if (LowerAscii(entry->d_name) == want) {
+                                if (++matches == 1) matched = entry->d_name;
+                                else break;
+                            }
+                        }
+                        if (errno) good = false;
+                        closedir(dir);
+                        if (good && matches == 1)
+                            next = openat(fd, matched.c_str(), O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW);
+                    }
+                }
+            }
             if (next < 0) return false;
             close(fd);
             fd = next;
@@ -393,7 +425,7 @@ struct Directory {
         return true;
     }
     bool List(const char* extension, std::vector<Name>& names, bool& bad_name) const {
-        const int copy = dup(fd);
+        const int copy = openat(fd, ".", O_RDONLY | O_CLOEXEC | O_DIRECTORY);
         if (copy < 0) return false;
         DIR* dir = fdopendir(copy);
         if (!dir) { close(copy); return false; }

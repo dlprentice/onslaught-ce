@@ -19,6 +19,7 @@ const DEFAULT_PER_IP_DAILY_TURN_LIMIT = 40;
 const DEFAULT_HEARTBEAT_TIMEOUT_MS = 30000;
 const DEFAULT_STARTING_TIMEOUT_MS = 5 * 60 * 1000;
 const DEFAULT_MATCH_TIMEOUT_MS = 2 * 60 * 60 * 1000;
+const DEFAULT_MATCH_HEARTBEAT_TIMEOUT_MS = 5 * 60 * 1000;
 const ROOM_INIT_TIMEOUT_MS = 15000;
 const DEFAULT_MAX_ACTIVE_ROOMS = 128;
 const DEFAULT_AUTH_IP_LIMIT = 20;
@@ -396,8 +397,14 @@ function roomMatchTimeoutMs(env) {
   return envPositiveInt(env.CE_MATCH_TIMEOUT_MS, DEFAULT_MATCH_TIMEOUT_MS, 1000, 86400000);
 }
 
+function roomMatchHeartbeatTimeoutMs(env) {
+  const matchCap = roomMatchTimeoutMs(env);
+  const fallback = Math.min(matchCap, DEFAULT_MATCH_HEARTBEAT_TIMEOUT_MS);
+  return Math.min(matchCap, envPositiveInt(env.CE_MATCH_HEARTBEAT_TIMEOUT_MS, fallback, 500, 86400000));
+}
+
 function roomStateTimeoutMs(env, state) {
-  if (state === "in_match") return roomMatchTimeoutMs(env);
+  if (state === "in_match") return roomMatchHeartbeatTimeoutMs(env);
   if (state === "starting") return roomStartingTimeoutMs(env);
   return roomHeartbeatTimeoutMs(env);
 }
@@ -1435,7 +1442,8 @@ export class LobbyDirectory extends DurableObject {
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
         last_heartbeat_ms INTEGER NOT NULL,
-        rev INTEGER NOT NULL DEFAULT 0
+        rev INTEGER NOT NULL DEFAULT 0,
+        match_started_ms INTEGER NOT NULL DEFAULT 0
       );
       CREATE TABLE IF NOT EXISTS turn_budgets (
         period_key TEXT PRIMARY KEY,
@@ -1445,6 +1453,9 @@ export class LobbyDirectory extends DurableObject {
     const roomCols = sql.exec("PRAGMA table_info(rooms)").toArray().map(r => r.name);
     if (!roomCols.includes("rev")) {
       sql.exec("ALTER TABLE rooms ADD COLUMN rev INTEGER NOT NULL DEFAULT 0");
+    }
+    if (!roomCols.includes("match_started_ms")) {
+      sql.exec("ALTER TABLE rooms ADD COLUMN match_started_ms INTEGER NOT NULL DEFAULT 0");
     }
   }
 
@@ -1460,6 +1471,10 @@ export class LobbyDirectory extends DurableObject {
     return roomMatchTimeoutMs(this.env);
   }
 
+  matchHeartbeatTimeoutMs() {
+    return roomMatchHeartbeatTimeoutMs(this.env);
+  }
+
   effectivePruneMs(nowMs, observedAtMs) {
     if (Number.isSafeInteger(observedAtMs) && observedAtMs > 0 && observedAtMs <= nowMs) {
       return Math.max(observedAtMs, nowMs - 5000);
@@ -1471,18 +1486,20 @@ export class LobbyDirectory extends DurableObject {
     const initCutoff = nowMs - ROOM_INIT_TIMEOUT_MS;
     const lobbyCutoff = nowMs - this.heartbeatTimeoutMs();
     const startingCutoff = nowMs - this.startingTimeoutMs();
-    const matchCutoff = nowMs - this.matchTimeoutMs();
+    const matchHbCutoff = nowMs - this.matchHeartbeatTimeoutMs();
+    const matchMaxCutoff = nowMs - this.matchTimeoutMs();
     this.ctx.storage.sql.exec(
       `DELETE FROM rooms
        WHERE state IN ('closed', 'expired')
           OR (state = 'initializing' AND last_heartbeat_ms < ?)
           OR (state NOT IN ('initializing', 'starting', 'in_match') AND last_heartbeat_ms < ?)
           OR (state = 'starting' AND last_heartbeat_ms < ?)
-          OR (state = 'in_match' AND last_heartbeat_ms < ?)`,
+          OR (state = 'in_match' AND (last_heartbeat_ms < ? OR (match_started_ms > 0 AND match_started_ms < ?)))`,
       initCutoff,
       lobbyCutoff,
       startingCutoff,
-      matchCutoff
+      matchHbCutoff,
+      matchMaxCutoff
     );
   }
 
@@ -1511,15 +1528,17 @@ export class LobbyDirectory extends DurableObject {
     const nowMs = Date.now();
     const lobbyCutoff = nowMs - this.heartbeatTimeoutMs();
     const startingCutoff = nowMs - this.startingTimeoutMs();
-    const matchCutoff = nowMs - this.matchTimeoutMs();
+    const matchHbCutoff = nowMs - this.matchHeartbeatTimeoutMs();
+    const matchMaxCutoff = nowMs - this.matchTimeoutMs();
     const rows = this.ctx.storage.sql.exec(
       `SELECT COUNT(*) AS cnt FROM rooms
        WHERE state NOT IN ('closed', 'initializing', 'expired')
          AND ((state = 'starting' AND last_heartbeat_ms >= ?)
-           OR (state = 'in_match' AND last_heartbeat_ms >= ?)
+           OR (state = 'in_match' AND last_heartbeat_ms >= ? AND (match_started_ms = 0 OR match_started_ms >= ?))
            OR (state NOT IN ('starting', 'in_match') AND last_heartbeat_ms >= ?))`,
       startingCutoff,
-      matchCutoff,
+      matchHbCutoff,
+      matchMaxCutoff,
       lobbyCutoff
     ).toArray();
     return { active_rooms: rows.length ? Number(rows[0].cnt) : 0 };
@@ -1707,6 +1726,10 @@ export class LobbyDirectory extends DurableObject {
         );
         return { ok: true, owned: true, stale: true };
       }
+      const nextMatchStarted = (summary.state === "in_match" &&
+        Number.isSafeInteger(summary.match_started_ms) && summary.match_started_ms > 0)
+        ? Math.min(nowMs, summary.match_started_ms)
+        : 0;
       this.ctx.storage.sql.exec(
         `UPDATE rooms SET
           name = ?,
@@ -1729,14 +1752,15 @@ export class LobbyDirectory extends DurableObject {
           created_at = ?,
           updated_at = ?,
           last_heartbeat_ms = MAX(last_heartbeat_ms, ?),
-          rev = ?
+          rev = ?,
+          match_started_ms = ?
          WHERE room_id = ? AND code = ? AND rev <= ?`,
         summary.name, summary.host_player_id, summary.host_callsign, summary.host_tag,
         summary.topology, summary.mode, summary.map, summary.used_seats, summary.human_seats,
         summary.max_seats, summary.visibility, summary.has_password ? 1 : 0,
         summary.require_relay ? 1 : 0, summary.state, PROTO_VERSION,
         summary.build_id, summary.content_id, summary.created_at, summary.updated_at,
-        nextHb, incomingRev, summary.room_id, summary.code, incomingRev
+        nextHb, incomingRev, nextMatchStarted, summary.room_id, summary.code, incomingRev
       );
       return { ok: true, owned: true };
     });
@@ -1954,6 +1978,7 @@ export class GameRoom extends DurableObject {
       created_at: room.created_at,
       updated_at: room.updated_at,
       last_heartbeat_ms: room.last_heartbeat_ms,
+      match_started_ms: room.match_started_ms || 0,
       rev: room.rev,
     };
   }
@@ -1962,9 +1987,20 @@ export class GameRoom extends DurableObject {
     if (!room) return true;
     if (room.state === "expired") return true;
     if (room.state === "closed") return false;
-    const ttlMs = roomStateTimeoutMs(this.env, room.state);
-    if (nowMs - room.last_heartbeat_ms > ttlMs) {
+    let stale = false;
+    if (room.state === "in_match") {
+      const hbTtlMs = roomMatchHeartbeatTimeoutMs(this.env);
+      const maxTtlMs = roomMatchTimeoutMs(this.env);
+      stale = (nowMs - room.last_heartbeat_ms > hbTtlMs) ||
+              (Number.isSafeInteger(room.match_started_ms) && room.match_started_ms > 0 &&
+               nowMs - room.match_started_ms > maxTtlMs);
+    } else {
+      const ttlMs = roomStateTimeoutMs(this.env, room.state);
+      stale = (nowMs - room.last_heartbeat_ms > ttlMs);
+    }
+    if (stale) {
       room.state = "expired";
+      room.match_started_ms = 0;
       room.start_ticket = null;
       room.signals = [];
       room.permits = {};
@@ -1982,6 +2018,7 @@ export class GameRoom extends DurableObject {
       const room = this.readRoom();
       if (room && room.state !== "expired") {
         room.state = "expired";
+        room.match_started_ms = 0;
         room.start_ticket = null;
         room.signals = [];
         room.permits = {};
@@ -2142,6 +2179,7 @@ export class GameRoom extends DurableObject {
         updated_at: now,
         last_heartbeat_ms: nowMs,
         last_dir_heartbeat_ms: nowMs,
+        match_started_ms: 0,
         seats,
         kicked_players: [],
         chat_seq: 0,
@@ -2292,8 +2330,12 @@ export class GameRoom extends DurableObject {
           message: "Game build or content version does not match the room.",
         };
       }
+      let pwAttemptTs = null;
       if (room.has_password) {
-        const pwHist = ((room.join_pw_rates && room.join_pw_rates[session.player_id]) || [])
+        if (!room.join_pw_rates || typeof room.join_pw_rates !== "object") {
+          room.join_pw_rates = {};
+        }
+        const pwHist = (room.join_pw_rates[session.player_id] || [])
           .filter(ts => preMs - ts < JOIN_PW_RATE_WINDOW_MS);
         if (pwHist.length >= JOIN_PW_RATE_MAX) {
           return {
@@ -2303,6 +2345,12 @@ export class GameRoom extends DurableObject {
             message: "Too many failed room password attempts. Please wait.",
           };
         }
+        // Record the attempt atomically BEFORE awaiting PBKDF2 so concurrent joins cannot bypass JOIN_PW_RATE_MAX.
+        pwAttemptTs = preMs;
+        pwHist.push(pwAttemptTs);
+        room.join_pw_rates[session.player_id] = pwHist;
+        this.pruneJoinPwRates(room, preMs);
+        this.writeRoom(room);
       }
       return {
         ok: true,
@@ -2310,6 +2358,7 @@ export class GameRoom extends DurableObject {
         has_password: room.has_password,
         password_salt: room.password_salt,
         password_hash: room.password_hash,
+        pwAttemptTs,
       };
     });
     if (!pre.ok) {
@@ -2328,18 +2377,6 @@ export class GameRoom extends DurableObject {
     if (pre.has_password) {
       const matched = await verifyRoomPassword(pre.password_salt, pre.password_hash, payload.password);
       if (!matched) {
-        const failMs = Date.now();
-        this.ctx.storage.transactionSync(() => {
-          const room = this.readRoom();
-          if (!room || room.state === "expired" || room.state === "closed") return;
-          if (!room.join_pw_rates) room.join_pw_rates = {};
-          const hist = (room.join_pw_rates[session.player_id] || [])
-            .filter(ts => failMs - ts < JOIN_PW_RATE_WINDOW_MS);
-          hist.push(failMs);
-          room.join_pw_rates[session.player_id] = hist;
-          this.pruneJoinPwRates(room, failMs);
-          this.writeRoom(room);
-        });
         return { ok: false, httpStatus: 403, errorCode: "wrong_password", message: "Incorrect room password." };
       }
     }
@@ -2362,20 +2399,38 @@ export class GameRoom extends DurableObject {
           message: "Room has expired.",
         };
       }
+      // Password matched: release this attempt's reserved rate-limit slot so legitimate joins do not burn attempts.
+      let refundedPwSlot = false;
+      if (pre.has_password && pre.pwAttemptTs !== null &&
+          room.join_pw_rates && Array.isArray(room.join_pw_rates[session.player_id])) {
+        const hist = room.join_pw_rates[session.player_id];
+        const idx = hist.lastIndexOf(pre.pwAttemptTs);
+        if (idx !== -1) {
+          hist.splice(idx, 1);
+          if (hist.length === 0) delete room.join_pw_rates[session.player_id];
+          refundedPwSlot = true;
+        }
+      }
       if (room.state !== "lobby") {
+        if (refundedPwSlot) this.writeRoom(room);
         return { ok: false, httpStatus: 409, errorCode: "match_in_progress", message: "Room is no longer joinable." };
       }
       if (room.kicked_players.includes(session.player_id)) {
+        if (refundedPwSlot) this.writeRoom(room);
         return { ok: false, httpStatus: 403, errorCode: "kicked", message: "You were kicked from this room." };
       }
       const already = this.findMemberSeat(room, session.player_id);
-      if (already) return { ok: true, state: this.formatRoomState(room, true), syncRoom: null, roomId: room.room_id, code: room.code };
+      if (already) {
+        if (refundedPwSlot) this.writeRoom(room);
+        return { ok: true, state: this.formatRoomState(room, true), syncRoom: null, roomId: room.room_id, code: room.code };
+      }
 
       let target = room.seats.find(s => s.kind === "open");
       if (!target && room.ai_fill) {
         target = room.seats.find(s => s.kind === "ai");
       }
       if (!target) {
+        if (refundedPwSlot) this.writeRoom(room);
         return { ok: false, httpStatus: 409, errorCode: "room_full", message: "Room is full." };
       }
       target.kind = "human";
@@ -2668,6 +2723,7 @@ export class GameRoom extends DurableObject {
       if (Object.hasOwn(body, "state")) {
         if (room.state === "starting" && body.state === "in_match") {
           room.state = "in_match";
+          room.match_started_ms = nowMs;
           syncDir = true;
         } else {
           return { ok: false, httpStatus: 400, errorCode: "invalid_state", message: "Unsupported state transition." };
@@ -3040,6 +3096,7 @@ export class GameRoom extends DurableObject {
       }
       room.seats[room.host_seat].ready = true;
       room.state = "starting";
+      room.match_started_ms = 0;
       room.start_ticket = ticket;
       room.signal_seq = 0;
       room.signals = [];
@@ -3108,6 +3165,7 @@ export class GameRoom extends DurableObject {
         }
       }
       room.state = "lobby";
+      room.match_started_ms = 0;
       room.start_ticket = null;
       room.signals = [];
       room.signal_seq = 0;

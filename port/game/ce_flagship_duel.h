@@ -286,13 +286,19 @@ public:
 	}
 
 	// Syncs outcome if 2P split-screen ends via 3-lives exhaustion in CGame::RespawnPlayer.
+	// Once a flagship kill latches kVictoryHold (P1 won) or kDefeatHold (P2 won),
+	// an opposite external outcome cannot reverse the latched winner.
 	void SyncExternalMultiplayerOutcome(bool p1WonState, bool p2WonState) {
 		if (!IsSplitScreen2P() || mPhase == CeFlagshipDuelPhase::kInactive)
 			return;
-		if (p1WonState && mPhase != CeFlagshipDuelPhase::kFinishedP2Won) {
+		if (p1WonState &&
+		    mPhase != CeFlagshipDuelPhase::kFinishedP2Won &&
+		    mPhase != CeFlagshipDuelPhase::kDefeatHold) {
 			mPhase = CeFlagshipDuelPhase::kFinishedP1Won;
 			mHoldRemainingSec = 0.0f;
-		} else if (p2WonState && mPhase != CeFlagshipDuelPhase::kFinishedP1Won) {
+		} else if (p2WonState &&
+		           mPhase != CeFlagshipDuelPhase::kFinishedP1Won &&
+		           mPhase != CeFlagshipDuelPhase::kVictoryHold) {
 			mPhase = CeFlagshipDuelPhase::kFinishedP2Won;
 			mHoldRemainingSec = 0.0f;
 		}

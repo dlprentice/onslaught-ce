@@ -145,6 +145,7 @@ struct Rec
 {
 	CSquad *squad;				// NULL once the squad is gone
 	int thing;					// its thing number: with the pointer, its identity
+	CeEntityHandle handle;		// monotonic 32-bit identity handle: distinguishes recycled slots after 512 squads
 	bool alive, seen, normal;
 	bool ordered, reassert, arrived, guard;
 	Verb verb;
@@ -235,10 +236,14 @@ bool Present(const char *name)
 	return value && *value;
 }
 
+bool NetworkSessionActive()
+{
+	return (CE_BootRequested && CE_BootRequested()) || (CE_SessionActive && CE_SessionActive());
+}
+
 bool Fenced()
 {
 	if (!PortCeLayer()) return true;
-	if ((CE_BootRequested && CE_BootRequested()) || (CE_SessionActive && CE_SessionActive())) return true;
 	if (!(PortCeRecordFeaturesAllowed && PortCeRecordFeaturesAllowed()))
 	{
 		for (const char *name : kFenced)
@@ -319,7 +324,7 @@ void Scan()
 		}
 	}
 	for (int i = 0; i < gNRecs; ++i)
-		if (gRecs[i].alive && !gRecs[i].seen) { gRecs[i].alive = false; gRecs[i].squad = NULL; gRecs[i].died = gTick; }
+		if (gRecs[i].alive && !gRecs[i].seen) { gRecs[i].alive = false; gRecs[i].squad = NULL; gRecs[i].handle = kCeEntityHandleInvalid; gRecs[i].died = gTick; }
 	ListIterator<CSquad> it(&WORLD.GetSquadNB());
 	for (CSquad *squad = it.First(); squad; squad = it.Next())
 	{
@@ -349,11 +354,11 @@ void Scan()
 			r->reassert = true;
 			r->guard = true;
 			r->born = gTick;
-			CeEntityHandleRegister(squad);
+			r->handle = CeEntityHandleRegister(squad);
 		}
-		else if (CeEntityHandleLookup(squad) == kCeEntityHandleInvalid)
+		else if (r->handle == kCeEntityHandleInvalid || CeEntityHandleLookup(squad) == kCeEntityHandleInvalid)
 		{
-			CeEntityHandleRegister(squad);
+			r->handle = CeEntityHandleRegister(squad);
 		}
 		r->alive = true;
 		r->seen = true;
@@ -955,6 +960,11 @@ void Probe()
 void CeCommanderUpdate()
 {
 	if (!gConfigured) ReadConfiguration();
+	if (NetworkSessionActive())
+	{
+		if (gNRecs || gTick || gLevel >= 0) Reset();
+		return;
+	}
 	const bool toggleOn = (CePolicyActiveToggles() & CE_TOGGLE_COMMANDER) != 0u;
 	if (!gEnabled && !toggleOn) return;
 	const int state = GAME.GetGameState();
@@ -1029,21 +1039,21 @@ void CeCommanderUpdate()
 
 bool CeCommanderNoMerge(const void *squad)
 {
-	if ((!gEnabled && !(CePolicyActiveToggles() & CE_TOGGLE_COMMANDER)) || !gNRecs) return false;
+	if (NetworkSessionActive() || (!gEnabled && !(CePolicyActiveToggles() & CE_TOGGLE_COMMANDER)) || !gNRecs) return false;
 	Rec *r = ByPointer(squad);
 	return r && r->ordered && r->guard;
 }
 
 extern "C" int PortCeCmdSquadHasPlayerOrder(const void *squad)
 {
-	if ((!gEnabled && !(CePolicyActiveToggles() & CE_TOGGLE_COMMANDER)) || !gNRecs || !squad) return 0;
+	if (NetworkSessionActive() || (!gEnabled && !(CePolicyActiveToggles() & CE_TOGGLE_COMMANDER)) || !gNRecs || !squad) return 0;
 	Rec *r = ByPointer(squad);
 	return (r && r->ordered) ? 1 : 0;
 }
 
 int CeCommanderRelaxed(void *squad, FVector *pos)
 {
-	if ((!gEnabled && !(CePolicyActiveToggles() & CE_TOGGLE_COMMANDER)) || !gNRecs) return 0;
+	if (NetworkSessionActive() || (!gEnabled && !(CePolicyActiveToggles() & CE_TOGGLE_COMMANDER)) || !gNRecs) return 0;
 	Rec *r = ByPointer(squad);
 	if (!r || !r->ordered || !r->reassert) return 0;
 	switch (r->verb)
@@ -1162,6 +1172,7 @@ void Describe(int index, Rec &r, int allegiance, CeCmdSquad &s)
 	}
 	if (n > r.peak) r.peak = n;
 	s.ordinal = index;
+	s.handle = r.handle;
 	s.vehicles = r.normal;
 	s.members = n;
 	s.peak = r.peak;
@@ -1219,11 +1230,13 @@ void MatchLines()
 bool CeCmdMapOn()
 {
 	if (!gConfigured) ReadConfiguration();
+	if (NetworkSessionActive()) return false;
 	return gMap;
 }
 
 int CeCmdDrawnSquad(const CSquad *squad)
 {
+	if (NetworkSessionActive()) return -1;
 	Rec *r = squad ? ByPointer(squad) : NULL;
 	return r && r->thing == r->squad->GetThingNumber() ? int(r - gRecs) : -1;
 }
@@ -1461,6 +1474,7 @@ void CeCmdSquadGone(const void* departed) {
         record.alive = false;
         record.squad = NULL;
         record.died = gTick;
+        record.handle = kCeEntityHandleInvalid;
     }
 }
 
@@ -1561,15 +1575,16 @@ void CeCmdCountLiveUnits(int pilotAlleg, int *outFriendly, int *outTotal) {
 
 unsigned CeCmdSquadHandle(int ordinal)
 {
+	if (NetworkSessionActive()) return 0u;
 	Rec *r = ByOrdinal(ordinal);
 	if (!r || !r->squad) return 0u;
-	return (unsigned)CeEntityHandleLookup(r->squad);
+	return (unsigned)(r->handle != kCeEntityHandleInvalid ? r->handle : CeEntityHandleLookup(r->squad));
 }
 
 int CeCmdListForTeam(int allegiance, CeCmdSquad *out, int max)
 {
 	if (!out || max <= 0) return 0;
-	if (!PortCeLayer()) return 0;
+	if (!PortCeLayer() || NetworkSessionActive()) return 0;
 	if (!(CePolicyActiveToggles() & CE_TOGGLE_COMMANDER) && !CeCmdMapOn()) return 0;
 	Scan();
 	int count = 0;
@@ -1594,7 +1609,7 @@ bool CeCmdIssueForSlot(unsigned char slot, int allegiance, unsigned squadHandle,
 	*outWhy = CE_WHY_NONE;
 	*whyText = NULL;
 
-	if (!PortCeLayer() || !(CePolicyActiveToggles() & CE_TOGGLE_COMMANDER))
+	if (!PortCeLayer() || NetworkSessionActive() || !(CePolicyActiveToggles() & CE_TOGGLE_COMMANDER))
 	{
 		*whyText = "Commander toggle is off.";
 		return false;

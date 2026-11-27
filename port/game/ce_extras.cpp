@@ -59,7 +59,7 @@ void	PortCeExtrasWiden(WCHAR *out, int n, const char *in)
 void	PortCeExtrasWidenName(WCHAR *out, int n, const char *in)
 {
 #ifdef _WIN32
-	CeDecodeName(out, n, in, false);
+	CeDecodeName(out, n, in, GetACP() == CP_UTF8);
 #else
 	CeDecodeName(out, n, in, true);
 #endif
@@ -641,11 +641,12 @@ public:
 			SCeScrollList *list = &sLists[sPage];
 			Shape(page, list);
 			list->mCount = page->mCount();
+			const int before = list->mCursor;
 			bool moved = false;
 			switch (button)
 			{
-			case BUTTON_FRONTEND_MENU_UP:		moved = CeListMove(list, -1);	SkipHeadings(page, list, -1);	break;
-			case BUTTON_FRONTEND_MENU_DOWN:		moved = CeListMove(list, 1);	SkipHeadings(page, list, 1);	break;
+			case BUTTON_FRONTEND_MENU_UP:		CeListMove(list, -1);	SkipHeadings(page, list, -1);	moved = (list->mCursor != before);	break;
+			case BUTTON_FRONTEND_MENU_DOWN:		CeListMove(list, 1);	SkipHeadings(page, list, 1);	moved = (list->mCursor != before);	break;
 			case BUTTON_FRONTEND_MENU_LEFT:
 				if (page->mAdjust)
 				{
@@ -656,7 +657,7 @@ public:
 						break;
 					}
 				}
-				moved = CeListPage(list, -1);	SkipHeadings(page, list, -1);	break;
+				CeListPage(list, -1);	SkipHeadings(page, list, -1);	moved = (list->mCursor != before);	break;
 			case BUTTON_FRONTEND_MENU_RIGHT:
 				if (page->mAdjust)
 				{
@@ -667,7 +668,7 @@ public:
 						break;
 					}
 				}
-				moved = CeListPage(list, 1);	SkipHeadings(page, list, 1);	break;
+				CeListPage(list, 1);	SkipHeadings(page, list, 1);	moved = (list->mCursor != before);	break;
 			case BUTTON_PAUSE_MENU_SELECT:
 			case BUTTON_FRONTEND_MENU_SELECT:	SelectRow(page, list);			break;
 			case BUTTON_FRONTEND_MENU_BACK:
@@ -1096,9 +1097,16 @@ WCHAR	*PortCeExtrasTitle()
 	return (sPage == XP_RECORD) ? kTitleRecord : kTitleExtras;
 }
 
+int	PortCeExtrasSafeWordWrap(CDXBitmapFont *font, SWordWrapFill *fill, const WCHAR *text, float width)
+{
+	return SafeWordWrap(font, fill, text, width);
+}
+
 void	PortCeExtrasShutdown()
 {
+	PortCeJukeboxSuppressRestore(true);
 	CloseAll();
+	PortCeJukeboxSuppressRestore(false);
 	SAFE_DELETE(sMenu);
 }
 

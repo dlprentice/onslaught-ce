@@ -13,6 +13,7 @@
 #ifdef CE_VERSION
 
 #include "common.h"
+#include "CLIParams.h"
 #include "frontend.h"
 #include "music.h"
 #include "ce_extras.h"
@@ -37,6 +38,7 @@ float		sStarted;			// when the piece began, on the front end's clock
 int			sTotal;				// its length in whole seconds, 0 when it could not be read
 int			sRowSeconds[kMaxCachedRows];	// cached track length in seconds per row (-1: unread)
 int			sCachedCount = -1;
+bool		sSuppressRestore = false;
 
 void	ResetLengths()
 {
@@ -183,7 +185,10 @@ int		CachedLength(int row)
 	if ((row < 1) || (row >= kMaxCachedRows))
 		return 0;
 	if (sRowSeconds[row] < 0)
-		sRowSeconds[row] = LengthOf(row);
+	{
+		const int sec = LengthOf(row);
+		sRowSeconds[row] = sec > 0 ? sec : 0;
+	}
 	return sRowSeconds[row];
 }
 
@@ -245,13 +250,20 @@ void	DeviceStop()
 	fprintf(stderr, PORT_LOG_PREFIX "music player: stopped\n");
 }
 
+struct MusicAccess : CMusic
+{
+	static bool Initialised() { return (MUSIC.*(&MusicAccess::mInitialised)); }
+};
+
 // The menu theme back, as the Credits page gives it back: the selection play type and the front end's piece, with the game's fade.
 void	DeviceRestore()
 {
+	sTotal = 0;
+	if (sSuppressRestore || !MusicAccess::Initialised() || !CLIPARAMS.mMusic)
+		return;
 	MUSIC.mPlayType = MPT_SELECTION;
 	MUSIC.mCurrentSong = NULL;
 	MUSIC.PlaySelection(MUS_FRONTEND, TRUE);
-	sTotal = 0;
 	fprintf(stderr, PORT_LOG_PREFIX "music player: the menu theme is back\n");
 }
 
@@ -275,7 +287,7 @@ unsigned	DeviceRandom()
 
 bool	DeviceAllowed()
 {
-	return CeMusic::Allowed();
+	return MusicAccess::Initialised() && CLIPARAMS.mMusic && CeMusic::Allowed();
 }
 
 const SCeJukeboxDevice	kDevice = {Count, DevicePlay, DeviceStop, DeviceRestore, DevicePlaying, DeviceRandom, DeviceAllowed};
@@ -411,7 +423,9 @@ void	PageDraw(float y)
 {
 	if (sBox.mNow <= 0)
 		return;
-	const int elapsed = int(PLATFORM.GetSysTimeFloat() - sStarted);
+	int elapsed = int(PLATFORM.GetSysTimeFloat() - sStarted);
+	if (elapsed < 0)
+		elapsed = 0;
 	char text[48];
 	CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);
 	const float barH = float(font->GetHeight()) > 14.f ? float(font->GetHeight()) : 14.f;
@@ -443,6 +457,11 @@ void	PageDraw(float y)
 		FRONTEND.DrawPanel(x, y + 3.f, x + 7.f, y + 14.f, 0.5f, (s < lit) ? 0xff00a000 : 0xff505050);
 	}
 }
+}
+
+void	PortCeJukeboxSuppressRestore(bool suppress)
+{
+	sSuppressRestore = suppress;
 }
 
 const SCeListPage	*PortCeJukeboxPage()

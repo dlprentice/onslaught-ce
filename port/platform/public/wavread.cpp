@@ -43,8 +43,12 @@ HRESULT LoadFormat(HMMIO file, MMCKINFO *riff, WAVEFORMATEX **format)
 	else
 	{
 		// Another format: the word after the PCM part gives the count of extra bytes that follow it.
+		if ((DWORD)chunk.cksize < (DWORD)(sizeof(PCMWAVEFORMAT) + sizeof(WORD)))
+			return E_FAIL;
 		WORD	extra = 0;
 		if (mmioRead(file, (CHAR *)&extra, sizeof(extra)) != sizeof(extra))
+			return E_FAIL;
+		if ((DWORD)chunk.cksize - (DWORD)(sizeof(PCMWAVEFORMAT) + sizeof(WORD)) < (DWORD)extra)
 			return E_FAIL;
 		WAVEFORMATEX	*f = (WAVEFORMATEX *)new(MEMTYPE_SOUND) CHAR[sizeof(WAVEFORMATEX) + extra];
 		if (!f)
@@ -53,7 +57,7 @@ HRESULT LoadFormat(HMMIO file, MMCKINFO *riff, WAVEFORMATEX **format)
 		f->cbSize = extra;
 		*format = f;
 		// The extra bytes follow the cbSize field.
-		if (mmioRead(file, (CHAR *)((BYTE *)&f->cbSize + sizeof(WORD)), extra) != extra)
+		if (extra > 0 && mmioRead(file, (CHAR *)((BYTE *)&f->cbSize + sizeof(WORD)), extra) != extra)
 		{
 			delete f;
 			*format = NULL;

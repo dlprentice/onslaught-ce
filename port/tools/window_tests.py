@@ -58,8 +58,16 @@ void PortUiMouseMenuPoint(int *x, int *y) { ++seedMapCalls; *x /= 2; *y = *y / 2
 #define CHECK(expr) do { if (!(expr)) { fprintf(stderr, "failed: %s at %d\n", #expr, __LINE__); return 1; } } while (0)
 static UINT mouseSeq[16];
 static unsigned mouseSeqN;
+static int dispatchedPtrHits, dispatchedPtrX, dispatchedPtrY, nonMousePtrHits;
+static int pauseEvents[16], pauseEventN;
+static void PauseHook(int paused) { if (pauseEventN < 16) pauseEvents[pauseEventN++] = paused; }
 static LRESULT WINAPI Proc(HWND, UINT msg, WPARAM wp, LPARAM) {
     if (msg >= WM_MOUSEFIRST && msg <= WM_MOUSEWHEEL && mouseSeqN < 16) mouseSeq[mouseSeqN++] = msg;
+    int px = -1, py = -1;
+    if (PortDispatchedPointer(&px, &py)) {
+        if (msg >= WM_MOUSEFIRST && msg <= WM_MBUTTONUP) { dispatchedPtrHits++; dispatchedPtrX = px; dispatchedPtrY = py; }
+        else nonMousePtrHits++;
+    }
     if (msg == WM_SIZE) { active = wp != SIZE_MINIMIZED; sizes++; }
     if (msg == WM_KEYDOWN) directDown++;
     if (msg == WM_KEYUP) directUp++;
@@ -176,6 +184,37 @@ int main(int argc, char **argv) {
                 CHECK(mouseSeqN == 4 && mouseSeq[3] == WM_MOUSEMOVE && directDown == 1);
             }
         }
+    } else if (!strcmp(argv[1], "window-hooks")) {
+        // Focus tracking under offscreen, pause hook on minimize/restore and GetMessage, per-event dispatched pointer, and coalesced resize events.
+        CHECK(PortWindowIsFocused() == 1);
+        Event(SDL_EVENT_WINDOW_FOCUS_LOST); CHECK(PortWindowIsFocused() == 0);
+        Event(SDL_EVENT_WINDOW_FOCUS_GAINED); CHECK(PortWindowIsFocused() == 1);
+        PortWindowSetPauseHook(PauseHook);
+        Event(SDL_EVENT_WINDOW_MINIMIZED); CHECK(PortWindowIsFocused() == 0 && pauseEventN == 1 && pauseEvents[0] == 1);
+        Event(SDL_EVENT_WINDOW_RESTORED); CHECK(PortWindowIsFocused() == 1 && pauseEventN == 2 && pauseEvents[1] == 0);
+        PortWindowSetPauseHook(NULL);
+        Event(SDL_EVENT_WINDOW_MINIMIZED); Event(SDL_EVENT_WINDOW_RESTORED);
+        CHECK(pauseEventN == 2);
+        // Dispatched pointer: active only during mouse message dispatch, inactive outside and for keyboard messages.
+        int px = -1, py = -1;
+        CHECK(PortDispatchedPointer(&px, &py) == 0 && px == -1 && py == -1);
+        PushButton(true, 123.f, 456.f, SDL_BUTTON_LEFT);
+        PushKey(true);
+        Drain();
+        CHECK(dispatchedPtrHits == 1 && dispatchedPtrX == 123 && dispatchedPtrY == 456 && nonMousePtrHits == 0);
+        CHECK(PortDispatchedPointer(&px, &py) == 0);
+        // Double-click also latches coordinates.
+        PortPostMessageA((HWND)w, WM_LBUTTONDBLCLK, 0, MAKELPARAM(321, 210));
+        Drain();
+        CHECK(dispatchedPtrHits == 2 && dispatchedPtrX == 321 && dispatchedPtrY == 210);
+        // External resize bursts coalesce into one WM_SIZE.
+        unsigned sizesBefore = sizes;
+        SDL_Event r1{}, r2{};
+        r1.type = SDL_EVENT_WINDOW_RESIZED; r1.window.data1 = 800; r1.window.data2 = 600;
+        r2.type = SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED; r2.window.data1 = 1280; r2.window.data2 = 720;
+        CHECK(SDL_PushEvent(&r1) && SDL_PushEvent(&r2));
+        Drain();
+        CHECK(sizes == sizesBefore + 1);
     } else if (!strcmp(argv[1], "restore")) {
         Event(SDL_EVENT_WINDOW_MINIMIZED); CHECK(!active);
         Event(SDL_EVENT_WINDOW_FOCUS_GAINED); CHECK(!active);
@@ -291,6 +330,9 @@ class MessagePump(unittest.TestCase):
 
     def test_same_size_restore_and_maximize_resume_game(self):
         self.check_case("restore")
+
+    def test_window_focus_pause_hook_dispatched_pointer_and_resize_coalescing(self):
+        self.check_case("window-hooks")
 
     def test_recorded_lost_release_uses_tape_once(self):
         self.check_case("record-lost-up")

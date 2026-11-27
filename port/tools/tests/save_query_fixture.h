@@ -46,11 +46,18 @@ static int CreateDirectoryBoundary(const char *)
 {
 	if(racePhase=="between-pre-reserve")IntroduceAlias();return 0;
 }
+static BOOL DeleteFileBoundary(const char *p)
+{
+	if(!p)return FALSE;
+	return unlink(HostPath(std::string("user\\")+p).c_str())==0 ? TRUE : FALSE;
+}
 #define _mkdir CreateDirectoryBoundary
+#define DeleteFile DeleteFileBoundary
 #define SAVE_DIRECTORY "savegames\\"
 #define _WIN32 1
 #include SAVE_CARD_CREATE_SOURCE
 #undef _WIN32
+#undef DeleteFile
 #undef _mkdir
 
 static void CoupledCreate(const std::string &test,const char *folder)

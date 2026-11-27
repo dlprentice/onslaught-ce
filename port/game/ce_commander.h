@@ -7,6 +7,8 @@
 
 #ifdef CE_VERSION
 
+#include "ce_entity_handles.h"
+
 class FVector;
 
 // Once at the top of every CGame::Update (port/game/updatedump.cpp, PortUpdateHook): keeps the table of the level's squads current while the map is on.
@@ -50,6 +52,7 @@ enum CeCmdWhy
 struct CeCmdSquad
 {
 	int ordinal;			// the order layer's number for the squad (the order in which it first saw it)
+	CeEntityHandle handle;	// monotonic 32-bit identity handle: prevents aliasing after 512-slot recycling
 	bool vehicles;			// a vehicle squad; infantry otherwise
 	bool friendly;			// on the player's side
 	bool commandable;		// friendly, with live units, and why == CE_WHY_NONE

@@ -299,10 +299,20 @@ int main(int argc, char **argv) {
     r2 = r2 && rcard.verified && rcard.root == "R:/" &&
          rcard.set == std::string("R:/") + goodLeaf;
     CePreviewChoose();
-    choose("R:\\\\");
+    choose((std::string("R:\\") + goodLeaf + "\\\\").c_str());
+    r2 = r2 && waitPhase(CE_PREVIEW_VERIFIED);
+    CePreviewRestoreCard(rcard);
+    r2 = r2 && rcard.verified && rcard.root == "R:/" &&
+         rcard.set == std::string("R:\\") + goodLeaf;
+    CePreviewLeave();
+
+    CePreviewOpen(user.c_str(), game.c_str(), "R:\\\\");
     r2 = r2 && waitPhase(CE_PREVIEW_IDLE) && card().choices == 2;
     CePreviewSelectSet(0);
     r2 = r2 && waitPhase(CE_PREVIEW_VERIFIED);
+    CePreviewRestoreCard(rcard);
+    r2 = r2 && rcard.verified && rcard.root == "R:\\" &&
+         rcard.set == std::string("R:\\") + goodLeaf;
     CePreviewLeave();
 
     CePreviewOpen(user.c_str(), game.c_str(), (root + "\\\\").c_str());

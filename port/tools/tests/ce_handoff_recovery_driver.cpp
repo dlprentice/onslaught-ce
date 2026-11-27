@@ -153,7 +153,7 @@ static int scenarios(const std::string &root) {
           "verified ordinary restart is admitted");
     check(out.role == ordinary.role && out.level == ordinary.level && !out.campaign.version,
           "ordinary role and mission survive");
-    check(exists(good_path) && read_file(good_path).empty(), "consumption retains an empty entry");
+    check(!exists(good_path), "consumption clears and unlinks verified owned entry");
     check(!CE_HandoffOwnedRead(good_path.c_str(), &good, CE_HandoffNow(), &out, &error) &&
           zero(&out, sizeof out), "owned record is consumed once");
 
@@ -170,7 +170,7 @@ static int scenarios(const std::string &root) {
     CE_HandoffOwner stale_owner = stage(stale_path, stale);
     check(!CE_HandoffOwnedRead(stale_path.c_str(), &stale_owner, CE_HandoffNow(), &out, &error) &&
           zero(&out, sizeof out), "known stale launch is refused");
-    check(exists(stale_path) && read_file(stale_path).empty(), "known stale contents are cleared");
+    check(!exists(stale_path), "known stale contents are cleared and unlinked");
 
     std::string cleanup_path = root + "/cleanup-failure.record";
     CE_HandoffOwner cleanup_owner = stage(cleanup_path, ordinary);
@@ -180,7 +180,7 @@ static int scenarios(const std::string &root) {
     check(!taken && error && zero(&out, sizeof out), "cleanup failure cannot report admission");
     check(read_file(cleanup_path) == expected, "failed cleanup retains its authored record");
     check(CE_HandoffOwnedClear(cleanup_path.c_str(), &cleanup_owner, &error) &&
-          read_file(cleanup_path).empty(), "owned cancellation clears through its handle");
+          !exists(cleanup_path), "owned cancellation clears and unlinks through its handle");
     protect_clear = true; clear_calls = 0;
     int canceled = CE_HandoffOwnedClear(copy_path.c_str(), &good, &error);
     protect_clear = false;

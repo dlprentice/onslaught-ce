@@ -439,9 +439,17 @@ int main() {
     StepState(&st, 0.2f, true); // game pause
     Need(Near(st.yawRad, yFrozen), "game pause freezes yaw");
 
-    // Keyboard shortcuts gated by visitorNear + repeat policy.
+    // Keyboard shortcuts gated by visitorNear / hoveredButton + repeat policy.
     st.visitorNear = false;
+    st.hoveredButton = -1;
     Need(!HandleKeyCode(&st, kDikRBracket, false), "keys ignored when visitor is far");
+    st.hoveredButton = kBtnCategory;
+    Need(HandleKeyCode(&st, kDikTab, false) && st.category == kCatGoodieModels, "Tab handled when button hovered even if visitorNear is false");
+    Need(HandleKeyCode(&st, kDikTab, false) && st.category == kCatConceptArt, "advance back");
+    Need(HandleKeyCode(&st, kDikTab, false) && st.category == kCatCinemaFmvs, "advance back 2");
+    Need(HandleKeyCode(&st, kDikTab, false) && st.category == kCatBonusLevels, "advance back 3");
+    Need(HandleKeyCode(&st, kDikTab, false) && st.category == kCatRetailMeshes, "wrap back to RetailMeshes");
+    st.hoveredButton = -1;
     st.visitorNear = true;
     Need(HandleKeyCode(&st, kDikRBracket, false) && st.selected[kCatRetailMeshes] == 1u, "] advances");
     Need(HandleKeyCode(&st, kDikNext, true) && st.selected[kCatRetailMeshes] == 2u, "PgDn advances with repeat");
@@ -635,7 +643,7 @@ PEDESTAL_MUTANTS = [
      "s->selected[s->category] = (s->selected[s->category] + n - 1u) % n;\n    s->fadeAlpha = 0.0f;",
      "s->selected[s->category] = (s->selected[s->category] + n - 1u) % n;\n    s->fadeAlpha = 1.0f;"),
     ("keys-ignore-near-gate",
-     "if (!s || !s->initialized || !s->visitorNear) return false;",
+     "if (!s || !s->initialized || (!s->visitorNear && s->hoveredButton < 0)) return false;",
      "if (!s || !s->initialized) return false;"),
     ("wrong-goodie-classify",
      "if (id == 76u) return kGoodieMesh;",

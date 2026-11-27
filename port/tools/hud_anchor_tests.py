@@ -33,8 +33,10 @@ struct FakeGame {
 	bool IsMultiplayer() { return multiplayer; }
 protected:
 	bool mHorizontalSplitscreen = true;
+	int mFullscreenMultiplayer = 0;
 public:
 	void SetHorizontalSplitscreen(bool v) { mHorizontalSplitscreen = v; }
+	void SetFullscreenMultiplayer(int v) { mFullscreenMultiplayer = v; }
 };
 typedef FakeGame CGame;
 extern FakeGame GAME;
@@ -93,11 +95,13 @@ def static_checks():
 
 # One-line weakenings; each must make the executed driver fail on its own, in at least one of its three ini modes (the static checks above are not consulted): (name, file, old, new)
 MUTANTS = (
-    ("splitscreen not tested", "port/game/ce_hud_anchor.cpp", "return (GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() != 1) ? 1 : 0;", "return GAME.IsMultiplayer() ? 1 : 0;"),
-    ("camera aspect ignores single viewport", "port/game/ce_hud_anchor.cpp", "if (!GAME.IsMultiplayer() || vp == 1 || vp == 3 || vp == 4)\n\t\treturn 0;", "if (!GAME.IsMultiplayer())\n\t\treturn 0;"),
+    ("splitscreen not tested", "port/game/ce_hud_anchor.cpp", "if (ENGINE.GetNumViewpoints() == 1 || CeSingleViewportMultiplayer())\n\t\treturn 0;", "if (false)\n\t\treturn 0;"),
+    ("single viewport mp sources ignored", "port/game/ce_hud_anchor.cpp", "if (ENGINE.GetNumViewpoints() == 1 || CeSingleViewportMultiplayer())\n\t\treturn 0;", "if (ENGINE.GetNumViewpoints() == 1)\n\t\treturn 0;"),
+    ("fullscreen multiplayer ignored", "port/game/ce_hud_anchor.cpp", "if (CeGameSplitAccess::FullscreenMultiplayer())\n\t\treturn true;", "if (false)\n\t\treturn true;"),
+    ("camera aspect ignores single viewport", "port/game/ce_hud_anchor.cpp", "if (!GAME.IsMultiplayer() || vp == 1 || vp == 3 || vp == 4 || CeSingleViewportMultiplayer())\n\t\treturn 0;", "if (!GAME.IsMultiplayer())\n\t\treturn 0;"),
     ("camera aspect squashes quad split", "port/game/ce_hud_anchor.cpp", "vp == 1 || vp == 3 || vp == 4", "vp == 1"),
     ("camera aspect ignores vertical split", "port/game/ce_hud_anchor.cpp", "return CeGameSplitAccess::Horizontal() ? 1 : 2;", "return 1;"),
-    ("faithful layer bypasses retail split", "port/game/ce_hud_anchor.cpp", "if (!PortCeLayer())\n\t\treturn GAME.IsMultiplayer() ? 1 : 0;\n\treturn (GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() != 1)", "if (false)\n\t\treturn GAME.IsMultiplayer() ? 1 : 0;\n\treturn (GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() != 1)"),
+    ("faithful layer bypasses retail split", "port/game/ce_hud_anchor.cpp", "if (!PortCeLayer())\n\t\treturn GAME.IsMultiplayer() ? 1 : 0;\n\tif (!GAME.IsMultiplayer())", "if (false)\n\t\treturn GAME.IsMultiplayer() ? 1 : 0;\n\tif (!GAME.IsMultiplayer())"),
     ("viewpoints not tested", "port/game/ce_hud_anchor.cpp", " && ENGINE.GetNumViewpoints() == 1", ""),
     ("the ini's default is off", "port/platform/common/hud_scale.cpp", 'CE_SettingGetBool("hud_anchor", 1)', 'CE_SettingGetBool("hud_anchor", 0)'),
     ("the ini is ignored", "port/platform/common/hud_scale.cpp", "return sAnchorIni == 1;", "return true;"),

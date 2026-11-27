@@ -71,18 +71,7 @@ void CeAiTacticalL2Decide(CeAiTacticalL2State *state,
 			const CePlayerSquadObs &sq = obs.squads[i];
 			if (!sq.friendly || !sq.commandable || sq.members <= 0 || sq.squadHandle == kCeEntityHandleInvalid)
 				continue;
-			// Low-health squad falls back to preserve forces.
-			if (sq.lifeRatio < 0.30f && sq.verb != 4 /* CE_CMD_FALLBACK */)
-			{
-				outCmd->valid = 1u;
-				outCmd->verb = 4; // CE_CMD_FALLBACK
-				outCmd->squadHandle = sq.squadHandle;
-				outCmd->goalX = 0.0f;
-				outCmd->goalY = 0.0f;
-				state->lastCmdTick = obs.simTick;
-				break;
-			}
-			// Artillery holds position.
+			// Artillery holds position (check before low-HP fallback: artillery only supports HOLD/RELEASE).
 			if (sq.deploys)
 			{
 				if (sq.verb != 3 /* CE_CMD_HOLD */)
@@ -92,6 +81,21 @@ void CeAiTacticalL2Decide(CeAiTacticalL2State *state,
 					outCmd->squadHandle = sq.squadHandle;
 					outCmd->goalX = sq.x;
 					outCmd->goalY = sq.y;
+					state->lastCmdTick = obs.simTick;
+					break;
+				}
+				continue;
+			}
+			// Low-health non-artillery squad falls back to preserve forces (and stays in FALLBACK rather than oscillating with HOLD).
+			if (sq.lifeRatio < 0.30f)
+			{
+				if (sq.verb != 4 /* CE_CMD_FALLBACK */)
+				{
+					outCmd->valid = 1u;
+					outCmd->verb = 4; // CE_CMD_FALLBACK
+					outCmd->squadHandle = sq.squadHandle;
+					outCmd->goalX = 0.0f;
+					outCmd->goalY = 0.0f;
 					state->lastCmdTick = obs.simTick;
 					break;
 				}

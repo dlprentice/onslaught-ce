@@ -7,6 +7,7 @@
 #include <cstring>
 
 std::vector<std::u16string> drawn;
+std::vector<DrawnRow> drawn_rows;
 FakePlatform PLATFORM;
 FakeFrontend FRONTEND;
 namespace {
@@ -106,12 +107,14 @@ int main() {
           stops == before_stop && owner.State().composing, "repeat-enter-does-not-submit-or-close");
     Text(u8"Aé🙂");
     Check(SendKey(SDL_SCANCODE_BACKSPACE) == 1, "unicode-backspace-event");
+    Check(SendKey(SDL_SCANCODE_A, false) == 0, "composing-propagates-keyup-to-avoid-stuck-keys");
     CeTextChat::Decoded draft{}; owner.CopyDraft(draft);
     Check(draft.size == 3 && draft.scalars == 2, "unicode-edit-reaches-owner");
     CeTextChat::Clear(draft);
     Check(SendKey(SDL_SCANCODE_ESCAPE) == 1 && !owner.State().composing &&
           PortCeChatCapturingInput(), "cancel-retains-key-release-fence");
-    Check(SendKey(SDL_SCANCODE_A) == 1, "closing-key-fence-owns-other-key-events");
+    Check(SendKey(SDL_SCANCODE_A) == 1, "closing-key-fence-owns-other-keydown-events");
+    Check(SendKey(SDL_SCANCODE_A, false) == 0, "closing-key-fence-propagates-other-keyup-events");
     Check(SendKey(SDL_SCANCODE_ESCAPE, false) == 1 && !PortCeChatCapturingInput(),
           "cancel-keyup-releases-gameplay-capture");
     Check(SendKey(SDL_SCANCODE_RETURN) == 1, "oversize-composer-open");
@@ -128,12 +131,21 @@ int main() {
     SendKey(SDL_SCANCODE_RETURN, false);
     Check(!PortCeChatCapturingInput(), "send-keyup-releases-capture");
     Remote(1, u8"%s <tag> é🙂");
-    drawn.clear(); PortCeChatRender();
+    drawn.clear(); drawn_rows.clear(); PortCeChatRender();
     std::u16string joined;
     for (const auto& line : drawn) joined += line;
     Check(joined.find(u"%s <tag>") != std::u16string::npos &&
           joined.find(u"??") != std::u16string::npos, "plain-text-and-visible-glyph-fallback");
     Check(drawn.size() <= 16, "render-row-count-bounded");
+    // 4K scale must NOT cap at 1.5x, and bottom row must clear bottom-left scaled Radar & Weapon Panel (140 * hudScale).
+    PLATFORM.width = 3840; PLATFORM.height = 2160;
+    drawn.clear(); drawn_rows.clear(); PortCeChatRender();
+    Check(!drawn_rows.empty() && drawn_rows.back().sx > 2.9f && drawn_rows.back().sy > 2.9f,
+          "4k-text-scale-uncapped");
+    const float line_h_4k = 16.f * drawn_rows.back().sx;
+    const float y_bottom_4k = drawn_rows.back().y + line_h_4k;
+    Check(y_bottom_4k <= 2160.f - 140.f * 4.5f + 0.5f, "4k-chat-clears-bottom-left-hud");
+    PLATFORM.width = 1280; PLATFORM.height = 720;
     SendKey(SDL_SCANCODE_RETURN);
     SendKey(SDL_SCANCODE_F6);
     Check(owner.State().muted && owner.State().history == 0, "mute-control-reaches-owner");

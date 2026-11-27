@@ -570,6 +570,8 @@ struct CUMTexture {
 struct CBoundingBox { struct { float X, Y, Z; } mAxes; };
 struct CUnit { CBoundingBox *GetBoundingBox() { return nullptr; } };
 bool PortRecording() { return false; }
+static bool gShadowSuppressed = false;
+static inline bool CeDynamicShadowsSuppressed() { return gShadowSuppressed; }
 struct ActiveReader {
     CUnit *p = nullptr;
     void SetReader(CUnit *u) { p = u; }

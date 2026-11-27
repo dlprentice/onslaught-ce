@@ -108,6 +108,8 @@
 extern "C" bool PortCeMuseumVisitActive(void) __attribute__((weak));
 extern "C" bool PortCeSandboxSquadCommandable(const void *squad) __attribute__((weak));
 extern "C" bool PortCeSanctuaryFire(bool release, float value) __attribute__((weak));
+bool CePlayUnitSlotsIsLeased(const CUnit *u) __attribute__((weak));
+void CePlayUnitSlotsReleaseUnit(CUnit *u) __attribute__((weak));
 
 #include <d3dx9.h>
 #include <math.h>
@@ -590,7 +592,8 @@ CePlayUnitFacts Facts(CUnit *u, CBattleEngine *engine)
 	f.groundUnit = d && d->mBehaviour == UB_GROUND_UNIT && (type & THING_TYPE_GROUND_UNIT) != 0 && !f.aircraft && !f.naval;
 	f.deploys = d && (d->mUnknown108 || (d->mName && strstr(d->mName, "Artillery")));
 	const bool sandboxCommandable = squad && PortCeSandboxSquadCommandable && PortCeSandboxSquadCommandable(squad);
-	f.normalSquad = squad && IsNormal(squad);
+	const bool aiLeased = CePlayUnitSlotsIsLeased && CePlayUnitSlotsIsLeased(u);
+	f.normalSquad = (squad && IsNormal(squad)) || (aiLeased && f.vehicle && f.groundUnit && !f.deploys);
 	f.ordinaryFoot = IsOrdinaryFoot(u, squad);
 	f.spawned = squad && squad->mUnknown84 && !sandboxCommandable;
 	// Armed: a current weapon, or one the unit carries with a mode (the game clears the current weapon between engagements; free fire makes the first ready one current).
@@ -1554,7 +1557,7 @@ void DriveNaval(CUnit *u)
 		const FVector bowPos = u->GetPos() + bowDir * (u->GetRadius() > 3.f ? u->GetRadius() : 6.f);
 		const bool bowInOpenWater = MAP.Collide(bowPos) >= MAP.GetWaterLevel() + 1.2f &&
 		                            MAP.Collide(u->GetPos()) >= MAP.GetWaterLevel() + 1.2f;
-		if ((!gUnloadPending && !boat->mDeploying && bowInOpenWater) ||
+		if ((!gUnloadPending && bowInOpenWater) ||
 		    (gApplied.back > 0.1f && (!boat->mDeploying || TransportCargoCount(u) <= 0)))
 		{
 			if (boat->mDeploying)
@@ -2447,7 +2450,7 @@ void UnitPromptLine(char *out, int n, const char *name)
 
 void RefreshUnitPrompt(CUnit *u)
 {
-    if (!gDriving || !u) return;
+    if (!gDriving || !u || !gHintState.visible) return;
     const char *name = u->GetUnitData() && u->GetUnitData()->mName ? u->GetUnitData()->mName : (gOnFoot ? "soldier" : "tank");
     char standing[160];
     UnitPromptLine(standing, sizeof(standing), name);
@@ -2554,6 +2557,7 @@ bool Take(CPlayer *player, CBattleEngine *engine, CCONTROLLER *controller, CUnit
 #endif
 	if (kind == CE_PLAYUNIT_CLASS_INFANTRY && (gPathDrive || gDriveGuide || !IsOrdinaryFoot(u, u->GetSquad()))) return false;
 	CeCmdUnitOrderRelease(u);
+	if (CePlayUnitSlotsReleaseUnit) CePlayUnitSlotsReleaseUnit(u);
 	gOnFoot = kind == CE_PLAYUNIT_CLASS_INFANTRY;
 	gDeliveryAssigned = !gOnFoot && CeFactoryIsVehicle(u) && CeCmdDeliveredSquad() >= 0;
 	gRelaxedAssigned = !gOnFoot && !gDeliveryAssigned && IsRelaxed(u->GetSquad());
@@ -2631,7 +2635,11 @@ bool Take(CPlayer *player, CBattleEngine *engine, CCONTROLLER *controller, CUnit
 			if (IsNormal(squad)) ((CNormalSquad *)squad)->Unknown4e6f70(u);
 		if (!gOnFoot && kind != CE_PLAYUNIT_CLASS_TURRET && kind != CE_PLAYUNIT_CLASS_AIRCRAFT) u->GoToPoint(u->GetPos(), FALSE);
 		InstallDriveGuide(u);
-		if (kind == CE_PLAYUNIT_CLASS_TURRET) gClassDriveFn = DriveTurret;
+		if (kind == CE_PLAYUNIT_CLASS_TURRET)
+		{
+			if (!u->Active()) u->Activate();
+			gClassDriveFn = DriveTurret;
+		}
 		else if (kind == CE_PLAYUNIT_CLASS_AIRCRAFT) gClassDriveFn = DriveAircraft;
 		else if (kind == CE_PLAYUNIT_CLASS_NAVAL) gClassDriveFn = DriveNaval;
 		else if (kind == CE_PLAYUNIT_CLASS_ARTILLERY) gClassDriveFn = DriveArtillery;

@@ -15,6 +15,7 @@ extern bool PortCeMenus();
 extern bool PortCeExperimental(const char *mode) __attribute__((weak));
 extern bool CeCmdMapOn() __attribute__((weak));
 extern bool PortCeOneScreenMatch() __attribute__((weak));
+extern bool CeCmdMatch() __attribute__((weak));
 extern "C" int PortCeMultiBeActive(void) __attribute__((weak));
 extern "C" int PortCeSoloSkirmishActive(void) __attribute__((weak));
 extern "C" int PortCeSoloControlsActive(void) __attribute__((weak));
@@ -37,6 +38,14 @@ extern "C" int PortCeOnlineMatchActive(void) __attribute__((weak));
 #endif
 
 namespace {
+
+struct CeGamePolicyAccess : CGame
+{
+	static bool FullscreenMultiplayer()
+	{
+		return static_cast<const CGame &>(GAME).*(&CeGamePolicyAccess::mFullscreenMultiplayer) != FALSE;
+	}
+};
 
 bool IsOneScreenMatch()
 {
@@ -136,13 +145,17 @@ bool CePolicyIsSplitViewport()
 #else
 	if (!PortCeLayer())
 		return GAME.IsMultiplayer() != FALSE;
-	if (IsOneScreenMatch())
+	if (!GAME.IsMultiplayer())
 		return false;
-#ifndef CE_NETWORK_OFF
-	if (CE_WorldActive() || CE_LockstepRequested())
+	if (IsOneScreenMatch() || IsOnlineSession())
 		return false;
-#endif
-	return PortCeIsSplitScreen() != 0;
+	if (PortCeSoloSkirmishActive && PortCeSoloSkirmishActive() != 0)
+		return false;
+	if (CeCmdMatch && CeCmdMatch() && (!CeCmdMapOn || CeCmdMapOn()))
+		return false;
+	if (CeGamePolicyAccess::FullscreenMultiplayer())
+		return false;
+	return true;
 #endif
 }
 
@@ -197,13 +210,11 @@ int CePolicyLandscapeViewCount()
 #else
 	if (!PortCeLayer())
 		return GAME.IsMultiplayer() ? 2 : 1;
-	int views = GAME.IsMultiplayer() ? 2 : 1;
-	const int vp = ENGINE.GetNumViewpoints();
-	if (vp > views)
-		views = vp;
-	const int np = GAME.GetNPlayers();
-	if (GAME.IsMultiplayer() && np > views)
-		views = np;
+	if (!CePolicyIsSplitViewport())
+		return 1;
+	int views = GAME.GetNPlayers();
+	if (views < 2)
+		views = 2;
 	if (views > 4)
 		views = 4;
 	return views;

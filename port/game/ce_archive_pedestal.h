@@ -29,7 +29,7 @@ constexpr float kControlOffsetY = kControlLocalY - kPedestalLocalY; // -2.35 m s
 constexpr float kButtonRadius = 0.24f;
 constexpr float kButtonMaxRange = 5.5f;
 constexpr float kCustomWorldButtonMaxRange = 18.0f;
-constexpr float kKeyboardNearRange = 9.5f;
+constexpr float kKeyboardNearRange = 11.0f;
 constexpr float kFocusMaxRange = 11.0f;
 constexpr float kTargetSpan = 3.75f;
 constexpr float kDefaultRateRadPerSec = 5.0f * 3.14159265f / 180.0f; // ~5 deg/s (~72 s / rev; calm gallery inspection pace)
@@ -333,7 +333,8 @@ inline int PickButton(const BasePose &pose,
 inline bool IsVisitorNearPedestal(const BasePose &pose, float vx, float vy) {
     const float dx = pose.localX - vx;
     const float dy = pose.localY - vy;
-    return (dx * dx + dy * dy) <= kKeyboardNearRange * kKeyboardNearRange;
+    const float range = pose.customWorldPose ? (kCustomWorldButtonMaxRange + 2.5f) : kKeyboardNearRange;
+    return (dx * dx + dy * dy) <= range * range;
 }
 
 inline bool FocusPedestal(const BasePose &pose, float vx, float vy, float fwdX, float fwdY) {
@@ -400,7 +401,7 @@ inline bool ActivateButton(PedestalState *s, int buttonIndex) {
 }
 
 inline bool HandleKeyCode(PedestalState *s, unsigned dik, bool repeat) {
-    if (!s || !s->initialized || !s->visitorNear) return false;
+    if (!s || !s->initialized || (!s->visitorNear && s->hoveredButton < 0)) return false;
     switch (dik) {
     case kDikLBracket:
     case kDikPrior:

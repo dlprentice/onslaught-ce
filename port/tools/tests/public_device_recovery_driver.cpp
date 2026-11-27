@@ -152,6 +152,7 @@ static ShellApplication *shell;
 #define mMsg lastMessage
 #define sPortQuitRequested (shellOrdinary && quitCount)
 extern "C" void PortCeDeleteGpuCaches(void) {}
+extern "C" void PortCeInvalidateGpuStateBlocks(void) {}
 #include "public_device_recovery_shell.h"
 #undef sPortQuitRequested
 #undef mMsg
@@ -219,7 +220,7 @@ int main(int argc,char **argv)
         std::string name=argv[1];
         const bool network=name.compare(0,4,"net-")==0;
         elapsedAppTime=name=="zero-elapsed"||name=="zero-healthy"||name=="initial-cooperative-lost-zero"||network?0.f:0.01f;
-        if(name=="resize"||name=="resize-refused")CLIPARAMS.mForceWindowed=TRUE;
+        if(name=="resize"||name=="resize-refused"||name=="windowed-mode-change"||name=="windowed-mode-change-refused"||name=="external-wm-size")CLIPARAMS.mForceWindowed=TRUE;
         countedCallbacks=true;
         modes={{640,480,60,D3DFMT_X8R8G8B8},{800,600,60,D3DFMT_X8R8G8B8}};
         const bool apply=name.compare(0,6,"apply-")==0;
@@ -341,6 +342,57 @@ int main(int argc,char **argv)
             resetFails=true;client={0,0,900,700};Queue(app,WM_EXITSIZEMOVE);cooperativeLevel=S_OK;
             check(step()==TRUE&&quitCount==1&&!app.m_bReady,"a refused resize closes the game");
             check(!app.PadStateReleased(),"its pad state was never released");
+        }
+        else if(name=="windowed-mode-change"||name=="windowed-mode-change-refused")
+        {
+            // Screen mode changed while already windowed: restores old slot, resizes window/backbuffer, or rolls back on failure.
+            check(app.m_bWindowed,"windowed start");
+            resizeOnSetWindowPos=true;
+            D3DDeviceInfo *device=app.GetCurrentDevice();
+            DWORD chosen=device->dwNumModes;
+            for(DWORD i=0;i<device->dwNumModes;++i)if(device->modes[i].Width==800&&device->modes[i].Height==600)chosen=i;
+            check(chosen<device->dwNumModes&&chosen!=device->dwCurrentMode,"800x600 slot is listed");
+            const DWORD oldIndex=device->dwCurrentMode;
+            device->dwCurrentMode=chosen;
+            if(name=="windowed-mode-change-refused")resetFails=createFails=true;
+            cooperativeLevel=S_OK;
+            optionsReset();
+            if(name=="windowed-mode-change")
+            {
+                check(app.m_bWindowed&&app.m_bReady&&!app.DeviceRecoveryPending(),"windowed mode change completes");
+                check(last.BackBufferWidth==800&&last.BackBufferHeight==600,"back buffer resized to chosen Screen mode");
+                check(client.right==800&&client.bottom==600,"window client resized to chosen Screen mode");
+                check(device->dwCurrentMode==chosen&&device->modes[chosen].Width==800&&device->modes[chosen].Height==600,"chosen slot reflects new size");
+                check(device->modes[oldIndex].Width==640&&device->modes[oldIndex].Height==480,"old slot restored intact");
+                ActualWriteKey(app);
+                check(gDisplayModeKey.mWidth==800&&gDisplayModeKey.mHeight==600,"saved options key reflects new size");
+            }
+            else
+            {
+                check(!app.m_bReady&&app.DeviceRecoveryPending(),"refused windowed mode change is owned");
+                check(device->dwCurrentMode==oldIndex&&device->modes[oldIndex].Width==640&&device->modes[oldIndex].Height==480,"old slot restored on rollback");
+                check(device->modes[chosen].Width==800&&device->modes[chosen].Height==600,"target slot uncorrupted on rollback");
+                check(client.right==640&&client.bottom==480&&app.m_rcWindowClient.right==640&&app.m_rcWindowClient.bottom==480,"window rolled back on failure");
+            }
+            resizeOnSetWindowPos=false;
+        }
+        else if(name=="external-wm-size")
+        {
+            // Tiling WM / Wayland multi-DPI external WM_SIZE resizes back buffer without double-reset on same-size notifications.
+            check(app.m_bWindowed&&app.m_bReady,"windowed ready start");
+            cooperativeLevel=S_OK;
+            client={0,0,1280,720};Queue(app,WM_SIZE,SIZE_RESTORED);
+            check(step()==TRUE&&resetCount==1&&app.m_bReady,"external WM_SIZE SIZE_RESTORED resizes 3D environment");
+            check(last.BackBufferWidth==1280&&last.BackBufferHeight==720,"back buffer matches new external client size");
+            Queue(app,WM_SIZE,SIZE_RESTORED);
+            check(step()==TRUE&&resetCount==1&&app.m_bReady,"same-size WM_SIZE does not double-reset");
+            client={0,0,1600,900};Queue(app,WM_SIZE,2); // SIZE_MAXIMIZED
+            check(step()==TRUE&&resetCount==2&&app.m_bReady&&last.BackBufferWidth==1600&&last.BackBufferHeight==900,"WM_SIZE SIZE_MAXIMIZED resizes 3D environment");
+            client={0,0,0,0};Queue(app,WM_SIZE,SIZE_RESTORED);
+            check(step()==TRUE&&resetCount==2&&app.m_bReady,"zero-size WM_SIZE is ignored");
+            resetFails=true;client={0,0,1024,768};Queue(app,WM_SIZE,SIZE_RESTORED);
+            check(step()==TRUE&&quitCount==1&&!app.m_bReady,"refused external WM_SIZE closes the game cleanly");
+            check(!app.PadStateReleased(),"pad state stays intact on refused resize");
         }
         else if(name=="reset-reentrant"||name=="four-pads")
         {

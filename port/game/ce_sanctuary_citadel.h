@@ -158,6 +158,64 @@ inline bool IsInsideCinema(float x, float y, float z, float floorZ = kFloorZ) {
            z >= (floorZ - kCinemaCeilingHeight) && z <= (floorZ + kCinemaFloorMargin);
 }
 
+// Whether a camera inside the Cinema Pavilion can see out through the open 5 m South
+// doorway (Y = kCinemaWallMinY + 0.90, X in [109.5..114.5], height [0..5.20]). Uses
+// generous angular margins with clean hysteresis so looking south through the portal
+// always renders the real outdoor world instead of the sealed-room clear colour.
+inline bool CinemaCameraSeesSouthPortal(float eyeX, float eyeY, float eyeZ,
+                                        float fwdX, float fwdY, float fwdZ,
+                                        float floorZ, bool wasSeeing) {
+    if (!IsFinite3(eyeX, eyeY, eyeZ) || !IsFinite3(fwdX, fwdY, fwdZ) || !std::isfinite(floorZ))
+        return true;
+    const float flen = std::sqrt(fwdX * fwdX + fwdY * fwdY + fwdZ * fwdZ);
+    if (!(flen > 1e-5f)) return true;
+    const float fx = fwdX / flen;
+    const float fy = fwdY / flen;
+    const float fz = fwdZ / flen;
+
+    const float portalY = kCinemaWallMinY + 0.90f; // inner doorway edge (410.90)
+    if (eyeY <= portalY + 0.60f) return true;
+
+    const float minX = kCinemaDoorMinX;
+    const float maxX = kCinemaDoorMaxX;
+    const float topZ = floorZ - 5.20f; // Z points down
+    const float botZ = floorZ;
+
+    float maxCos = -1.0f;
+    auto consider = [&](float px, float py, float pz) {
+        const float dx = px - eyeX;
+        const float dy = py - eyeY;
+        const float dz = pz - eyeZ;
+        const float len = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (!(len > 1e-5f)) { maxCos = 1.0f; return; }
+        const float c = (dx * fx + dy * fy + dz * fz) / len;
+        if (c > maxCos) maxCos = c;
+    };
+
+    if (fy < -1e-4f) {
+        const float t = (portalY - eyeY) / fy;
+        if (t > 0.0f) {
+            float hx = eyeX + t * fx;
+            float hz = eyeZ + t * fz;
+            if (hx < minX) hx = minX;
+            if (hx > maxX) hx = maxX;
+            if (hz < topZ) hz = topZ;
+            if (hz > botZ) hz = botZ;
+            consider(hx, portalY, hz);
+        }
+    }
+
+    const float xs[3] = {minX, 0.5f * (minX + maxX), maxX};
+    const float zs[3] = {topZ, 0.5f * (topZ + botZ), botZ};
+    for (unsigned ix = 0; ix < 3u; ++ix)
+        for (unsigned iz = 0; iz < 3u; ++iz)
+            consider(xs[ix], portalY, zs[iz]);
+
+    constexpr float kShowPortalCos = 0.25f; // ~75.5 deg from doorway edge: start drawing outdoor world
+    constexpr float kHidePortalCos = 0.15f; // ~81.4 deg from doorway edge: safe to skip outdoor world
+    return wasSeeing ? (maxCos >= kHidePortalCos) : (maxCos >= kShowPortalCos);
+}
+
 // Vertical rule for the Cinema roof. A roof is not a wall: a horizontal push-out
 // box would shove a landing Battle Engine off sideways. Instead the height is
 // clamped: a body whose feet are inside the slab (it came down onto the roof)
@@ -485,10 +543,19 @@ constexpr float kBattleEngineCollisionRadius = 1.35f;
 constexpr float kBattleEngineCollisionHeight = 3.20f;
 constexpr float kCollisionPushEps = 1e-3f;
 
+enum SolidExitFace : unsigned char {
+    kExitAll  = 0u,
+    kExitNegX = 1u << 0,
+    kExitPosX = 1u << 1,
+    kExitNegY = 1u << 2,
+    kExitPosY = 1u << 3
+};
+
 struct SolidBox {
     float minX, minY;
     float maxX, maxY;
     float minH, maxH; // height above floorZ (positive UP, i.e. floorZ - worldZ)
+    unsigned char exitMask; // 0 = all 4 faces; otherwise restrict push-out to interior-facing sides
 };
 
 struct SolidLayout {
@@ -498,12 +565,14 @@ struct SolidLayout {
 
 inline void AddSolidBox(SolidLayout *layout,
                         float minX, float minY, float maxX, float maxY,
-                        float minH, float maxH) {
+                        float minH, float maxH,
+                        unsigned char exitMask = kExitAll) {
     if (!layout || layout->count >= kMaxSolidBoxes) return;
     SolidBox &b = layout->boxes[layout->count++];
     b.minX = minX; b.minY = minY;
     b.maxX = maxX; b.maxY = maxY;
     b.minH = minH; b.maxH = maxH;
+    b.exitMask = exitMask;
 }
 
 // Builds the fixed-size AABB keep-out set matching all walkable-height interior
@@ -567,9 +636,9 @@ inline SolidLayout MakeInteriorSolidLayout() {
     AddSolidBox(&out,  98.0f,  410.55f,  98.85f, 428.0f,  0.0f, 10.65f); // West enclosure wall
     AddSolidBox(&out, 125.15f, 410.55f, 126.0f,  428.0f,  0.0f, 10.65f); // East enclosure wall
     AddSolidBox(&out,  98.0f,  427.15f, 126.0f,  428.0f,  0.0f, 10.65f); // North screen wall
-    AddSolidBox(&out,  98.85f, 409.45f, 108.6f,  421.0f,  0.0f,  2.10f); // West seating tiers & rear alcove
-    AddSolidBox(&out, 115.4f,  409.45f, 125.15f, 421.0f,  0.0f,  2.10f); // East seating tiers & rear alcove
-    AddSolidBox(&out, 100.48f, 424.5f,  123.52f, 427.15f, 0.0f,  8.15f); // Proscenium stage & screen frame
+    AddSolidBox(&out,  98.85f, 409.45f, 108.6f,  421.0f,  0.0f,  2.10f, kExitPosX | kExitPosY); // West seating tiers (push inward to aisle/front only)
+    AddSolidBox(&out, 115.4f,  409.45f, 125.15f, 421.0f,  0.0f,  2.10f, kExitNegX | kExitPosY); // East seating tiers (push inward to aisle/front only)
+    AddSolidBox(&out, 100.48f, 424.5f,  123.52f, 427.15f, 0.0f,  8.15f, kExitNegX | kExitPosX | kExitNegY); // Proscenium stage & screen frame
 
     // 8. Perimeter Overlook Balustrades (split cleanly around SE access ramp [119.5..136.5]).
     AddSolidBox(&out,  74.6f, 354.1f, 119.5f, 354.9f, 0.0f, 1.66f);
@@ -642,22 +711,35 @@ inline bool ResolveInteriorCollision(const SolidLayout &layout,
             if (d2 >= r2) continue;
 
             float nx = 0.0f, ny = 0.0f, pen = 0.0f;
-            if (d2 > 1e-8f) {
+            bool useFacePush = (d2 <= 1e-8f);
+            if (!useFacePush) {
                 const float d = std::sqrt(d2);
                 nx = dx / d;
                 ny = dy / d;
                 pen = radius - d;
-            } else {
+                if (b.exitMask != kExitAll) {
+                    const bool badNegX = (nx < -0.5f) && !(b.exitMask & kExitNegX);
+                    const bool badPosX = (nx >  0.5f) && !(b.exitMask & kExitPosX);
+                    const bool badNegY = (ny < -0.5f) && !(b.exitMask & kExitNegY);
+                    const bool badPosY = (ny >  0.5f) && !(b.exitMask & kExitPosY);
+                    if (badNegX || badPosX || badNegY || badPosY)
+                        useFacePush = true;
+                }
+            }
+            if (useFacePush) {
+                const unsigned char mask = b.exitMask != kExitAll ? b.exitMask
+                    : static_cast<unsigned char>(kExitNegX | kExitPosX | kExitNegY | kExitPosY);
                 const float dLeft  = x - b.minX;
                 const float dRight = b.maxX - x;
                 const float dSouth = y - b.minY;
                 const float dNorth = b.maxY - y;
-                float best = dLeft;
-                nx = -1.0f; ny = 0.0f;
-                if (dRight < best) { best = dRight; nx =  1.0f; ny =  0.0f; }
-                if (dSouth < best) { best = dSouth; nx =  0.0f; ny = -1.0f; }
-                if (dNorth < best) { best = dNorth; nx =  0.0f; ny =  1.0f; }
-                pen = best + radius;
+                float best = 1e30f;
+                nx = 0.0f; ny = 0.0f;
+                if ((mask & kExitNegX) && dLeft  < best) { best = dLeft;  nx = -1.0f; ny =  0.0f; }
+                if ((mask & kExitPosX) && dRight < best) { best = dRight; nx =  1.0f; ny =  0.0f; }
+                if ((mask & kExitNegY) && dSouth < best) { best = dSouth; nx =  0.0f; ny = -1.0f; }
+                if ((mask & kExitPosY) && dNorth < best) { best = dNorth; nx =  0.0f; ny =  1.0f; }
+                pen = (best > -radius ? best : -radius) + radius;
             }
 
             x += nx * (pen + kCollisionPushEps);

@@ -400,7 +400,7 @@ bool	scanEntries(HANDLE dir, Visit visit)
 	return GetLastError() == ERROR_NO_MORE_FILES;
 }
 
-bool	collectSlotNames(HANDLE dir, bool allowMissing, WideNames &out)
+bool	collectSlotNames(HANDLE dir, bool allowMissing, WideNames &out, size_t limit = kCareerLimit)
 {
 	NTSTATUS st = 0;
 	Handle folder = child(dir, L"savegames", true, false, &st);
@@ -415,7 +415,7 @@ bool	collectSlotNames(HANDLE dir, bool allowMissing, WideNames &out)
 	{
 		if (!wideHasBesExt(leaf))
 			return true;
-		if (++careers > kCareerLimit)
+		if (++careers > limit)
 			return false;
 		if (attrs & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM))
 			return false;
@@ -976,7 +976,7 @@ CeCareerPublishStatus	CeCareerPublishSuggest(CeCareerPublishKind kind, const cha
 		return CE_PUBLISH_REFUSED;
 
 	WideNames taken;
-	if (!collectSlotNames(user.h(), true, taken) || !collectSlotNames(game.h(), true, taken))
+	if (!collectSlotNames(user.h(), true, taken, kCareerLimit - 1) || !collectSlotNames(game.h(), true, taken))
 		return CE_PUBLISH_REFUSED;
 
 	bool sawNameRefusal = false;
@@ -1082,7 +1082,7 @@ CeCareerPublishResult	CeCareerPublishNew(const CeCareerPublishRequest *request)
 					CE_PUBLISH_UNSUPPORTED);
 			require(rootsDisjoint(user, game, package, backupRoot));
 			WideNames taken;
-			require(collectSlotNames(user.h(), true, taken) && collectSlotNames(game.h(), true, taken));
+			require(collectSlotNames(user.h(), true, taken, kCareerLimit - 1) && collectSlotNames(game.h(), true, taken));
 			require(taken.count(targetWide) == 0 &&
 						!existsEntry(saves.h, targetWide) && !existsEntry(orig.h, targetWide),
 					CE_PUBLISH_OCCUPIED);
@@ -1201,7 +1201,7 @@ CeCareerPublishResult	CeCareerPublishNew(const CeCareerPublishRequest *request)
 		require(request->namePermitted(request->owner, sourceName.c_str(), target.c_str()), CE_PUBLISH_BAD_NAME);
 		{
 			WideNames preStageTaken;
-			require(collectSlotNames(user.h(), true, preStageTaken) &&
+			require(collectSlotNames(user.h(), true, preStageTaken, kCareerLimit - 1) &&
 					collectSlotNames(game.h(), true, preStageTaken));
 			require(preStageTaken.count(targetWide) == 0 &&
 						!existsEntry(saves.h, targetWide) && !existsEntry(orig.h, targetWide),
@@ -1271,7 +1271,7 @@ CeCareerPublishResult	CeCareerPublishNew(const CeCareerPublishRequest *request)
 		require(readFileStamp(stage.h, stageName, stageStamp, true));
 
 		WideNames taken;
-		require(collectSlotNames(user.h(), false, taken) && collectSlotNames(game.h(), true, taken));
+		require(collectSlotNames(user.h(), false, taken, kCareerLimit - 1) && collectSlotNames(game.h(), true, taken));
 		require(taken.count(targetWide) == 0 &&
 					!existsEntry(saves.h, targetWide) && !existsEntry(orig.h, targetWide),
 				CE_PUBLISH_OCCUPIED);

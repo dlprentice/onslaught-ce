@@ -29,6 +29,7 @@
 #include "ce_photo.h"
 #include "binkapi.h"
 #include "game.h"
+#include "GameInterface.h"
 #include "Controller.h"
 #include "ce_tutorial_pad.h"
 #include <cmath>
@@ -3092,11 +3093,16 @@ void CeMuseumHallVisitor(float x, float y) {
                 const bool down = LT.KeyDown[dik] != 0;
                 const bool rising = down && !gArchiveKeyPrev[ki];
                 gArchiveKeyPrev[ki] = down;
-                if (rising && !paused && !Cinema::s.inRoom)
+                if (rising && !paused && !Cinema::s.inRoom &&
+                    !LT.GetKeytrap() && !GAMEINTERFACE.IsMenuUp() && !PortCePhotoOn())
                     CeArchivePedestal::RuntimeHandleKey(dik, false);
             }
         }
 #endif
+        if (paused || Cinema::s.inRoom || wing != CeMuseumTour::kWingAtrium) {
+            gDirFireHeld = false;
+            gDirFireCaptured = false;
+        }
         gDirHit = (wing == CeMuseumTour::kWingAtrium)
             ? CeMuseumTour::PickDirectory(eyeX, eyeY, eyeZ, aimX, aimY, aimZ)
             : CeMuseumTour::DirectoryHit{false, -1};
@@ -4006,6 +4012,17 @@ extern "C" void PortCeMuseumHallDraw() {
 
     // Translucent skylight panes & golden rotunda sunbeam curtains blend cleanly OVER opaque fixtures & 3D exhibits.
     DrawHallGlassPass(dev);
+}
+
+extern "C" void PortCeMuseumTurntableInvalidateStateBlock(void) __attribute__((weak));
+extern "C" void PortCeMuseumDioramaInvalidateStateBlock(void) __attribute__((weak));
+extern "C" void PortCeSanctuaryCitadelInvalidateStateBlock(void) __attribute__((weak));
+
+extern "C" void PortCeInvalidateGpuStateBlocks(void) {
+    ReleaseHallStateBlock();
+    if (PortCeMuseumTurntableInvalidateStateBlock) PortCeMuseumTurntableInvalidateStateBlock();
+    if (PortCeMuseumDioramaInvalidateStateBlock) PortCeMuseumDioramaInvalidateStateBlock();
+    if (PortCeSanctuaryCitadelInvalidateStateBlock) PortCeSanctuaryCitadelInvalidateStateBlock();
 }
 
 extern "C" void PortCeMuseumHallDeleteDeviceObjects(void) {

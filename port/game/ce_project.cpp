@@ -16,6 +16,7 @@
 #include <string>
 #include <vector>
 #if !defined(_WIN32)
+#include <cerrno>
 #include <fcntl.h>
 #include <limits.h>
 #include <sys/stat.h>
@@ -221,7 +222,7 @@ Project Decode(const std::string& bytes) {
     }
     auto reference = [&scriptIds](const Json& value) { if (value.kind != Json::Null) Need(scriptIds.count(Id(value)) != 0,"A source link names no script in the project."); };
     reference(Field(root,"entry_script")); const Json& placements = Field(root,"placements"); Array(placements,PlacementMax);
-    Need(!placements.array.empty() || out.playerStart.enabled,"The linked project has no placements."); std::set<std::string> ids, used;
+    Need(!placements.array.empty() || out.playerStart.enabled || out.reach.enabled,"The linked project has no placements."); std::set<std::string> ids, used;
     for (const Json& row : placements.array) {
         Placement p;
         if (version >= 3 && row.object.count("side")) {
@@ -273,8 +274,17 @@ std::string ReadProject() {
     struct Close { int fd; ~Close() { close(fd); } } closeFile{fd}; struct stat before,after;
     Need(fstat(fd,&before) == 0 && S_ISREG(before.st_mode) && before.st_size > 0 && static_cast<unsigned long long>(before.st_size) <= DocumentMax,"The selected project must be a bounded regular file.");
     std::string bytes(static_cast<size_t>(before.st_size),'\0'); size_t done = 0;
-    while (done < bytes.size()) { ssize_t n = read(fd,&bytes[done],bytes.size()-done); Need(n > 0,"The selected project changed or could not be read."); done += static_cast<size_t>(n); }
-    char extra; Need(read(fd,&extra,1) == 0 && fstat(fd,&after) == 0 && before.st_size == after.st_size && before.st_mtime == after.st_mtime && before.st_ctime == after.st_ctime,"The selected project changed while being read."); return bytes;
+    while (done < bytes.size()) {
+        ssize_t n = read(fd,&bytes[done],bytes.size()-done);
+        if (n < 0 && errno == EINTR) continue;
+        Need(n > 0,"The selected project changed or could not be read.");
+        done += static_cast<size_t>(n);
+    }
+    char extra;
+    ssize_t tail;
+    do tail = read(fd,&extra,1);
+    while (tail < 0 && errno == EINTR);
+    Need(tail == 0 && fstat(fd,&after) == 0 && before.st_size == after.st_size && before.st_mtime == after.st_mtime && before.st_ctime == after.st_ctime,"The selected project changed while being read."); return bytes;
 }
 #endif
 }
@@ -512,7 +522,14 @@ bool PortCeProjectDocumentUpdate(CeProjectDocument* document, const CeProjectPos
                                   char* error, size_t capacity, const CeProjectReach* reach, size_t reachCount, const CeProjectPlayerStart* playerStart) noexcept {
     DocumentError(error,capacity,"");
     try {
-        Need(document && (positions || count == 0) && (count > 0 || (playerStart && playerStart->enabled) || document->project.playerStart.enabled) && count <= PlacementMax, "Select a bounded set of object placements.");
+        Need(document && (positions || count == 0) && count <= PlacementMax, "Select a bounded set of object placements.");
+        const CeProjectReach kept[] = {document->project.reach, document->project.secondReach};
+        const CeProjectReach* route = reach ? reach : kept;
+        const size_t length = reach ? reachCount : (kept[1].enabled ? 2u : kept[0].enabled ? 1u : 0u);
+        Need(length <= 2, "Only two ordered Reach Points are supported.");
+        const bool hasGoal = length > 0 && (length > 1 || route[0].enabled);
+        const CeProjectPlayerStart start = playerStart ? *playerStart : document->project.playerStart;
+        Need(count > 0 || start.enabled || hasGoal, "Select a bounded set of object placements.");
         Json root = document->root;
         Json& bindings = root.object.at("map").object.at("bindings"); Json& placements = root.object.at("placements");
         std::map<std::string,std::string> definitions; std::set<std::string> usedDefinitions, usedIds, edited;
@@ -551,13 +568,9 @@ bool PortCeProjectDocumentUpdate(CeProjectDocument* document, const CeProjectPos
                 root.object["version"] = NumberValue(3);
             } else row.object.erase("side");
         }
-        const CeProjectReach kept[] = {document->project.reach, document->project.secondReach};
-        const CeProjectReach* route = reach ? reach : kept;
-        const size_t length = reach ? reachCount : (kept[1].enabled ? 2u : kept[0].enabled ? 1u : 0u);
-        Need(length <= 2, "Only two ordered Reach Points are supported.");
         const bool hadSingle = root.object.erase("objective") != 0;
         const bool hadRoute = root.object.erase("objectives") != 0;
-        if (length && (length > 1 || route[0].enabled)) {
+        if (hasGoal) {
             Json goals = ArrayValue();
             bool usesHold = false;
             for (size_t i = 0; i < length; ++i) {
@@ -580,7 +593,6 @@ bool PortCeProjectDocumentUpdate(CeProjectDocument* document, const CeProjectPos
             for (const Json& row : placements.array) if (row.object.count("side")) sided = true;
             root.object["version"] = NumberValue(sided ? 3 : 2);
         }
-        const CeProjectPlayerStart start = playerStart ? *playerStart : document->project.playerStart;
         root.object.erase("player_start");
         if (start.enabled) {
             Need(std::isfinite(start.x) && std::isfinite(start.y) && std::isfinite(start.z) &&

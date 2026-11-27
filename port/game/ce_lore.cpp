@@ -56,6 +56,8 @@ void	AddBlock(char kind, const char *text, int length)
 	static SWordWrapFill fill;
 	static WCHAR buffer[1600];
 	CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);
+	if (!font)
+		return;
 	if (length > 1590)
 		length = 1590;
 	char narrow[1600];
@@ -72,10 +74,10 @@ void	AddBlock(char kind, const char *text, int length)
 		memset(&sLines[sLineCount], 0, sizeof(SLine));
 		sLines[sLineCount++].mKind = 'P';
 	}
-	const int count = font->WordWrap(&fill, buffer, kCeReadWidth - (indented ? float(kBulletIndent) : 0.f));
+	const int count = PortCeExtrasSafeWordWrap(font, &fill, buffer, kCeReadWidth - (indented ? float(kBulletIndent) : 0.f));
 	for (int l = 0; (l < count) && (sLineCount < kMaxLines); l++)
 	{
-		if (kind == 'H' && l == 0)
+		if (kind == 'H' && l == 0 && sSectionCount < kMaxLines)
 		{
 			SCeReadSection &section = sSections[sSectionCount++];
 			section.mLine = sLineCount;

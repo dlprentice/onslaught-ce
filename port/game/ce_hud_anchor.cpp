@@ -9,19 +9,59 @@
 #include "DXEngine.h"
 #include "hud_scale.h"
 extern bool PortCeLayer();
+extern bool PortCeOneScreenMatch() __attribute__((weak));
+extern bool CeCmdMatch() __attribute__((weak));
+extern bool CeCmdMapOn() __attribute__((weak));
+extern "C" int PortCeSoloSkirmishActive(void) __attribute__((weak));
 #ifndef CE_NETWORK_OFF
 extern "C" int CE_LockstepRequested(void);
+extern "C" int CE_LockstepActive(void) __attribute__((weak));
+extern "C" int CE_WorldActive(void) __attribute__((weak));
+extern "C" int PortCeOnlineMatchActive(void) __attribute__((weak));
 #endif
+
+namespace {
+struct CeGameSplitAccess : CGame {
+	static bool Horizontal() { return static_cast<const CGame &>(GAME).*(&CeGameSplitAccess::mHorizontalSplitscreen); }
+	static bool FullscreenMultiplayer() { return static_cast<const CGame &>(GAME).*(&CeGameSplitAccess::mFullscreenMultiplayer) != 0; }
+};
+
+bool CeSingleViewportMultiplayer()
+{
+	if (CeGameSplitAccess::FullscreenMultiplayer())
+		return true;
+	if (PortCeOneScreenMatch && PortCeOneScreenMatch())
+		return true;
+	if (PortCeSoloSkirmishActive && PortCeSoloSkirmishActive() != 0)
+		return true;
+	if (CeCmdMatch && CeCmdMatch() && (!CeCmdMapOn || CeCmdMapOn()))
+		return true;
+#ifndef CE_NETWORK_OFF
+	if (CE_LockstepRequested() != 0 ||
+	    (CE_LockstepActive && CE_LockstepActive() != 0) ||
+	    (CE_WorldActive && CE_WorldActive() != 0) ||
+	    (PortCeOnlineMatchActive && PortCeOnlineMatchActive() != 0))
+		return true;
+#endif
+	return false;
+}
+}
 
 // Whether this multiplayer session is actually rendering a split-screen layout (more than one viewpoint).
 // Single-viewport multiplayer modes (Solo vs AI Skirmish, Commander Match, Online MP, cg_fullscreenmultiplayer)
 // render one full-screen viewport, so HUD layout, HUD anchoring and target indicators follow the 1P layout.
+// Checking single-viewport sources directly also handles level-load calls (ENGINE.BuildLevelSpecifics) before
+// the first CGame::Render() sets ENGINE.GetNumViewpoints().
 // When the CE layer is off (replays, recordings, faithful mode), this returns GAME.IsMultiplayer() unchanged.
 int PortCeIsSplitScreen()
 {
 	if (!PortCeLayer())
 		return GAME.IsMultiplayer() ? 1 : 0;
-	return (GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() != 1) ? 1 : 0;
+	if (!GAME.IsMultiplayer())
+		return 0;
+	if (ENGINE.GetNumViewpoints() == 1 || CeSingleViewportMultiplayer())
+		return 0;
+	return 1;
 }
 
 // Whether the camera should use split-screen aspect:
@@ -29,18 +69,12 @@ int PortCeIsSplitScreen()
 // 1 = 2P horizontal split (0.5f)
 // 2 = 2P vertical split (1.5f)
 // Faithful/replay runs keep GAME.IsMultiplayer() unchanged (0 or 1).
-namespace {
-struct CeGameSplitAccess : CGame {
-	static bool Horizontal() { return static_cast<const CGame &>(GAME).*(&CeGameSplitAccess::mHorizontalSplitscreen); }
-};
-}
-
 int PortCeCameraSplitAspect()
 {
 	if (!PortCeLayer())
 		return GAME.IsMultiplayer() ? 1 : 0;
 	const int vp = ENGINE.GetNumViewpoints();
-	if (!GAME.IsMultiplayer() || vp == 1 || vp == 3 || vp == 4)
+	if (!GAME.IsMultiplayer() || vp == 1 || vp == 3 || vp == 4 || CeSingleViewportMultiplayer())
 		return 0;
 	return CeGameSplitAccess::Horizontal() ? 1 : 2;
 }

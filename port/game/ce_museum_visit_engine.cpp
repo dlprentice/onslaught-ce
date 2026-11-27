@@ -100,6 +100,7 @@ void DropExhibitDefinitions();
 
 bool gHaveStart;
 bool gAuthoredMap;
+int gCarrierWorldLevel = -1;
 int gCarrierBaseWorldLevel = -1;
 float gMuseumSprintUntil = -1.0f;
 // The visitor's place in the hall of numbered displays (ce_museum_visit_places.h): it tells the labels when a place's name at the top is left.
@@ -122,6 +123,8 @@ extern "C" bool PortCeMuseumAuthoredMap() {
 }
 void CeMuseumVisit::ApplyAuthoredIdentity() {
     if (PortCeMuseumAuthoredMap()) {
+        if (WORLD.mWorldLevel >= 0 && WORLD.mWorldLevel != CeMuseumWorld::kWorld)
+            gCarrierWorldLevel = WORLD.mWorldLevel;
         if (WORLD.mBaseWorldLevel >= 0 && WORLD.mBaseWorldLevel != CeMuseumWorld::kBase)
             gCarrierBaseWorldLevel = WORLD.mBaseWorldLevel;
         WORLD.mWorldLevel=CeMuseumWorld::kWorld;
@@ -134,6 +137,7 @@ void CeMuseumVisit::ReleaseRuntimeResources() {
     PortCeMuseumLabelsClear();
     CeMuseumHallClear();
     if (gAuthoredMap) { MAP.mGeometryLoaded=FALSE; MAP.mPropertiesLoaded=FALSE; gAuthoredMap=false; }
+    if (gCarrierWorldLevel >= 0) WORLD.mWorldLevel = gCarrierWorldLevel;
     if (gCarrierBaseWorldLevel >= 0) WORLD.mBaseWorldLevel = gCarrierBaseWorldLevel;
     gHaveStart = false;
     gMuseumSprintUntil = -1.0f;
@@ -190,6 +194,7 @@ extern "C" void PortCeMuseumVisitCancel(void) {
     CeMuseumHallClear();
     if (gAuthoredMap) { MAP.mGeometryLoaded=FALSE; MAP.mPropertiesLoaded=FALSE; gAuthoredMap=false; }
     DropExhibitDefinitions();
+    gCarrierWorldLevel = -1;
     gCarrierBaseWorldLevel = -1;
     gHaveStart = false;
     gMuseumSprintUntil = -1.0f;

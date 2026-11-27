@@ -127,10 +127,13 @@ inline void CeMultiBeDrySearchOffset(int scaleIdx, int angleIdx, float offRight,
 {
 	static const float kScales[4] = { 0.70f, 0.50f, 0.35f, 0.20f };
 	static const float kZeroRadii[4] = { 6.0f, 12.0f, 18.0f, 24.0f };
-	static const float kAngles[8] = { 0.0f, 0.7854f, -0.7854f, 1.5708f, -1.5708f, 2.3562f, -2.3562f, 3.14159f };
+	// Exact compile-time 8-direction unit circle tables (0, +45, -45, +90, -90, +135, -135, 180 deg)
+	// so dry-ground spawn/respawn search is bit-identical across OS libm implementations.
+	static const float kCos[8] = { 1.f, 0.70710678f,  0.70710678f, 0.f,  0.f, -0.70710678f, -0.70710678f, -1.f };
+	static const float kSin[8] = { 0.f, 0.70710678f, -0.70710678f, 1.f, -1.f,  0.70710678f, -0.70710678f,  0.f };
 	const int si = (scaleIdx >= 0 && scaleIdx < 4) ? scaleIdx : 0;
 	const int ai = (angleIdx >= 0 && angleIdx < 8) ? angleIdx : 0;
-	const float ca = cosf(kAngles[ai]), sa = sinf(kAngles[ai]);
+	const float ca = kCos[ai], sa = kSin[ai];
 	const float baseR = (offRight * offRight + offFwd * offFwd >= 1.0f) ? (offRight * kScales[si]) : kZeroRadii[si];
 	const float baseF = (offRight * offRight + offFwd * offFwd >= 1.0f) ? (offFwd * kScales[si]) : 0.0f;
 	if (outR) *outR = baseR * ca - baseF * sa;

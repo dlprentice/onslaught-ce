@@ -7,8 +7,26 @@
 #include <vector>
 static unsigned checks;static bool nativeReadsForbidden=false;
 static void Require(bool ok,const char* label){++checks;if(!ok){std::fprintf(stderr,"FAIL %s\n",label);std::exit(1);}}
+using CeEntityHandle = uint32_t;
+static constexpr CeEntityHandle kCeEntityHandleInvalid = 0u;
+static CeEntityHandle gNextHandle = 1u;
+struct HandleEntry { const void* ptr; CeEntityHandle handle; };
+static std::vector<HandleEntry> gHandleMap;
+static CeEntityHandle CeEntityHandleLookup(const void* ptr){
+    if(!ptr) return kCeEntityHandleInvalid;
+    for(const auto& e : gHandleMap) if(e.ptr == ptr) return e.handle;
+    return kCeEntityHandleInvalid;
+}
+static CeEntityHandle CeEntityHandleRegister(const void* ptr){
+    Require(!nativeReadsForbidden,"native handles are not registered during invalidation");
+    if(!ptr) return kCeEntityHandleInvalid;
+    CeEntityHandle h = gNextHandle++;
+    for(auto& e : gHandleMap){ if(e.ptr == ptr){ e.handle = h; return h; } }
+    gHandleMap.push_back({ptr, h});
+    return h;
+}
 struct CSquad { int number;bool normal;int GetThingNumber(){Require(!nativeReadsForbidden,"native readers are not touched during invalidation");return number;} };
-struct Rec { CSquad* squad;int thing;bool alive,seen,normal,reassert,guard;unsigned born,died; };
+struct Rec { CSquad* squad;int thing;CeEntityHandle handle;bool alive,seen,normal,reassert,guard;unsigned born,died; };
 constexpr int kMaxSquads=8;static Rec gRecs[kMaxSquads]{};static int gNRecs=0,gDropped=0;static unsigned gTick=1;
 static bool IsNormal(CSquad* squad){Require(!nativeReadsForbidden,"native type is not read during invalidation");return squad->normal;}
 struct World {std::vector<CSquad*> squads;std::vector<CSquad*>& GetSquadNB(){return squads;}} WORLD;

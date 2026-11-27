@@ -23,7 +23,7 @@ inline bool	CeCmdAdmits(bool ordinarySolo) { return ordinarySolo || CeCmdMatch()
 // Once for every update of a level the order layer runs in (ce_commander.cpp), and when the level ends (ce_cmdmap.cpp's PortCeCmdLevelEnd): a Commander match
 // shows player 1's view alone, on the whole screen (the game's own "player 1 fullscreen" switch), and the switch is put back as it was when the level ends.
 void	CeCmdMatchUpdate();
-void	CeCmdMatchLevelEnd();
+void	CeCmdMatchLevelEnd(bool restarting = false);
 // Patch 0235: true while a Commander match shows its one screen, so that the HUD's drawing and the end screen take the layout they have for one player
 // (the radar, the aiming ring, the battle-line dial, the radio, one Victory or Defeat). False everywhere else: the game's own test decides as it always did.
 bool	PortCeOneScreenMatch();

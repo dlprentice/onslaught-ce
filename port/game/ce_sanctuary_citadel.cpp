@@ -228,6 +228,7 @@ struct CitadelState {
     bool cameraOccupancyValid;
     unsigned cameraOccupancyFrame;
     bool overflow;
+    bool cinemaSeesPortal;
     float floorZ;
     float animTime;
     float eyeX, eyeY, eyeZ;
@@ -1939,8 +1940,16 @@ static void RefreshCinemaCameraOccupancy() {
     const float fz = gCitadel->floorZ;
     if (CCamera *cam = ENGINE.GetCameraForViewpoint(0)) {
         const FVector eye = cam->GetPos();
-        if (IsFinite3(eye.X, eye.Y, eye.Z))
+        if (IsFinite3(eye.X, eye.Y, eye.Z)) {
             gCitadel->insideCinema = IsInsideCinema(eye.X, eye.Y, eye.Z, fz);
+            if (gCitadel->insideCinema) {
+                const FVector fwd = cam->GetOrientation().GetColumnY();
+                gCitadel->cinemaSeesPortal = CinemaCameraSeesSouthPortal(
+                    eye.X, eye.Y, eye.Z, fwd.X, fwd.Y, fwd.Z, fz, gCitadel->cinemaSeesPortal);
+            } else {
+                gCitadel->cinemaSeesPortal = true;
+            }
+        }
     }
     gCitadel->cameraOccupancyValid = true;
     gCitadel->cameraOccupancyFrame = frame;
@@ -1955,8 +1964,16 @@ static void RefreshCinemaOccupancy() {
     const float fz = gCitadel->floorZ;
     if (CCamera *cam = ENGINE.GetCameraForViewpoint(0)) {
         const FVector eye = cam->GetPos();
-        if (IsFinite3(eye.X, eye.Y, eye.Z))
+        if (IsFinite3(eye.X, eye.Y, eye.Z)) {
             gCitadel->insideCinema = IsInsideCinema(eye.X, eye.Y, eye.Z, fz);
+            if (gCitadel->insideCinema) {
+                const FVector fwd = cam->GetOrientation().GetColumnY();
+                gCitadel->cinemaSeesPortal = CinemaCameraSeesSouthPortal(
+                    eye.X, eye.Y, eye.Z, fwd.X, fwd.Y, fwd.Z, fz, gCitadel->cinemaSeesPortal);
+            } else {
+                gCitadel->cinemaSeesPortal = true;
+            }
+        }
     }
     // The player's machine is the unit they are piloting, when they pilot one (Play
     // Any Unit): a Battle Engine left parked in the hall must not disarm a tank the
@@ -2135,7 +2152,7 @@ bool RuntimeHandleKey(unsigned dik, bool repeat) {
 
 bool RuntimeHandleFire(bool release, float value) {
     if (!gCitadel || !gCitadel->active) return false;
-    if (CeArchivePedestal::RuntimeHandleFire(release, value)) {
+    if (!GAME.IsPaused() && CeArchivePedestal::RuntimeHandleFire(release, value)) {
         ClearBattleEngineWeaponChargeAndSlowMovement();
         return true;
     }
@@ -2422,7 +2439,7 @@ void RuntimeDrawWorld() {
 void RuntimeDrawDomeFx() {
     if (!gCitadel || !gCitadel->active || !gCitadel->built || gMirrorPass)
         return;
-    if (gCitadel->insideCinema || !CitadelWithinDrawRange(gCitadel->floorZ))
+    if (PortCeSanctuarySkipOutdoorWorld() || !CitadelWithinDrawRange(gCitadel->floorZ))
         return;
     IDirect3DDevice9 *dev = LT.GetDevice();
     if (!dev) return;
@@ -2732,6 +2749,8 @@ extern "C" bool PortCeSanctuarySkipOutdoorWorld(void) {
     CeSanctuaryCitadel::RefreshCinemaCameraOccupancy();
     if (!CeSanctuaryCitadel::gCitadel->insideCinema)
         return false;
+    if (CeSanctuaryCitadel::gCitadel->cinemaSeesPortal)
+        return false;
     if (PortCePhotoOn())
         return false;
     if (PortCeCmdMapOpen && PortCeCmdMapOpen())
@@ -2841,6 +2860,9 @@ extern "C" {
 void PortCeSanctuaryCitadelDeleteDeviceObjects(void) {
     CeSanctuaryCitadel::DeleteDeviceObjects();
 }
+void PortCeSanctuaryCitadelInvalidateStateBlock(void) {
+    CeSanctuaryCitadel::ReleaseCitadelStateBlock();
+}
 }
 #else
 #include "ce_sanctuary_citadel.h"
@@ -2868,5 +2890,6 @@ void PortCeSanctuaryDrawWorld(void) {}
 bool PortCeSanctuaryFire(bool, float) { return false; }
 void PortCeSanctuaryRenderCinemaPlayer(int) {}
 void PortCeSanctuaryCitadelDeleteDeviceObjects(void) {}
+void PortCeSanctuaryCitadelInvalidateStateBlock(void) {}
 }
 #endif

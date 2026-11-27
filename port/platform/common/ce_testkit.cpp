@@ -33,6 +33,15 @@ namespace
 CeTestVerb	*gVerbs = nullptr;		// constant-initialized before any registrar runs
 CeTestPage	*gPages = nullptr;
 CeTestState	*gStates = nullptr;
+constexpr size_t kMaxCleanups = 16;
+void		(*gCleanups[kMaxCleanups])() = {};
+size_t		gCleanupCount = 0;
+
+void RunCleanups()
+{
+	for (size_t i = 0; i < gCleanupCount; ++i)
+		if (gCleanups[i]) gCleanups[i]();
+}
 
 namespace hash_impl {
 #include "../../updater/sha256.c"
@@ -168,8 +177,12 @@ const CeTestVerb *Find(const char *name)
 	return nullptr;
 }
 
+void ReleaseHeld();
+
 void Finish(bool pass, const char *why)
 {
+	ReleaseHeld();
+	RunCleanups();
 	std::string s = pass ? "{\"end\":\"pass\"" : K.skip ? "{\"end\":\"skip\",\"why\":\"" : "{\"end\":\"fail\",\"why\":\"";
 	if (!pass) { Escape(s, why ? why : ""); s += "\""; }
 	char t[96];
@@ -300,6 +313,13 @@ void CeTestKitPress(unsigned sdl, unsigned raw)
 	K.keys.push_back(Pending{K.tick + 6, sdl, raw});	// held 6 ticks, as the key routes that work on every page hold them
 }
 bool CeTestKitKeysIdle() { return K.keys.empty(); }
+void CeTestKitRegisterCleanup(void (*fn)())
+{
+	if (!fn || gCleanupCount >= kMaxCleanups) return;
+	for (size_t i = 0; i < gCleanupCount; ++i)
+		if (gCleanups[i] == fn) return;
+	gCleanups[gCleanupCount++] = fn;
+}
 const CeTestPage *CeTestKitPage() { return Shown(); }
 const char *CeTestKitShotPath() { return K.shotWanted ? K.shot : nullptr; }
 void CeTestKitShotDone() { K.shotWanted = false; }
@@ -357,8 +377,13 @@ void CeTestKitFrame()
 	if (r == CE_TEST_PENDING)
 	{
 		if (K.tick - a.started <= K.budget) return;
+		RunCleanups();
 		CeTestReplyf(reply, "not done within %u ticks", K.budget);
 		r = CE_TEST_FAILED;
+	}
+	else if (r != CE_TEST_DONE)
+	{
+		RunCleanups();
 	}
 	std::string s = "{\"step\":" + std::to_string(K.index) + ",\"tick\":" + std::to_string(K.tick) + ",\"line\":\"";
 	Escape(s, a.line);

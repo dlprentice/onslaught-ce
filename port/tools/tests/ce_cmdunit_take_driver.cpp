@@ -10,7 +10,7 @@ static bool owned=true,footValid=true,mapOpen=false,selectionValid=true;
 static int releases=0,selectionChecks=0;
 struct CUnit{CSquad squad;int GetThingNumber(){return 7;}CSquad* GetSquad(){return &squad;}int GetAIState(){return owned?3:9;}};
 static CPlayer player;static CBattleEngine engine;static CCONTROLLER controller;static CUnit actor;
-static bool gPathDrive=false,gDriveGuide=false,gOnFoot=false,gDeliveryAssigned=false,gFootFirstPerson=false;
+static bool gPathDrive=false,gDriveGuide=false,gOnFoot=false,gDeliveryAssigned=false,gRelaxedAssigned=false,gFootFirstPerson=false;
 static void* gFootRenderedView=nullptr;static int gFireState=0,gLastNotedState=0,gThing=0,gPrevAI=0;
 static uint32_t gUnitHandle=0;
 static uint32_t CeEntityHandleFor(const CUnit* u){return u?1u:0u;}
@@ -18,8 +18,10 @@ static CUnit* gUnit=nullptr;static CSquad* gPreviousSquad=nullptr;static const i
 constexpr int CE_PLAYUNIT_CLASS_INFANTRY=0,CE_PLAYUNIT_FIRE_NONE=0;
 struct Law{int law=1;};static Law classes[2];static Law* CePlayUnitClasses(){return classes;}
 static bool IsOrdinaryFoot(CUnit*,CSquad*){return footValid;}
+static bool IsRelaxed(CSquad*){return false;}
 static bool CeFactoryIsVehicle(CUnit*){return false;}static int CeCmdDeliveredSquad(){return -1;}
 static void CeCmdUnitOrderRelease(CUnit* u){Require(u==&actor,"accepted handoff releases only selected unit");++releases;owned=false;}
+static void CePlayUnitSlotsReleaseUnit(CUnit*){}
 static bool PortCeCmdMapOpen(){return mapOpen;}
 static bool SelectionReady(uint64_t,CUnit* candidate,int,CPlayer** p,CBattleEngine** e,CCONTROLLER** c,CUnit** u,int* kind,const char** reason){
     ++selectionChecks;if(!selectionValid)return false;*p=&player;*e=&engine;*c=&controller;*u=candidate;*kind=0;if(reason)*reason=nullptr;return true;

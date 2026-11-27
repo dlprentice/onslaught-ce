@@ -248,6 +248,57 @@ int main(int argc, char **argv) {
         self.assertEqual(list(bslash_neighbor.iterdir()), [])
         self.assertEqual(list(bslash_dest.iterdir()), [])
 
+    def test_chosen_backup_folder_persisted_on_poll(self):
+        code = r"""
+#include "ce_career_backup.h"
+#include <SDL3/SDL.h>
+#include <cstring>
+#include <string>
+namespace {
+SDL_DialogFileCallback gCb = nullptr;
+void *gData = nullptr;
+int gWrites = 0;
+std::string gKey, gVal;
+}
+extern "C" SDL_Window *SDL_GetKeyboardFocus() { return nullptr; }
+extern "C" void SDL_ShowOpenFolderDialog(SDL_DialogFileCallback cb, void *data, SDL_Window *, const char *, bool) {
+    gCb = cb; gData = data;
+}
+extern "C" int CE_SettingSetText(const char *key, const char *value) {
+    ++gWrites; gKey = key ? key : ""; gVal = value ? value : ""; return 1;
+}
+bool CeBackupStore(const CeBackupInput &, char *, size_t, const char *&) { return false; }
+int main() {
+    CeBackupEnter("/initial");
+    CeBackupStatus st{};
+    CeBackupPoll(&st);
+    if (gWrites != 0) return 1;
+    CeBackupChoose();
+    const char *bad[] = {"relative", nullptr};
+    gCb(gData, bad, 0);
+    CeBackupPoll(&st);
+    if (gWrites != 0) return 2;
+    CeBackupChoose();
+    const char *good[] = {"/chosen/backups///", nullptr};
+    gCb(gData, good, 0);
+    if (gWrites != 0) return 3; // must persist on game thread in CeBackupPoll, not inside dialog callback
+    CeBackupPoll(&st);
+    if (gWrites != 1 || gKey != "career_backup_folder" || gVal != "/chosen/backups") return 4;
+    CeBackupPoll(&st);
+    if (gWrites != 1) return 5; // persist once per pick
+    CeBackupLeave();
+    return 0;
+}
+"""
+        src = self.parent / "persist_check.cpp"
+        src.write_text(code)
+        binary = self.p / "persist-check"
+        subprocess.run(["g++", "-std=c++17", "-pthread", "-O1", "-Wall", "-Wextra", "-Werror",
+                        "-I" + str(ROOT / "port/platform/common"),
+                        str(src), str(ROOT / "port/platform/common/ce_career_backup.cpp"),
+                        "-o", str(binary)], check=True)
+        subprocess.run([str(binary)], check=True, timeout=10)
+
 
 if __name__ == "__main__":
     unittest.main()

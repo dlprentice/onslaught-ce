@@ -90,10 +90,12 @@ inline const Entry *At(const List &list, int selected) {
 inline int Play(const List &list, int requested, bool firstPlayable,
                 StartFilm start, void *context) {
     if (!start || !At(list, requested)) return -1;
-    if (!firstPlayable)
-        return start(context, *At(list, requested)) ? requested : -1;
-    for (unsigned i = 0; i < list.count && i < kCapacity; ++i)
+    if (start(context, *At(list, requested))) return requested;
+    if (!firstPlayable) return -1;
+    for (unsigned i = 0; i < list.count && i < kCapacity; ++i) {
+        if (static_cast<int>(i) == requested) continue;
         if (start(context, list.entries[i])) return static_cast<int>(i);
+    }
     return -1;
 }
 

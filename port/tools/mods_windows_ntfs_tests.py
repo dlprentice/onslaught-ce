@@ -112,7 +112,7 @@ def build_fixture(
     mods_obj = out / f"mods-{tag}.o"
     driver_obj = out / f"driver-{tag}.o"
     exe = out / name
-    defines = ['-DCE_VERSION="0.2.0"'] + (["-DPORT_MODS_WINDOWS_ON=1"] if windows_on else [])
+    defines = ['-DCE_VERSION="0.2.0"'] + ([] if windows_on else ["-DPORT_MODS_PLATFORM_OFF=1"])
     common = [
         "-std=gnu++17", "-O1", "-Wall", "-Wextra", "-Werror", "-fno-ident",
         f"-ffile-prefix-map={ROOT}=.", *defines,
@@ -257,7 +257,7 @@ class ModsWindowsNtfsFixtureTests(unittest.TestCase):
 
     def test_01_production_switch_retained_and_binaries_standalone(self) -> None:
         source = MODS_CPP.read_text(encoding="utf-8")
-        self.assertEqual(source.count("#elif defined(_WIN32) && !defined(PORT_MODS_WINDOWS_ON)"), 1)
+        self.assertEqual(source.count("#if defined(PORT_MODS_PLATFORM_OFF)"), 1)
         self.assertTrue(self.exe_on.is_file() and self.exe_on.stat().st_size > 100_000)
         self.assertTrue(self.exe_off.is_file() and self.exe_off.stat().st_size > 100_000)
         # Verify standalone PE imports contain no SDL3/zlib/libc++ DLLs (only Windows system DLLs).
@@ -277,7 +277,7 @@ class ModsWindowsNtfsFixtureTests(unittest.TestCase):
         bwrap = self.cfg["bwrap"]
         r = run_in_wine(wine, bwrap, self.run_dir, self.exe_off, ["--check-mods"])
         self.assertEqual(r.returncode, 3, (r.stdout, r.stderr))
-        self.assertIn("off on Windows until the loader's checks on NTFS have passed", r.stdout)
+        self.assertIn("off in this build", r.stdout)
 
     def test_03_wine_dry_run_exercises_core_cases_and_reports_ntfs_limits_honestly(self) -> None:
         wine = self.cfg["wine"]

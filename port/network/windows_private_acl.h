@@ -412,8 +412,12 @@ inline bool ReadPrivateFile(const std::wstring& dirWidePath, const std::string& 
     if (GetFileType(file.value) != FILE_TYPE_DISK || !GetFileInformationByHandle(file.value, &before))
         return false;
     if ((before.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 ||
-        !IsAllowedReparseHandle(file.value, before.dwFileAttributes) ||
-        before.nNumberOfLinks != 1 || before.nFileSizeHigh != 0 ||
+        !IsAllowedReparseHandle(file.value, before.dwFileAttributes))
+        return false;
+    if (!ce_win_hydrate_handle_w(full.c_str(), &file.value, &before,
+                                 GENERIC_READ | READ_CONTROL, FILE_SHARE_READ, 0, 0))
+        return false;
+    if (before.nNumberOfLinks != 1 || before.nFileSizeHigh != 0 ||
         before.nFileSizeLow < minBytes || before.nFileSizeLow > maxBytes)
         return false;
     if (!HandleIsPrivate(file.value, userSid.data())) return false;

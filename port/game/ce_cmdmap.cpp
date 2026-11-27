@@ -157,8 +157,13 @@ bool gShift;
 bool gDown[256];		// keys the trap has seen go down and not up (a held key's repeats are not fresh presses)
 bool gEscClosed;		// the Esc that closed the map is still held: the game never saw its press, so it must not see its repeats (they would open the pause menu)
 int gSelected = -1;		// the picked squad's ordinal: the selection's lead (code that picks one squad sets it, and Refresh makes that the selection)
+CeEntityHandle gSelectedHandle = kCeEntityHandleInvalid;
 CeCmdSel gSel;			// the picked squads, the lead first (ce_cmdsel.h)
+CeEntityHandle gSelHandles[kCeSelMax];
 CeCmdGroups gGroups;	// the numbered groups of this level (Ctrl and a digit keeps the selection, the digit picks it again)
+CeEntityHandle gGroupHandles[kCeSelGroups][kCeSelMax];
+bool gSinkOnPad1;		// Open() also pushed gSink onto player 2's controller in multiplayer/match levels
+int gLevelEndQuit = QT_NONE;	// quit reason threaded from PortCeCmdLevelEnd(int quit)
 CeCmdMatchState gMatch;	// how a Commander match stands (ce_cmdmatch.h), read once an update while the live view is open (MatchFrame); the view's header shows it
 bool gReopen;			// a Commander match: the live view closed when the commander's Battle Engine went down, and opens again when it is back
 bool gPlayerClosed;		// the player closed the live view (M or Esc): a Battle Engine going down in the same update does not bring it back
@@ -316,15 +321,46 @@ const CeCmdSquad *ByOrdinal(int ordinal)
 	return NULL;
 }
 
-// A fresh look at the squads. A squad picked by setting gSelected (Tab, the paused map) becomes the whole selection; squads that are gone or take no orders
+CeEntityHandle SquadHandleOf(int ordinal)
+{
+	const CeCmdSquad *s = ByOrdinal(ordinal);
+	return s ? s->handle : kCeEntityHandleInvalid;
+}
+
+bool SquadHandleMatches(const CeCmdSquad *s, CeEntityHandle expected)
+{
+	if (!s) return false;
+	if (expected == kCeEntityHandleInvalid || s->handle == kCeEntityHandleInvalid) return true;
+	return s->handle == expected;
+}
+
+// A fresh look at the squads. A squad picked by setting gSelected (Tab, the paused map) becomes the whole selection; squads that are gone, recycled, or take no orders
 // any more leave it; each listed squad says whether it is picked.
 void Refresh()
 {
 	gCount = CeCmdList(gSquads, kMaxSquads);
 	gUntracked = CeCmdUntracked();
-	if (gSelected != CeSelLead(gSel)) CeSelOnly(gSel, gSelected);
-	CeSelPrune(gSel, [](int id) { const CeCmdSquad *s = ByOrdinal(id); return s != NULL && s->commandable; });
+	if (gSelected != CeSelLead(gSel))
+	{
+		CeSelOnly(gSel, gSelected);
+		memset(gSelHandles, 0, sizeof(gSelHandles));
+		if (gSel.n > 0) gSelHandles[0] = SquadHandleOf(gSel.ids[0]);
+	}
+	int kept = 0;
+	for (int i = 0; i < gSel.n; ++i)
+	{
+		const CeCmdSquad *s = ByOrdinal(gSel.ids[i]);
+		if (s != NULL && s->commandable && SquadHandleMatches(s, gSelHandles[i]))
+		{
+			gSel.ids[kept] = gSel.ids[i];
+			gSelHandles[kept] = gSelHandles[i] != kCeEntityHandleInvalid ? gSelHandles[i] : s->handle;
+			++kept;
+		}
+	}
+	for (int i = kept; i < gSel.n; ++i) gSelHandles[i] = kCeEntityHandleInvalid;
+	gSel.n = kept;
 	gSelected = CeSelLead(gSel);
+	gSelectedHandle = gSel.n > 0 ? gSelHandles[0] : kCeEntityHandleInvalid;
 	for (int i = 0; i < gCount; ++i) gSquads[i].selected = CeSelHas(gSel, gSquads[i].ordinal);
 }
 
@@ -1457,15 +1493,29 @@ bool Order(int verb, float wx, float wy, CeCmdVoiceCue voiceOverride = CE_VOICE_
 void SelectOnly(int ordinal)
 {
 	CeSelOnly(gSel, ordinal);
+	memset(gSelHandles, 0, sizeof(gSelHandles));
+	if (gSel.n > 0) gSelHandles[0] = SquadHandleOf(gSel.ids[0]);
 	gSelected = CeSelLead(gSel);
+	gSelectedHandle = gSel.n > 0 ? gSelHandles[0] : kCeEntityHandleInvalid;
 	Refresh();
 	CeCmdNote("map select %d", gSelected);
 }
 
 void SelectToggle(int ordinal)
 {
-	CeSelToggle(gSel, ordinal);
+	const int prev = CeSelFind(gSel, ordinal);
+	if (prev >= 0)
+	{
+		CeSelRemove(gSel, ordinal);
+		for (int i = prev; i < gSel.n; ++i) gSelHandles[i] = gSelHandles[i + 1];
+		gSelHandles[gSel.n] = kCeEntityHandleInvalid;
+	}
+	else if (CeSelAdd(gSel, ordinal))
+	{
+		gSelHandles[gSel.n - 1] = SquadHandleOf(ordinal);
+	}
 	gSelected = CeSelLead(gSel);
+	gSelectedHandle = gSel.n > 0 ? gSelHandles[0] : kCeEntityHandleInvalid;
 	Refresh();
 	CeCmdNote("map select %d toggle %d count %d", gSelected, ordinal, gSel.n);
 }
@@ -1473,9 +1523,12 @@ void SelectToggle(int ordinal)
 void SelectAll()
 {
 	CeSelClear(gSel);
+	memset(gSelHandles, 0, sizeof(gSelHandles));
 	for (int i = 0; i < gCount; ++i)
-		if (gSquads[i].commandable) CeSelAdd(gSel, gSquads[i].ordinal);
+		if (gSquads[i].commandable && CeSelAdd(gSel, gSquads[i].ordinal))
+			gSelHandles[gSel.n - 1] = gSquads[i].handle;
 	gSelected = CeSelLead(gSel);
+	gSelectedHandle = gSel.n > 0 ? gSelHandles[0] : kCeEntityHandleInvalid;
 	Refresh();
 	CeCmdNote("map select all %d", gSel.n);
 	char text[64];
@@ -1486,12 +1539,18 @@ void SelectAll()
 
 // A digit: with Ctrl the selection is kept under it, alone it picks that group again, with Shift it adds the group to the selection.
 void ClearUnitGroupSlot(int number);
+int ProjectUnitGroupToSquads(int number, CeCmdSel *outSel, CeEntityHandle *outHandles);
 void GroupKey(int number, bool keep, bool add)
 {
 	char text[64];
 	if (keep)
 	{
 		CeGroupStore(gGroups, number, gSel);
+		if (number >= 0 && number < kCeSelGroups)
+		{
+			memset(gGroupHandles[number], 0, sizeof(gGroupHandles[number]));
+			for (int i = 0; i < gSel.n; ++i) gGroupHandles[number][i] = gSelHandles[i];
+		}
 		ClearUnitGroupSlot(number);
 		CeCmdNote("map group %d keep %d", number, gSel.n);
 		if (gSel.n) snprintf(text, sizeof(text), "Group %d: %d squad%s.", number, gSel.n, gSel.n == 1 ? "" : "s");
@@ -1502,14 +1561,37 @@ void GroupKey(int number, bool keep, bool add)
 	CeCmdSel group;
 	if (!CeGroupRecall(gGroups, number, group))
 	{
+		CeCmdSel projected = {};
+		CeEntityHandle projHandles[kCeSelMax] = {};
+		const int unitGroup = ProjectUnitGroupToSquads(number, &projected, projHandles);
+		if (unitGroup >= 0)
+		{
+			if (!add) { CeSelClear(gSel); memset(gSelHandles, 0, sizeof(gSelHandles)); }
+			CeFactoryLeaveSelection();
+			for (int i = 0; i < projected.n; ++i)
+				if (CeSelAdd(gSel, projected.ids[i])) gSelHandles[gSel.n - 1] = projHandles[i];
+			gSelected = CeSelLead(gSel);
+			gSelectedHandle = gSel.n > 0 ? gSelHandles[0] : kCeEntityHandleInvalid;
+			Refresh();
+			CeCmdNote("map group %d pick %d", number, gSel.n);
+			if (gSel.n) snprintf(text, sizeof(text), "Group %d: %d squad%s.", number, gSel.n, gSel.n == 1 ? "" : "s");
+			else snprintf(text, sizeof(text), "Group %d has no squads left.", number);
+			Note(text);
+			return;
+		}
 		snprintf(text, sizeof(text), "Group %d is empty. Ctrl and %d keeps the squads you picked.", number, number);
 		Note(text);
 		return;
 	}
-	if (!add) CeSelClear(gSel);
+	if (!add) { CeSelClear(gSel); memset(gSelHandles, 0, sizeof(gSelHandles)); }
 	CeFactoryLeaveSelection();
-	for (int i = 0; i < group.n; ++i) CeSelAdd(gSel, group.ids[i]);
+	for (int i = 0; i < group.n; ++i)
+	{
+		const CeEntityHandle expected = (number >= 0 && number < kCeSelGroups) ? gGroupHandles[number][i] : kCeEntityHandleInvalid;
+		if (CeSelAdd(gSel, group.ids[i])) gSelHandles[gSel.n - 1] = expected;
+	}
 	gSelected = CeSelLead(gSel);
+	gSelectedHandle = gSel.n > 0 ? gSelHandles[0] : kCeEntityHandleInvalid;
 	Refresh();
 	CeCmdNote("map group %d pick %d", number, gSel.n);
 	if (gSel.n) snprintf(text, sizeof(text), "Group %d: %d squad%s.", number, gSel.n, gSel.n == 1 ? "" : "s");
@@ -1528,6 +1610,7 @@ void GroupKey(int number, bool keep, bool add)
 // The view's code reads MOUSE_X and MOUSE_Y as before: a LivePointer in scope holds them at the view's pointer for the length of one entry (a
 // key or button, the frame's drawing, the camera's update) and puts back what the game had.
 extern "C" int PortPointerNow(int *x, int *y);		// window.cpp
+extern "C" int PortDispatchedPointer(int *x, int *y) __attribute__((weak));	// window.cpp: pointer of the Win32 mouse message being dispatched
 
 int gLiveX, gLiveY;				// the live view's pointer, in window pixels
 int gLiveMapped;				// how many points the window layer had mapped when the pointer was last taken from it
@@ -1552,13 +1635,22 @@ struct LivePointer
 {
 	bool on;
 	int keptX, keptY;
-	LivePointer() : on(StrategicLive()), keptX(MOUSE_X), keptY(MOUSE_Y)
+	LivePointer(bool preferDispatched = false) : on(StrategicLive()), keptX(MOUSE_X), keptY(MOUSE_Y)
 	{
 		if (!on) return;
 		int x = 0, y = 0;
-		const int mapped = PortPointerNow(&x, &y);
-		if (!gLiveForced && mapped && mapped != gLiveMapped) { gLiveX = x; gLiveY = y; gLiveShown = true; }
-		gLiveMapped = mapped;
+		if (!gLiveForced && preferDispatched && PortDispatchedPointer && PortDispatchedPointer(&x, &y) == 1)
+		{
+			gLiveX = x;
+			gLiveY = y;
+			gLiveShown = true;
+		}
+		else
+		{
+			const int mapped = PortPointerNow(&x, &y);
+			if (!gLiveForced && mapped && mapped != gLiveMapped) { gLiveX = x; gLiveY = y; gLiveShown = true; }
+			gLiveMapped = mapped;
+		}
 		MOUSE_X = gLiveX;
 		MOUSE_Y = gLiveY;
 	}
@@ -1630,6 +1722,7 @@ std::uint64_t gStrategicLastNs = 0;
 // C frames one squad. Normal controls immediately take the camera back; this is not a follow mode.
 struct StrategicFocusTrip {
     int squad = -1;
+    CeEntityHandle squadHandle = kCeEntityHandleInvalid;
     float fromX = 0, fromY = 0, fromZ = 0;
     std::uint64_t start = 0;
 } gFocusTrip;
@@ -1662,6 +1755,27 @@ constexpr int kUnitFocus = 0x3ffffffe;
 CeCmdPointerFence gUnitPointerFence;
 bool gUnitPointerAvailable = false;
 void RefreshUnitFrame();
+int ProjectUnitGroupToSquads(int number, CeCmdSel *outSel, CeEntityHandle *outHandles) {
+	const int slot = number == 0 ? 9 : number - 1;
+	if (slot < 0 || slot >= UnitPanel::kMaxSavedSets || (!gUnitUi.SetCount(slot) && !gUnitGroupSaved[slot]))
+		return -1;
+	Refresh();
+	RefreshUnitFrame();
+	if (outSel) CeSelClear(*outSel);
+	if (outHandles) memset(outHandles, 0, sizeof(CeEntityHandle) * kCeSelMax);
+	int count = 0;
+	for (int i = 0; i < gUnitNativeCount; ++i) {
+		UnitPanel::EntityKey pkey = {};
+		if (!UnitControl::ToPanelKey(gUnitNative[i].key, &pkey)) continue;
+		if (!gUnitUi.Panel().SelectionSetContains(slot, pkey)) continue;
+		const CeCmdSquad *sq = ByOrdinal(gUnitNative[i].ordinal);
+		if (sq && sq->commandable && outSel && CeSelAdd(*outSel, sq->ordinal)) {
+			if (outHandles) outHandles[outSel->n - 1] = sq->handle;
+			++count;
+		}
+	}
+	return count;
+}
 bool UnitPanelAt(float, float);
 bool UnitFocusPosition(float*, float*);
 void UnitPointerObserve();
@@ -1836,8 +1950,16 @@ void RtsHudCurvedPanel(float x, float y, float w, float h, float capMax, uint32_
 bool UnitWholeSquad(int ordinal, const UnitControl::Request* request = NULL);
 
 int SquadGroupTag(int ordinal) {
-    for (int k = 1; k <= 9; ++k) if (CeSelHas(gGroups.group[k], ordinal)) return k;
-    if (CeSelHas(gGroups.group[0], ordinal)) return 0;
+    const CeCmdSquad *s = ByOrdinal(ordinal);
+    const CeEntityHandle h = s ? s->handle : kCeEntityHandleInvalid;
+    auto inGroup = [&](int k) {
+        const int idx = CeSelFind(gGroups.group[k], ordinal);
+        if (idx < 0) return false;
+        const CeEntityHandle stored = gGroupHandles[k][idx];
+        return stored == kCeEntityHandleInvalid || h == kCeEntityHandleInvalid || stored == h;
+    };
+    for (int k = 1; k <= 9; ++k) if (inGroup(k)) return k;
+    if (inGroup(0)) return 0;
     return -1;
 }
 
@@ -2370,6 +2492,7 @@ bool ComputeStrategicInitialYaw(float fx, float fy, float* outYaw) {
 
 void StartStrategicFocus(const CeCmdSquad &squad) {
     gFocusTrip.squad = squad.ordinal;
+    gFocusTrip.squadHandle = squad.handle;
     gFocusTrip.fromX = gViewX + gViewSpan * 0.5f;
     gFocusTrip.fromY = gViewY + gViewSpan * 0.5f;
     gFocusTrip.fromZ = gStrategicFocusZ;
@@ -2392,8 +2515,9 @@ void StepStrategicFocus(const CeCommanderCameraInput &input, float &centreX, flo
     float unitX = 0, unitY = 0;
     const bool focusUnit = gFocusTrip.squad == kUnitFocus && UnitFocusPosition(&unitX, &unitY);
     if (input.pan_horizontal || input.pan_vertical || input.orbit_horizontal || input.orbit_vertical || input.zoom ||
-        (!focusFactory && !focusUnit && !focusStruct && (gSelected != gFocusTrip.squad || !squad || !squad->friendly || !squad->members))) {
+        (!focusFactory && !focusUnit && !focusStruct && (gSelected != gFocusTrip.squad || !squad || !SquadHandleMatches(squad, gFocusTrip.squadHandle) || !squad->friendly || !squad->members))) {
         gFocusTrip.squad = -1;
+        gFocusTrip.squadHandle = kCeEntityHandleInvalid;
         return;
     }
     const float targetX = focusUnit ? unitX : focusStruct ? focusStructData.x : focusFactory ? factory.x : squad->x;
@@ -2405,7 +2529,7 @@ void StepStrategicFocus(const CeCommanderCameraInput &input, float &centreX, flo
     centreX = gFocusTrip.fromX + (targetX - gFocusTrip.fromX) * ease;
     centreY = gFocusTrip.fromY + (targetY - gFocusTrip.fromY) * ease;
     gStrategicFocusZ = gFocusTrip.fromZ + (height - gFocusTrip.fromZ) * ease;
-    if (phase >= 1.f) gFocusTrip.squad = -1;
+    if (phase >= 1.f) { gFocusTrip.squad = -1; gFocusTrip.squadHandle = kCeEntityHandleInvalid; }
 }
 
 bool StrategicPixel(const CeWorldViewSample& view, float x, float y, CeViewPoint* pixel) {
@@ -2975,9 +3099,12 @@ void StrategicBoxMembers(const CeWorldViewSample& view, float x0, float y0, floa
 }
 
 void StrategicBox(const CeWorldViewSample& view, float x0, float y0, float x1, float y1, bool add) {
-    if (!add) CeSelClear(gSel);
+    if (!add) { CeSelClear(gSel); memset(gSelHandles, 0, sizeof(gSelHandles)); }
+    const int before = gSel.n;
     StrategicBoxMembers(view, x0, y0, x1, y1, gSel);
+    for (int i = before; i < gSel.n; ++i) gSelHandles[i] = SquadHandleOf(gSel.ids[i]);
     gSelected = CeSelLead(gSel);
+    gSelectedHandle = gSel.n > 0 ? gSelHandles[0] : kCeEntityHandleInvalid;
     Refresh();
     CeCmdNote("map drag %d %d %d %d count %d", int(x0), int(y0), int(x1), int(y1), gSel.n);
     char text[64];
@@ -3467,6 +3594,7 @@ public:
         if (!c.admitted_ordinary_solo || !c.live_pilot || !c.camera_available ||
             c.competing_camera_owner || !SameCameraBinding(c.binding, binding)) return false;
         gFocusTrip.squad = -1;
+        gFocusTrip.squadHandle = kCeEntityHandleInvalid;
         AdvanceCameraLifetime(gStrategicViewSession);
         if (!gStrategicViewSession) return false;
         StrategicViewInvalidate();
@@ -3547,6 +3675,7 @@ public:
     }
     void Abandon(const CeCommanderCameraBinding&) noexcept override {
         gFocusTrip.squad = -1;
+        gFocusTrip.squadHandle = kCeEntityHandleInvalid;
         StrategicViewInvalidate();
         gStrategicDragging = false; gStrategicWheel = 0; gBoxing = false;
         gStrategicRender = false; gStrategicOriginal = NULL;
@@ -3668,6 +3797,8 @@ void StrategicSquadAction(WORD key) {
                 gUnitGroupSaved[slot] = true;
             CeCmdSel empty = {};
             CeGroupStore(gGroups, number, empty);
+            if (number >= 0 && number < kCeSelGroups)
+                memset(gGroupHandles[number], 0, sizeof(gGroupHandles[number]));
             Note("Unit selection saved."); return;
         }
         if (!ctrl && (gUnitUi.SetCount(slot) || gUnitGroupSaved[slot])) {
@@ -3747,6 +3878,20 @@ void ResetStrategicGesture() {
 }
 
 void SwitchView(bool strategic) {
+    if (!strategic && gOpen && gStrategic && gSel.n == 0 && gUnitUi.SelectionCount() > 0) {
+        Refresh();
+        RefreshUnitFrame();
+        CeSelClear(gSel);
+        memset(gSelHandles, 0, sizeof(gSelHandles));
+        for (int i = 0; i < gUnitNativeCount; ++i) {
+            if (!gUnitUi.IsSelected(gUnitNative[i].key)) continue;
+            const CeCmdSquad *sq = ByOrdinal(gUnitNative[i].ordinal);
+            if (sq && sq->commandable && CeSelAdd(gSel, sq->ordinal))
+                gSelHandles[gSel.n - 1] = sq->handle;
+        }
+        gSelected = CeSelLead(gSel);
+        gSelectedHandle = gSel.n > 0 ? gSelHandles[0] : kCeEntityHandleInvalid;
+    }
     bool held[sizeof(gDown)];
     memcpy(held, gDown, sizeof(gDown));
     Close();
@@ -4342,6 +4487,29 @@ void DrawStrategicHints() {
     }
     DrawCursor();
 }
+
+void SinkExtraController(bool attach)
+{
+    if (attach)
+    {
+        gSinkOnPad1 = false;
+        if (GAME.GetNPlayers() > 1)
+        {
+            if (CCONTROLLER *controller1 = GAME.GetController(1))
+            {
+                controller1->SetToControl(&gSink);
+                gSinkOnPad1 = true;
+            }
+        }
+        return;
+    }
+    if (gSinkOnPad1 || GAME.GetNPlayers() > 1)
+    {
+        if (CCONTROLLER *controller1 = GAME.GetController(1))
+            RelinquishBuriedController(controller1, &gSink);
+        gSinkOnPad1 = false;
+    }
+}
 // CE_STRATEGIC_CAMERA_END
 
 bool StrategicLive() { return gOpen && gStrategic; }
@@ -4446,6 +4614,7 @@ void Close()
 	{
 		RelinquishBuriedController(controller, &gSink);
 	}
+	SinkExtraController(false);
 	if (!wasStrategic)
 	{
 		if (competingOverlay)
@@ -4460,7 +4629,15 @@ void Close()
 			GAME.*GameAccess::PauseField() = FALSE;
 		}
 	}
-	if (ownedStrategicInput || (!wasStrategic && !competingOverlay)) { InitMouse(); }
+	const bool menuOpen = GAMEINTERFACE.IsMenuUp() || (GAME.GetPauseMenu() && GAME.GetPauseMenu()->mActive);
+	if (!menuOpen && !competingOverlay)
+	{
+		InitMouse();
+	}
+	else if (wasStrategic)
+	{
+		SetMouseInputActive(FALSE);
+	}
 #ifdef CE_COMMANDER_TEST
 	{
 		CeCmdHash h;
@@ -4507,6 +4684,7 @@ void Open(bool strategic)
 	if (strategic) LivePointerStart();	// the live view keeps its own pointer; the game's stays on the centre
 	gOpening = false;
 	if (CCONTROLLER *controller = GAME.GetController(0)) controller->SetToControl(&gSink);
+	SinkExtraController(true);
 	LT.SetKeytrap((pKeyTrapper)Trap);
 	// A key that is already held when the map opens is not a new press when it repeats (the window layer posts every auto-repeat as a key-down): the game's own
 	// key state knows which ones those are, because it is not updated while a key trap is installed but cleared by every key-up.
@@ -4607,7 +4785,7 @@ void Open(bool strategic)
 // Keys and mouse buttons while the map is open. The mouse module reads a trap's return value (true: the button was taken).
 bool Trap(WORD key, int event)
 {
-	LivePointer pointer;	// the live view's keys and buttons read its own pointer
+	LivePointer pointer(true);	// during Win32 mouse dispatch, prefer the dispatched message's pointer
     // CE_STRATEGIC_TRAP_BEGIN
     if (gStrategic) return StrategicTrap(key, event);
     if (gOpen && key == DIK_V && event == KEY_EVENT_DOWN) {
@@ -5080,6 +5258,8 @@ void CeCommanderLevelEnd();
 // The level is ending (CGame::ShutdownRestartLoop): put back what opening changed.
 void PortCeCmdLevelEnd()
 {
+    const bool restarting = (gLevelEndQuit == QT_RESTART_LEVEL);
+    gLevelEndQuit = QT_NONE;
     CeCmdVoiceStop();
     FreeTerrainTexture();
     CeFactoryReset();
@@ -5096,11 +5276,12 @@ void PortCeCmdLevelEnd()
     CePlayUnitLevelEnd();
     gStrategicOwner.Reset();
 	Close();
+    gSinkOnPad1 = false;
     gDeferredMapUnpause = false;
     CancelNativeReturn();
     gNativePresented = false;
     gNativeEntering = false;
-	CeCmdMatchLevelEnd();	// a Commander match gives the screen back as it found it
+	CeCmdMatchLevelEnd(restarting);	// a Commander match gives the screen back as it found it (keeping -level latched on retry)
 	gKeptLevel = -1;
 	gKeptMapLevel = -1;
 	gKeptMission = 0;
@@ -5109,8 +5290,13 @@ void PortCeCmdLevelEnd()
 	gHasStrategicInitialYaw = false;
 	gMapPulseStartNs = 0;
 	gSelected = -1;
+	gSelectedHandle = kCeEntityHandleInvalid;
 	CeSelClear(gSel);
+	memset(gSelHandles, 0, sizeof(gSelHandles));
 	CeGroupsClear(gGroups);
+	memset(gGroupHandles, 0, sizeof(gGroupHandles));
+	gFocusTrip.squad = -1;
+	gFocusTrip.squadHandle = kCeEntityHandleInvalid;
 	gReopen = false;
 	gLiveLast = false;
 	gToldInFight = false;
@@ -5118,6 +5304,12 @@ void PortCeCmdLevelEnd()
 	gNote[0] = 0;
     AdvanceCameraLifetime(gMissionLifetime);
     gObservedPlayer = NULL; gObservedPilot = NULL; gObservedCamera = NULL;
+}
+
+void PortCeCmdLevelEnd(int quit)
+{
+	gLevelEndQuit = quit;
+	PortCeCmdLevelEnd();
 }
 
 // After the console and the photo note (CDXEngine::PostRender): the map when it is open, else the note that says why it did not open.

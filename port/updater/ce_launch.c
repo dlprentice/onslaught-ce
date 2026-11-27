@@ -559,8 +559,14 @@ static FILE *log_open_file(const char *path, enum LogOpen mode, unsigned long *e
 	BY_HANDLE_FILE_INFORMATION info;
 	if (!GetFileInformationByHandle(h, &info)) { *error = log_native_error(); CloseHandle(h); return NULL; }
 	if (GetFileType(h) != FILE_TYPE_DISK || info.nNumberOfLinks != 1 ||
-		(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || ce_win_handle_is_link(h, info.dwFileAttributes) ||
-		info.nFileSizeHigh || info.nFileSizeLow > LOG_CAP)
+		(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || ce_win_handle_is_link(h, info.dwFileAttributes))
+	{ *error = log_invalid_file(); CloseHandle(h); return NULL; }
+#ifdef CE_WIN_REPARSE_H
+	if (mode != LOG_CREATE &&
+		!ce_win_hydrate_handle_a(path, &h, &info, access, FILE_SHARE_READ, FILE_ATTRIBUTE_NORMAL, mode != LOG_INSPECT))
+	{ *error = log_invalid_file(); return NULL; }
+#endif
+	if (info.nNumberOfLinks != 1 || info.nFileSizeHigh || info.nFileSizeLow > LOG_CAP)
 	{ *error = log_invalid_file(); CloseHandle(h); return NULL; }
 	if (!SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0)) { *error = log_native_error(); CloseHandle(h); return NULL; }
 	fd = _open_osfhandle((intptr_t)h, _O_BINARY | (mode == LOG_INSPECT ? _O_RDONLY : _O_RDWR) | (mode == LOG_APPEND ? _O_APPEND : 0));
@@ -931,8 +937,14 @@ static char *read_regular_bounded(const char *p, size_t max_bytes, size_t *n)
 	if (h == INVALID_HANDLE_VALUE) return NULL;
 	BY_HANDLE_FILE_INFORMATION info;
 	if (GetFileType(h) != FILE_TYPE_DISK || !GetFileInformationByHandle(h, &info) ||
-		(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || ce_win_handle_is_link(h, info.dwFileAttributes) ||
-		info.nFileSizeHigh || info.nFileSizeLow > max_bytes)
+		(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || ce_win_handle_is_link(h, info.dwFileAttributes))
+	{
+		CloseHandle(h);
+		return NULL;
+	}
+	if (!ce_win_hydrate_handle_a(p, &h, &info, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0, 0))
+		return NULL;
+	if (info.nFileSizeHigh || info.nFileSizeLow > max_bytes)
 	{
 		CloseHandle(h);
 		return NULL;
@@ -1000,9 +1012,10 @@ static char *read_ini_bounded(const char *ini_path, size_t *n)
 			BY_HANDLE_FILE_INFORMATION info;
 			if (GetFileType(in) == FILE_TYPE_DISK && GetFileInformationByHandle(in, &info) &&
 				!(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && !ce_win_handle_is_link(in, info.dwFileAttributes) &&
+				ce_win_hydrate_handle_a(full, &in, &info, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0, 0) &&
 				!info.nFileSizeHigh && info.nFileSizeLow <= CE_INI_MAX_BYTES)
 				raw = in;
-			else
+			else if (in != INVALID_HANDLE_VALUE)
 				CloseHandle(in);
 		}
 	}

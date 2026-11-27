@@ -342,7 +342,7 @@ class SessionLog(unittest.TestCase):
         source = cls.out / "driver.cpp"
         source.write_text(text)
         cls.receipt = {"inputs": {str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest()
-                                   for p in (logger, logger.with_suffix('.h'), ce, mixer, game)}, "commands": [], "cases": []}
+                                   for p in (logger, logger.with_suffix('.h'), logger.parent / 'ce_record_mode.h', ce, mixer, game)}, "commands": [], "cases": []}
         cls.binaries = {}
         for public in (False, True):
             name = "public" if public else "private"
@@ -554,6 +554,7 @@ class SessionLog(unittest.TestCase):
                 folder = self.out / f"mutant-{name}"
                 folder.mkdir()
                 (folder / "portlog.h").write_text(logger.with_suffix(".h").read_text())
+                (folder / "ce_record_mode.h").write_text((logger.parent / "ce_record_mode.h").read_text())
                 (folder / "portlog.cpp").write_text(source.replace(old, new))
                 driver = folder / "driver.cpp"
                 driver.write_text(self.template.replace("@LOGGER@", str(folder / "portlog.cpp")))

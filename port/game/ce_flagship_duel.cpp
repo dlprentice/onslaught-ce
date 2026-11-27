@@ -407,13 +407,42 @@ void UpdateP0PlayUnitStasis() {
 		return;
 	}
 
-	const bool outcomeShield = gDirector.Phase() == CeFlagshipDuelPhase::kVictoryHold ||
-	                           gDirector.Phase() == CeFlagshipDuelPhase::kFinishedVictory;
+	const CeFlagshipDuelPhase phase = gDirector.Phase();
+	const bool outcomeShield = phase == CeFlagshipDuelPhase::kVictoryHold ||
+	                           phase == CeFlagshipDuelPhase::kFinishedVictory ||
+	                           phase == CeFlagshipDuelPhase::kDefeatHold;
 	if (outcomeShield) {
 		be->SetVulnerable(FALSE);
 	} else if (gP0StasisApplied) {
 		be->SetVulnerable(TRUE);
 		gP0StasisApplied = false;
+	}
+}
+
+void ApplyOutcomeHoldProtection() {
+	const CeFlagshipDuelPhase phase = gDirector.Phase();
+	if (gDirector.IsSplitScreen2P()) {
+		if (phase == CeFlagshipDuelPhase::kVictoryHold ||
+		    phase == CeFlagshipDuelPhase::kDefeatHold) {
+			for (int slot = 0; slot < 2; ++slot) {
+				CPlayer *p = GAME.GetPlayer(slot);
+				CBattleEngine *be = p ? p->GetBattleEngine() : NULL;
+				if (be && !be->IsDying())
+					be->SetVulnerable(FALSE);
+			}
+			const int winner = (phase == CeFlagshipDuelPhase::kVictoryHold) ? 1 : 2;
+			if (GAME.GetPlayerLives(winner) < 1) {
+				GAME.SetPlayerLives(winner, 1);
+				gDirector.UpdatePlayerLives(GAME.GetPlayerLives(1), GAME.GetPlayerLives(2));
+			}
+		}
+	} else if (phase == CeFlagshipDuelPhase::kVictoryHold ||
+	           phase == CeFlagshipDuelPhase::kFinishedVictory ||
+	           phase == CeFlagshipDuelPhase::kDefeatHold) {
+		CPlayer *p0 = GAME.GetPlayer(0);
+		CBattleEngine *be = p0 ? p0->GetBattleEngine() : NULL;
+		if (be && !be->IsDying())
+			be->SetVulnerable(FALSE);
 	}
 }
 
@@ -549,9 +578,13 @@ void EmitHullBarsToBatch(LPDIRECT3DDEVICE9 dev, const CeFdHudLayout &layout,
 CeFlagshipDuelPhase EffectiveDisplayPhase(EGameState gs) {
 	const CeFlagshipDuelPhase phase = gDirector.Phase();
 	if (gDirector.IsSplitScreen2P()) {
-		if (gs == GAME_STATE_PLAYER_1_WON && phase != CeFlagshipDuelPhase::kFinishedP2Won)
+		if (gs == GAME_STATE_PLAYER_1_WON &&
+		    phase != CeFlagshipDuelPhase::kFinishedP2Won &&
+		    phase != CeFlagshipDuelPhase::kDefeatHold)
 			return CeFlagshipDuelPhase::kFinishedP1Won;
-		if (gs == GAME_STATE_PLAYER_2_WON && phase != CeFlagshipDuelPhase::kFinishedP1Won)
+		if (gs == GAME_STATE_PLAYER_2_WON &&
+		    phase != CeFlagshipDuelPhase::kFinishedP1Won &&
+		    phase != CeFlagshipDuelPhase::kVictoryHold)
 			return CeFlagshipDuelPhase::kFinishedP2Won;
 	} else if (gs == GAME_STATE_LEVEL_LOST && phase == CeFlagshipDuelPhase::kRunning) {
 		return CeFlagshipDuelPhase::kFinishedDefeat;
@@ -730,7 +763,7 @@ extern "C" void PortCeFlagshipDuelLevelEnd(int level, int quit) {
 	gDirector.Reset(CeFlagshipDuelConfig{});
 	if (quit == QT_RESTART_LEVEL && !gLoadRefused) {
 		PortCeFlagshipDuelMarkRetryReset();
-	} else if (gMode == CeFlagshipDuelMode::kSplitScreen2P) {
+	} else if (gMode == CeFlagshipDuelMode::kSplitScreen2P || gLoadRefused) {
 		gPendingReturn = true;
 	} else {
 		PortCeFlagshipDuelCancel();
@@ -776,9 +809,26 @@ extern "C" void PortCeFlagshipDuelUnitDestroyed(CUnit *unit) {
 
 extern "C" int PortCeFlagshipDuelBeInStasis(const void *be) {
 	if (!PortCeFlagshipDuelActive() || !gDirector.IsRunning() || !be) return 0;
-	if (gDirector.IsSplitScreen2P()) return 0;
+	const CeFlagshipDuelPhase phase = gDirector.Phase();
+	if (gDirector.IsSplitScreen2P()) {
+		if (phase == CeFlagshipDuelPhase::kVictoryHold ||
+		    phase == CeFlagshipDuelPhase::kDefeatHold ||
+		    phase == CeFlagshipDuelPhase::kFinishedP1Won ||
+		    phase == CeFlagshipDuelPhase::kFinishedP2Won) {
+			for (int slot = 0; slot < 2; ++slot) {
+				CPlayer *p = GAME.GetPlayer(slot);
+				if (p && static_cast<const void *>(p->GetBattleEngine()) == be)
+					return 1;
+			}
+		}
+		return 0;
+	}
 	CPlayer *p0 = GAME.GetPlayer(0);
 	if (!p0 || static_cast<const void *>(p0->GetBattleEngine()) != be) return 0;
+	if (phase == CeFlagshipDuelPhase::kVictoryHold ||
+	    phase == CeFlagshipDuelPhase::kFinishedVictory ||
+	    phase == CeFlagshipDuelPhase::kDefeatHold)
+		return 1;
 	return (gP0StasisApplied || IsP0DrivingOtherUnit()) ? 1 : 0;
 }
 
@@ -816,11 +866,13 @@ extern "C" void PortCeFlagshipDuelTickPre(void) {
 		if (fenrir && !fenrir->IsDying())
 			fenrir->SetVulnerable(FALSE);
 	}
+	ApplyOutcomeHoldProtection();
 
 	EnforceFlagshipSeparation(venturer, fenrir);
 
 	const CeFlagshipDuelDirector::TickDecision d =
 		gDirector.Tick(CLOCK_TICK, CountLiveUnitsInWorld());
+	ApplyOutcomeHoldProtection();
 
 	if (d.advancePatrol) {
 		if (venturer && !venturer->IsDying())

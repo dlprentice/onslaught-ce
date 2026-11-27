@@ -207,6 +207,39 @@ static int TestToggleOffRefusalsAndL2Dormancy() {
     if (cmd.valid != 0u) {
         std::puts("FAIL defendPosture re-issued redundant hold to already-holding squads"); return 25;
     }
+
+    // Low-HP deploying artillery must HOLD (not FALLBACK) and must NOT starve squad 1 behind it!
+    obs.squads[0].deploys = 1u;
+    obs.squads[0].lifeRatio = 0.20f;
+    obs.squads[0].verb = 0; // idle
+    obs.squads[1].deploys = 0u;
+    obs.squads[1].lifeRatio = 1.0f;
+    obs.squads[1].verb = 0; // idle
+    obs.simTick = 75u;
+    CeAiTacticalL2Decide(&st, obs, nullptr, &cmd, &pos);
+    if (cmd.valid == 0u || cmd.verb != 3 || cmd.squadHandle != obs.squads[0].squadHandle) {
+        std::puts("FAIL low-HP artillery issued FALLBACK instead of HOLD"); return 26;
+    }
+    obs.squads[0].verb = 3; // artillery now holding
+    obs.simTick = 90u;
+    CeAiTacticalL2Decide(&st, obs, nullptr, &cmd, &pos);
+    if (cmd.valid == 0u || cmd.verb != 2 || cmd.squadHandle != obs.squads[1].squadHandle) {
+        std::puts("FAIL low-HP holding artillery starved squad 1"); return 27;
+    }
+
+    // Low-HP non-artillery already in FALLBACK (verb == 4) under CE_STRAT_DEFEND must NOT oscillate to HOLD (3),
+    // and must let subsequent squads receive orders!
+    obs.squads[0].deploys = 0u;
+    obs.squads[0].lifeRatio = 0.20f;
+    obs.squads[0].verb = 4; // already CE_CMD_FALLBACK
+    obs.squads[1].deploys = 0u;
+    obs.squads[1].lifeRatio = 1.0f;
+    obs.squads[1].verb = 2; // advancing
+    obs.simTick = 105u;
+    CeAiTacticalL2Decide(&st, obs, &defPrior, &cmd, &pos);
+    if (cmd.valid == 0u || cmd.verb != 3 || cmd.squadHandle != obs.squads[1].squadHandle) {
+        std::puts("FAIL low-HP FALLBACK squad oscillated to HOLD or starved squad 1 under DEFEND"); return 28;
+    }
     return 0;
 }
 
@@ -496,12 +529,17 @@ class PlayerHooksTests(unittest.TestCase):
         self.assertIn("CePlayUnitSlotRelease(", pcpp)
         self.assertIn("gTacticalState[slot].possessedUnit = (toggles & CE_TOGGLE_PLAY_UNIT)", pcpp)
 
-        # Headless PlayUnit slots use per-unit PortCePlayUnitIsDriven, AI_ONF (armed), and ground-only driving.
+        # Headless PlayUnit slots use per-unit PortCePlayUnitIsDriven, AI_ONF (armed), ground-only driving
+        # (excluding deploying artillery), dry-ground validation, and human takeover handoff helpers.
         pus_cpp = strip_comments((GAME / "ce_playunit_slots.cpp").read_text(encoding="utf-8"))
         self.assertIn("PortCePlayUnitIsDriven", pus_cpp)
         self.assertIn("AI_ONF", pus_cpp)
         self.assertIn("IsEligibleGroundDriveClass(", pus_cpp)
         self.assertIn("IsEligibleGroundDriveUnit(", pus_cpp)
+        self.assertNotIn("CE_PLAYUNIT_CLASS_ARTILLERY", pus_cpp)
+        self.assertIn("MAP.GetWaterLevel()", pus_cpp)
+        self.assertIn("CePlayUnitSlotsIsLeased(", pus_cpp)
+        self.assertIn("CePlayUnitSlotsReleaseUnit(", pus_cpp)
         self.assertNotIn("CePlayUnitOwnsPilot(", pus_cpp)
 
         # R5: 0396-ce-hook-player-act MUST gate on mGameState == GAME_STATE_PLAYING.

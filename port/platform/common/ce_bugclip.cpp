@@ -763,6 +763,8 @@ FILE *OpenExistingRegular(CeSettingsDir *dir, const char *name)
 		CloseHandle(h);
 		return NULL;
 	}
+	if (!ce_win_hydrate_handle_a(full, &h, &info, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, 0, 0))
+		return NULL;
 	int fd = _open_osfhandle((intptr_t)h, _O_RDONLY | _O_BINARY);
 	if (fd < 0) { CloseHandle(h); return NULL; }
 	FILE *f = _fdopen(fd, "rb");
@@ -975,13 +977,14 @@ std::string ReadRegularTail(const char *userDir, const char *fileName, size_t ma
 	{
 		BY_HANDLE_FILE_INFORMATION info;
 		if (GetFileType(h) == FILE_TYPE_DISK && GetFileInformationByHandle(h, &info) &&
-		    !(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && !ce_win_handle_is_link(h, info.dwFileAttributes))
+		    !(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && !ce_win_handle_is_link(h, info.dwFileAttributes) &&
+		    ce_win_hydrate_handle_a(path, &h, &info, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0, 0))
 		{
 			int fd = _open_osfhandle((intptr_t)h, _O_RDONLY | _O_BINARY);
 			if (fd >= 0) { f = _fdopen(fd, "rb"); if (!f) _close(fd); }
 			else CloseHandle(h);
 		}
-		else CloseHandle(h);
+		else if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
 	}
 #else
 	int fd = openat(dir.fd, fileName, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC);
@@ -1159,6 +1162,88 @@ std::string ScrubText(const std::string &in)
 			out.replace(pos, a.size(), "<user>");
 			pos += 6;
 		}
+	}
+	return out;
+}
+
+// Strict allowlist filter for ce.ini in shareable companion bug-clip reports (matching ce_launch.c's
+// filter_ce_ini_for_tape): keeps only gameplay/UI/graphics/experimental switches; drops paths (gamedir,
+// music_dir, career_backup_folder), endpoints/network keys (lobby_url, signaling_url, turn_*, online_*,
+// net_port), mods, unknown keys, and any value containing '/', '\', '://', or drive-letter paths.
+static bool CeIniKeySafeForReport(const char *key, size_t len)
+{
+	static const char *const kSafeKeys[] = {
+		"aniso", "anisotropic_filtering", "catalogue",
+		"cheat_aurore", "cheat_latete", "cheat_maladim", "cheat_malloy", "cheat_turkey", "cheat_v3r5iof", "cheats",
+		"commander", "commander_key", "commander_tactical_map", "console_theme",
+		"debrief_stats", "dev_stats", "dodge_button", "dodge_key", "dynamic_shadow_res",
+		"extra_graphics", "extras", "factory_exercise", "full_models", "full_tree_models", "full_unit_models",
+		"god_mode", "hud_anchor", "hud_scale",
+		"map_editor", "mods_menu", "msaa", "multi_be", "multi_be_cam", "multi_be_campaign", "multi_be_hud_slot",
+		"museum", "music_playtype", "muspell",
+		"network_game", "play_side", "play_unit", "rumble",
+		"sandbox_telemetry", "sharp_ui", "solo_skirmish", "take_unit_key",
+		"terrain_detail", "terrain_detail_distance", "vsync",
+		"water_reflection_res", "wide_mode_h", "wide_mode_w", "widescreen", "windowed"
+	};
+	for (size_t i = 0; i < sizeof(kSafeKeys) / sizeof(kSafeKeys[0]); ++i)
+		if (strlen(kSafeKeys[i]) == len && memcmp(kSafeKeys[i], key, len) == 0)
+			return true;
+	return false;
+}
+
+static std::string FilterCeIniForReport(const std::string &raw)
+{
+	if (raw.empty() || raw.find('\0') != std::string::npos) return "";
+	size_t at = (raw.size() >= 3 && (unsigned char)raw[0] == 0xEF &&
+	             (unsigned char)raw[1] == 0xBB && (unsigned char)raw[2] == 0xBF) ? 3u : 0u;
+	static const char kExpHeader[] = "[experimental]";
+	std::string out;
+	out.reserve(raw.size());
+	while (at < raw.size())
+	{
+		size_t nl = raw.find('\n', at);
+		size_t n = (nl == std::string::npos) ? (raw.size() - at) : (nl - at);
+		const char *line = raw.data() + at;
+		at = (nl == std::string::npos) ? raw.size() : (nl + 1);
+		size_t s = 0, e = n;
+		while (s < e && (line[s] == ' ' || line[s] == '\t')) ++s;
+		while (e > s && (line[e - 1] == '\r' || line[e - 1] == ' ' || line[e - 1] == '\t')) --e;
+		if (s == e || line[s] == ';' || line[s] == '#') continue;
+		if (e - s == sizeof(kExpHeader) - 1 && memcmp(line + s, kExpHeader, sizeof(kExpHeader) - 1) == 0)
+		{
+			out.append(kExpHeader);
+			out.push_back('\n');
+			continue;
+		}
+		const char *eq = (const char *)memchr(line + s, '=', e - s);
+		if (!eq) continue;
+		size_t ke = (size_t)(eq - line);
+		while (ke > s && (line[ke - 1] == ' ' || line[ke - 1] == '\t')) --ke;
+		size_t klen = ke - s;
+		if (!klen || !CeIniKeySafeForReport(line + s, klen)) continue;
+		size_t vs = (size_t)(eq - line) + 1;
+		while (vs < e && (line[vs] == ' ' || line[vs] == '\t')) ++vs;
+		size_t vlen = e - vs;
+		if (vlen == 0 || vlen > 64) continue;
+		bool badVal = false;
+		if (vlen >= 2 &&
+		    (((unsigned char)line[vs] >= 'A' && (unsigned char)line[vs] <= 'Z') ||
+		     ((unsigned char)line[vs] >= 'a' && (unsigned char)line[vs] <= 'z')) &&
+		    line[vs + 1] == ':')
+			badVal = true;
+		for (size_t i = 0; !badVal && i < vlen; ++i)
+		{
+			unsigned char c = (unsigned char)line[vs + i];
+			if (c < 0x20 || c == 0x7F || c == '/' || c == '\\') { badVal = true; break; }
+			if (i + 2 < vlen && line[vs + i] == ':' && line[vs + i + 1] == '/' && line[vs + i + 2] == '/')
+				{ badVal = true; break; }
+		}
+		if (badVal) continue;
+		out.append(line + s, klen);
+		out.push_back('=');
+		out.append(line + vs, vlen);
+		out.push_back('\n');
 	}
 	return out;
 }
@@ -1406,8 +1491,9 @@ struct BugClipRuntime
 		std::string ini = ReadRegularTail(user, "ce.ini", 32768);
 		if (!ini.empty())
 		{
-			std::string cleanIni = ScrubText(ini);
-			fprintf(tf, "---- ce.ini ----\n%s\n\n", cleanIni.c_str());
+			std::string cleanIni = ScrubText(FilterCeIniForReport(ini));
+			if (!cleanIni.empty())
+				fprintf(tf, "---- ce.ini ----\n%s\n", cleanIni.c_str());
 		}
 		fflush(stderr);
 		std::string logTail = ReadRegularTail(user, "onslaught-ce.log", 65536);

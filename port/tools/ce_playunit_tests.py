@@ -598,7 +598,8 @@ class Fences(unittest.TestCase):
                 self.assertEqual(hud_additions.count("#ifdef CE_VERSION"), hud_additions.count("#endif"))
             elif patch.name in ("0356-ce-playunit-firstperson-parts.patch",
                                 "0358-ce-playunit-class-hooks.patch",
-                                "0359-ce-playunit-muspell-side.patch"):
+                                "0359-ce-playunit-muspell-side.patch",
+                                "0401-ce-playunit-mouselook-and-lives-fixes.patch"):
                 additions = "\n".join(line[1:] for line in text.splitlines() if line.startswith("+") and not line.startswith("+++"))
                 self.assertIn("__attribute__((weak))", additions, f"{patch.name} must use weak hooks")
                 self.assertGreaterEqual(additions.count("#ifdef CE_VERSION"), 1, f"{patch.name} must guard hooks with CE_VERSION")

@@ -102,7 +102,10 @@ inline int	CeOggSeconds(const unsigned char *head, int headSize, const unsigned 
 	if (!rate)
 		return 0;
 	const unsigned long long samples = CeOggSamples(tail, tailSize);
-	return int((samples + rate / 2) / rate);
+	const unsigned long long whole = samples / rate;
+	const unsigned long long rem = samples % rate;
+	const unsigned long long sec = whole + (rem >= (rate - rate / 2u) ? 1ull : 0ull);
+	return sec <= 864000ull ? int(sec) : 0;
 }
 
 #endif

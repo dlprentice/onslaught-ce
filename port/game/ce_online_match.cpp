@@ -1150,9 +1150,9 @@ bool CeOnlineMatchSession::SendChat(const char *text) {
     char clean[164] = {};
     if (!SanitizeChatText(text, clean, sizeof(clean)))
         return false;
+    if (mBridge && !mBridge->SendChat(mTicket.local_sim_slot, clean))
+        return false;
     AppendChat(mTicket.local_sim_slot, clean);
-    if (mBridge)
-        return mBridge->SendChat(mTicket.local_sim_slot, clean);
     return true;
 }
 

@@ -123,6 +123,9 @@ void	PortCeExtrasReturnToReader();
 void	PortCeExtrasWiden(WCHAR *out, int n, const char *in);
 void	PortCeExtrasWidenName(WCHAR *out, int n, const char *in);
 void	PortCeExtrasInFont(WCHAR *text);
+class CDXBitmapFont;
+struct SWordWrapFill;
+int		PortCeExtrasSafeWordWrap(CDXBitmapFont *font, SWordWrapFill *fill, const WCHAR *text, float width);
 
 // Careers without loading them (ce_career_view.cpp): the memory card's list (-1 when careers cannot be read now), a career's
 // name as Load Game lists it (256 characters), and its record (ce_career_view.h), checked against the game's own accessors.
@@ -136,6 +139,7 @@ void	PortCeExtrasMessage(const char *text);
 
 // The Music Player (ce_jukebox.cpp).
 const SCeListPage	*PortCeJukeboxPage();
+void	PortCeJukeboxSuppressRestore(bool suppress);
 
 // The Lore (ce_lore.cpp): the articles as a list, and one article as a reading page.
 const SCeListPage	*PortCeLoreListPage();

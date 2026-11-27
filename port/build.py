@@ -518,14 +518,16 @@ def native_signaling_dependency(target):
 
 def stage_native_signaling_libs():
     """Stage the pinned non-system sniper SDK TLS/curl runtime libraries into BUILD/linux/lib
-    so direct runs of local-data/port/build/linux/bea resolve libcurl-gnutls.so.4 via $ORIGIN/lib."""
+    with DT_RUNPATH=$ORIGIN so direct runs of local-data/port/build/linux/bea resolve libcurl-gnutls.so.4
+    and its transitive dependencies via $ORIGIN/lib without LD_LIBRARY_PATH."""
+    import package
     import package_signaling_inputs
     pins = package_signaling_inputs.load_manifest()
     lib_dir = BUILD / "linux/lib"
     lib_dir.mkdir(parents=True, exist_ok=True)
     for row in pins["libraries"]:
         src = deps.SYSROOT / row["path"]
-        data = package_signaling_inputs.read_pinned(src, row)
+        data = package.set_elf32_runpath(package_signaling_inputs.read_pinned(src, row))
         dst = lib_dir / row["soname"]
         if not dst.is_file() or dst.read_bytes() != data:
             deps.write_cache_file(dst, data)

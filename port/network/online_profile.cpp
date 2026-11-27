@@ -251,8 +251,11 @@ bool ReadTextFileWin(const std::wstring& dir_wide, const std::string& leaf_ascii
     if (GetFileType(file.value) != FILE_TYPE_DISK || !GetFileInformationByHandle(file.value, &info))
         return false;
     if ((info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 ||
-        !CeWinAcl::IsAllowedReparseHandle(file.value, info.dwFileAttributes) ||
-        info.nFileSizeHigh != 0 || info.nFileSizeLow > kMaxIniBytes)
+        !CeWinAcl::IsAllowedReparseHandle(file.value, info.dwFileAttributes))
+        return false;
+    if (!ce_win_hydrate_handle_w(full.c_str(), &file.value, &info, GENERIC_READ, FILE_SHARE_READ, 0, 0))
+        return false;
+    if (info.nFileSizeHigh != 0 || info.nFileSizeLow > kMaxIniBytes)
         return false;
     out_text.resize(info.nFileSizeLow);
     size_t offset = 0;

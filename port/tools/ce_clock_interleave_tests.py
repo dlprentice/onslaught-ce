@@ -37,7 +37,7 @@ class Interleavings(unittest.TestCase):
         d = Path(cls.temp.name)
         # The exact production CE gate, extracted only to avoid linking its unrelated SDL/UI settings code.
         gate = d / "layer.cpp"
-        gate.write_text('#include <stdlib.h>\n' + function(LAYER.read_text(), "bool PortCeLayer()"))
+        gate.write_text('#include <stdlib.h>\n#include <string.h>\n#include "ce_record_mode.h"\n' + function(LAYER.read_text(), "bool PortCeLayer()"))
         extra = d / "win-extra.h"
         extra.write_text('#include <windows.h>\nextern "C" { void WINAPI GetSystemTimeAsFileTime(LPFILETIME); BOOL WINAPI FileTimeToSystemTime(const FILETIME *, LPSYSTEMTIME); }\n')
         cls.directory, cls.gate, cls.extra = d, gate, extra
